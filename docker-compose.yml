@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  knowledge_agents:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '8'
+          memory: 12G
+        reservations:
+          cpus: '4'
+          memory: 8G
+    environment:
+      # Model API Keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROK_API_KEY=${GROK_API_KEY}
+      - VENICE_API_KEY=${VENICE_API_KEY}
+      
+      # Model Settings
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL}
+      - GROK_MODEL=${GROK_MODEL}
+      - GROK_EMBEDDING_MODEL=${GROK_EMBEDDING_MODEL}
+      - VENICE_MODEL=${VENICE_MODEL}
+      - VENICE_CHUNK_MODEL=${VENICE_CHUNK_MODEL}
+      
+      # Default Providers
+      - DEFAULT_EMBEDDING_PROVIDER=${DEFAULT_EMBEDDING_PROVIDER}
+      - DEFAULT_CHUNK_PROVIDER=${DEFAULT_CHUNK_PROVIDER}
+      - DEFAULT_SUMMARY_PROVIDER=${DEFAULT_SUMMARY_PROVIDER}
+      
+      # Application Settings
+      - FLASK_APP=${FLASK_APP}
+      - FLASK_ENV=${FLASK_ENV}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - MAX_TOKENS=${MAX_TOKENS}
+      - CHUNK_SIZE=${CHUNK_SIZE}
+      - BATCH_SIZE=${BATCH_SIZE}
+      - CACHE_ENABLED=${CACHE_ENABLED}
+      
+      # Data Paths
+      - DATA_PATH=${DATA_PATH}
+      - ROOT_PATH=/app/data
+      - ALL_DATA=${ALL_DATA}
+      - ALL_DATA_STRATIFIED_PATH=${ALL_DATA_STRATIFIED_PATH}
+      - KNOWLEDGE_BASE=/app/data/knowledge_base.csv
+      - PATH_TEMP=${PATH_TEMP}
+      - FILE_TYPE=${FILE_TYPE}
+      
+      # AWS Configuration (Optional)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - S3_BUCKET=${S3_BUCKET}
+      - S3_BUCKET_PREFIX=${S3_BUCKET_PREFIX}
+      - S3_BUCKET_PROCESSED=${S3_BUCKET_PROCESSED}
+      - S3_BUCKET_MODELS=${S3_BUCKET_MODELS}
+    restart: always 
