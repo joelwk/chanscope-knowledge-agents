@@ -86,14 +86,36 @@ Optional configurations:
 - AWS credentials (if using data gathering features)
 
 ### 2. Docker Setup
-1. Build and start the service:
+
+#### Development Environment
+1. Build and start the development services:
 ```bash
-docker-compose up --build -d
+# Start the development environment
+docker-compose -f deployment/docker-compose.dev.yml up --build -d
+
+# View logs
+docker-compose -f deployment/docker-compose.dev.yml logs -f
 ```
 
-2. Verify the service is running:
+2. The development setup includes:
+   - API service on port 5000
+   - Chainlit frontend on port 8000
+   - Hot-reloading enabled for both services
+
+#### Testing Environment
+To run the test suite:
 ```bash
+# Build and run tests
+docker-compose -f deployment/docker-compose.dev.yml -f deployment/Dockerfile.test up --build test
+```
+
+3. Verify the services are running:
+```bash
+# Check API health
 curl http://localhost:5000/health
+
+# Access Chainlit frontend
+Open http://localhost:8000 in your browser
 ```
 
 ## Making Requests
@@ -312,14 +334,11 @@ pytest -v tests/
 
 #### 2. Docker Testing
 ```bash
-# Build test container
-docker build -t knowledge-agent-test -f deployment/Dockerfile.test .
+# Run tests using docker-compose
+docker-compose -f deployment/docker-compose.dev.yml -f deployment/Dockerfile.test up --build test
 
-# Run tests in container
-docker run --rm knowledge-agent-test pytest tests/
-
-# Run with coverage in container
-docker run --rm knowledge-agent-test pytest --cov=knowledge_agents tests/
+# View test logs
+docker-compose -f deployment/docker-compose.dev.yml logs test
 ```
 
 ### Development Workflow
@@ -335,51 +354,32 @@ python -m chainlit_frontend.app --debug
 
 #### 2. Docker Development
 ```bash
-# Build development containers
-docker-compose -f deployment/docker-compose.dev.yml build
-
-# Start development environment
-docker-compose -f deployment/docker-compose.dev.yml up
+# Build and start development environment
+docker-compose -f deployment/docker-compose.dev.yml up --build
 
 # View logs
 docker-compose -f deployment/docker-compose.dev.yml logs -f
 
 # Rebuild and restart specific service
 docker-compose -f deployment/docker-compose.dev.yml up -d --build api
-```
-
-### Deployment Workflow
-
-#### 1. Local Deployment Testing
-```bash
-# Build all services
-docker-compose -f deployment/docker-compose.yml build
-
-# Start all services
-docker-compose -f deployment/docker-compose.yml up -d
-
-# Check service status
-docker-compose -f deployment/docker-compose.yml ps
-
-# View logs
-docker-compose -f deployment/docker-compose.yml logs -f
 
 # Stop services
-docker-compose -f deployment/docker-compose.yml down
+docker-compose -f deployment/docker-compose.dev.yml down
 ```
 
-#### 2. Production Deployment
+### Service Management
+
+#### Health Checks and Monitoring
 ```bash
-# Build production images
-docker-compose -f deployment/docker-compose.prod.yml build
+# Check API health
+curl http://localhost:5000/health
 
-# Deploy with production settings
-docker-compose -f deployment/docker-compose.prod.yml up -d
+# Check Chainlit frontend
+Open http://localhost:8000 in your browser
 
-# Scale services if needed
-docker-compose -f deployment/docker-compose.prod.yml up -d --scale api=3
+# View service status
+docker-compose -f deployment/docker-compose.dev.yml ps
 
-# Monitor services
-docker-compose -f deployment/docker-compose.prod.yml ps
-docker-compose -f deployment/docker-compose.prod.yml logs -f
+# Monitor logs
+docker-compose -f deployment/docker-compose.dev.yml logs -f
 ```
