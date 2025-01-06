@@ -1,11 +1,38 @@
 # Chanscope Knowledge Agent
 
 ## Description
-A knowledge processing system that leverages multiple AI providers (OpenAI, Grok, Venice) to analyze and generate insights from text data. The system employs a three-stage pipeline:
+An advanced query system/tool that leverages multiple AI providers (OpenAI, Grok, Venice) to analyze 4chan data (can be extended to other sources). The system employs a multi-stage pipeline with advanced sampling, prompt engineering, and inference capabilities to generate insights, with a focus on temporal analysis, event mapping and forecasting. 
 
-1. **Embedding Generation**: Creates semantic embeddings for efficient text search and retrieval
-2. **Chunk Analysis**: Processes text segments to extract key information and context
-3. **Summary Generation**: Produces comprehensive summaries with temporal analysis and forecasting
+1. **Data Preparation & Sampling**: 
+   - Intelligent data filtering and stratified sampling
+   - Time-based and category-based data segmentation
+   - Reservoir sampling for large dataset handling
+
+2. **Embedding Generation**: 
+   - Creates semantic embeddings for efficient text search and retrieval
+   - Multi-provider support with automatic fallback
+   - Batch processing for optimal performance
+
+3. **Inference & Analysis**:
+   - Agent-based text chunking and parallel processing
+   - Context-aware summarization with temporal analysis
+   - Event mapping and relationship extraction
+
+## Core Components
+
+### Data Processing & Sampling (sampler.py)
+The Sampler module is a cornerstone of the system, providing sophisticated data filtering and sampling capabilities:
+- Time-based filtering with configurable thresholds
+- Stratified sampling across multiple dimensions
+- Hybrid sampling strategies (time + strata)
+- Reservoir sampling for handling large datasets
+
+### Inference Pipeline (inference_ops.py)
+The Inference Operations module orchestrates the core analysis workflow:
+- Intelligent text chunking with token/character limit awareness
+- Parallel summarization of content chunks
+- Context preservation across summaries
+- Optional temporal and event relationship mapping
 
 Key features:
 - Multiple model provider support with automatic fallback mechanisms
@@ -15,7 +42,7 @@ Key features:
 - Docker containerization for simplified deployment
 - Configurable model selection for each pipeline stage
 
-The system is designed to process text data through a series of specialized models, each optimized for their specific task (embeddings, chunk analysis, or summarization). This modular approach allows for flexible model selection while maintaining robust operation through automatic fallback mechanisms.
+The system is designed to process text data through specialized models, each optimized for their specific task. This modular approach allows for flexible model selection while maintaining robust operation through automatic fallback mechanisms.
 
 For more detailed information on the system's technical features, please refer to the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
 ## Supported Models
@@ -136,23 +163,223 @@ For data collection functionality, you can utilize the data gathering tools from
 ## Project Structure
 ```
 knowledge_agents/
-├── data/                  # Data storage directory
-│   ├── all_data.csv      # Combined raw data
-│   ├── stratified/       # Stratified data samples
-│   └── knowledge_base.csv # Processed embeddings
-├── logs/                  # Application logs
-├── knowledge_agents/      # Main package directory
-│   ├── model_ops.py      # Model operations
-│   ├── data_ops.py       # Data processing
-│   ├── inference_ops.py  # Inference pipeline
-│   └── prompt.yaml       # System prompts
-├── .env.template         # Environment template
-├── docker-compose.yml    # Docker configuration
-└── app.py               # Flask application
+├── /knowledge_agents/           # Core knowledge processing functionality
+│   ├── /data_processing/       # Data processing and sampling modules
+│   │   ├── sampler.py         # Core sampling and filtering logic
+│   │   ├── cloud_handler.py   # S3 data management
+│   │   ├── processing.py      # Text preprocessing utilities
+│   │   └── contraction_mapping.json  # Text normalization rules
+│   ├── model_ops.py           # Model provider management
+│   ├── data_ops.py           # Data orchestration and preparation
+│   ├── inference_ops.py      # Core inference and analysis pipeline
+│   ├── embedding_ops.py      # Embedding generation and management
+│   ├── stratified_ops.py     # Data stratification utilities
+│   ├── utils.py             # Common utilities and helpers
+│   ├── prompt.yaml          # Analysis prompt configurations
+│   └── run.py              # Pipeline orchestration
+│
+├── /api/                    # REST API Layer
+│   ├── __init__.py         # Package initialization
+│   ├── app.py              # Flask application setup
+│   └── routes.py           # API endpoint definitions
+│
+├── /chainlit_frontend/      # Interactive Analysis Frontend
+│   ├── app.py              # Chainlit application
+│   ├── chainlit.yaml       # Chainlit configuration
+│   ├── __init__.py         # Frontend initialization
+│   └── /styles             # UI styling
+│       └── custom.css      # Custom CSS styles
+│
+├── /config/                # Configuration
+│   ├── settings.py        # Application settings
+│   └── logging.conf       # Logging configuration
+│
+├── /deployment/           # Deployment Configuration
+│   ├── docker-compose.yml # Container orchestration
+│   ├── Dockerfile        # Container build configuration
+│   └── nginx.conf        # (Future) Nginx configuration
+│
+├── /tests/               # Testing
+│   └── test_endpoints.py # API endpoint tests
+│
+├── /data/               # Local data cache
+├── /logs/              # Analysis logs
+├── /temp_files/        # Temporary processing files
+│
+# Configuration Files
+├── pyproject.toml      # Python project configuration
+├── poetry.lock        # Dependencies lock file
+├── .env.template     # Environment template
+├── .gitignore       # Git ignore rules
+├── .dockerignore    # Docker ignore rules
 ```
+
+### Key Module Descriptions
+
+#### Core Processing Modules
+- **sampler.py**: Implements sophisticated data sampling strategies including time-based filtering, stratified sampling, and reservoir sampling for large datasets.
+- **inference_ops.py**: Orchestrates the analysis pipeline with text chunking, parallel summarization, and context preservation.
+- **model_ops.py**: Manages model providers and handles fallback mechanisms.
+- **embedding_ops.py**: Handles embedding generation and storage with multi-provider support.
+
+#### Data Processing
+- **cloud_handler.py**: Manages S3 data operations including batch CSV loading and merging.
+- **processing.py**: Provides text preprocessing utilities including normalization and cleaning.
+- **stratified_ops.py**: Implements data splitting and stratification logic.
+
+#### API and Frontend
+- **api/routes.py**: Defines REST endpoints for query processing and batch operations.
+- **chainlit_frontend/app.py**: Provides an interactive UI for experimenting with different providers and configurations.
+
+## Data Flow and Processing Pipeline
+
+### 1. Data Preparation
+The pipeline begins with data preparation and sampling:
+- Data is loaded from S3 or local sources via `cloud_handler.py`
+- `sampler.py` applies filtering and sampling strategies:
+  - Time-based filtering for recent/relevant data
+  - Stratified sampling for balanced representation
+  - Reservoir sampling for large dataset handling
+- Text preprocessing via `processing.py` normalizes and cleans the content
+
+### 2. Embedding Generation
+Once data is prepared:
+- `embedding_ops.py` generates embeddings using the configured provider
+- Embeddings are stored for efficient retrieval
+- Batch processing optimizes throughput
+
+### 3. Analysis and Inference
+The core analysis is orchestrated by `inference_ops.py`:
+1. **Chunking**: Text is split into manageable segments
+2. **Parallel Processing**: Chunks are analyzed concurrently
+3. **Context Preservation**: Relationships between chunks are maintained
+4. **Summary Generation**: Final output includes:
+   - Core content summary
+   - Temporal context (if enabled)
+   - Event relationships (if enabled)
+
+### 4. Delivery
+Results are available through:
+- REST API endpoints for programmatic access
+- Interactive Chainlit UI for exploration
+- Batch processing for multiple queries
 
 ## References
 - Data Gathering Lambda: [chanscope-lambda](https://github.com/joelwk/chanscope-lambda)
 - Original Chanscope R&D: [Chanscope](https://github.com/joelwk/chanscope)
 - R&D Sandbox Repository: [knowledge-agents](https://github.com/joelwk/knowledge-agents)
 - Inspiration for Prompt Engineering Approach: [Temporal-Aware Language Models for Temporal Knowledge Graph Question Answering](https://arxiv.org/pdf/2410.18959) - Used for designing temporal-aware prompts and multimodal forecasting capabilities
+
+## Development and Testing Workflow
+
+### Local Development Setup
+1. Create and activate a virtual environment:
+   ```bash
+   python -m venv .venv
+   # Windows
+   .venv\Scripts\activate
+   # Unix/MacOS
+   source .venv/bin/activate
+   ```
+
+2. Install dependencies:
+   ```bash
+   poetry install
+   ```
+
+3. Set up environment variables:
+   ```bash
+   cp .env.template .env
+   # Edit .env with required credentials
+   ```
+
+### Testing Workflow
+
+#### 1. Local Testing
+```bash
+# Run all tests
+pytest tests/
+
+# Run specific test file
+pytest tests/test_endpoints.py
+
+# Run tests with coverage
+pytest --cov=knowledge_agents tests/
+
+# Run tests with verbose output
+pytest -v tests/
+```
+
+#### 2. Docker Testing
+```bash
+# Build test container
+docker build -t knowledge-agent-test -f deployment/Dockerfile.test .
+
+# Run tests in container
+docker run --rm knowledge-agent-test pytest tests/
+
+# Run with coverage in container
+docker run --rm knowledge-agent-test pytest --cov=knowledge_agents tests/
+```
+
+### Development Workflow
+
+#### 1. Local Development
+```bash
+# Start API server in development mode
+python -m api.app --debug
+
+# Start Chainlit frontend in development mode
+python -m chainlit_frontend.app --debug
+```
+
+#### 2. Docker Development
+```bash
+# Build development containers
+docker-compose -f deployment/docker-compose.dev.yml build
+
+# Start development environment
+docker-compose -f deployment/docker-compose.dev.yml up
+
+# View logs
+docker-compose -f deployment/docker-compose.dev.yml logs -f
+
+# Rebuild and restart specific service
+docker-compose -f deployment/docker-compose.dev.yml up -d --build api
+```
+
+### Deployment Workflow
+
+#### 1. Local Deployment Testing
+```bash
+# Build all services
+docker-compose -f deployment/docker-compose.yml build
+
+# Start all services
+docker-compose -f deployment/docker-compose.yml up -d
+
+# Check service status
+docker-compose -f deployment/docker-compose.yml ps
+
+# View logs
+docker-compose -f deployment/docker-compose.yml logs -f
+
+# Stop services
+docker-compose -f deployment/docker-compose.yml down
+```
+
+#### 2. Production Deployment
+```bash
+# Build production images
+docker-compose -f deployment/docker-compose.prod.yml build
+
+# Deploy with production settings
+docker-compose -f deployment/docker-compose.prod.yml up -d
+
+# Scale services if needed
+docker-compose -f deployment/docker-compose.prod.yml up -d --scale api=3
+
+# Monitor services
+docker-compose -f deployment/docker-compose.prod.yml ps
+docker-compose -f deployment/docker-compose.prod.yml logs -f
+```

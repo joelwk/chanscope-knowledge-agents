@@ -1,0 +1,51 @@
+# Chainlit configuration file
+chainlit_version: 0.7.604
+name: 4chan Data Analysis
+description: Analyze 4chan data using advanced NLP techniques
+
+# UI settings
+ui:
+  name: 4chan Data Analysis and Event Forecasting
+  description: Analyze 4chan data using advanced NLP techniques
+  theme: light
+  features:
+    - settings
+    - message_actions
+
+# Settings configuration
+chat_settings:
+  - name: process_new
+    type: boolean
+    label: Process New Data
+    description: Whether to process new data or use existing
+    initial: false
+  - name: batch_size
+    type: number
+    label: Batch Size
+    description: Number of items to process in each batch
+    initial: 100
+  - name: embedding_provider
+    type: select
+    label: Embedding Provider
+    description: Provider for text embeddings
+    initial: openai
+    values:
+      - openai
+  - name: chunk_provider
+    type: select
+    label: Chunk Provider
+    description: Provider for text chunking
+    initial: openai
+    values:
+      - openai
+      - grok
+      - venice
+  - name: summary_provider
+    type: select
+    label: Summary Provider
+    description: Provider for text summarization
+    initial: openai
+    values:
+      - openai
+      - grok
+      - venice

@@ -1,10 +1,8 @@
 import os
-import json
 import boto3
 import pandas as pd
 import logging
 from dateutil import tz
-from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables

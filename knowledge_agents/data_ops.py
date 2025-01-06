@@ -115,6 +115,7 @@ def prepare_data(process_new: bool = False):
     logger.info(f"ROOT_PATH: {CONFIGS['ROOT_PATH']}")
     logger.info(f"ALL_DATA: {CONFIGS['ALL_DATA']}")
     logger.info(f"ALL_DATA_STRATIFIED_PATH: {CONFIGS['ALL_DATA_STRATIFIED_PATH']}")
+    logger.info(f"Using filter date: {CONFIGS['FILTER_DATE']}")
     
     # Create directory for all data if it doesn't exist
     create_directory_if_not_exists(CONFIGS['ROOT_PATH'])

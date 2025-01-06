@@ -6,7 +6,7 @@ import tiktoken
 import concurrent.futures
 from tqdm import tqdm
 from typing import List, Dict, Any, Optional, Tuple
-from .model_ops import KnowledgeAgent, load_config, ModelProvider, ModelOperation
+from .model_ops import KnowledgeAgent, ModelProvider, ModelOperation
 from .embedding_ops import get_relevant_content
 import logging
 import numpy as np
@@ -14,12 +14,10 @@ import numpy as np
 # Initialize logging
 logger = logging.getLogger(__name__)
 
-model_config, app_config = load_config()
-agent = KnowledgeAgent(model_config)
-
 def strings_ranked_by_relatedness(
     query: str,
     df: pd.DataFrame,
+    agent: KnowledgeAgent,
     top_n: int = 100,
     provider: Optional[ModelProvider] = None
 ) -> List[str]:
@@ -154,6 +152,7 @@ def create_chunks(text: str, n: int, tokenizer=None) -> List[Dict[str, Any]]:
 def retrieve_unique_strings(
     query: str,
     library_df: pd.DataFrame,
+    agent: KnowledgeAgent,
     required_count: int = 100,
     provider: Optional[ModelProvider] = None
 ) -> List[Dict[str, Any]]:
@@ -162,6 +161,7 @@ def retrieve_unique_strings(
         strings = strings_ranked_by_relatedness(
             query,
             library_df,
+            agent,
             top_n=required_count * 2,  # Get more initially to account for duplicates
             provider=provider)
         
@@ -180,6 +180,7 @@ def retrieve_unique_strings(
             more_strings = strings_ranked_by_relatedness(
                 query,
                 library_df,
+                agent,
                 top_n=required_count * 4,  # Try with even more
                 provider=provider)
             
@@ -198,6 +199,7 @@ def retrieve_unique_strings(
 
 async def summarize_text(
     query: str,
+    agent: KnowledgeAgent,
     knowledge_base_path: str = ".",
     batch_size: int = 5,
     max_workers: Optional[int] = None,
@@ -205,6 +207,19 @@ async def summarize_text(
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Summarizes related texts from the knowledge base with temporal forecasting."""
     try:
+        # Ensure we have providers
+        if providers is None:
+            providers = {
+                ModelOperation.EMBEDDING: ModelProvider.OPENAI,
+                ModelOperation.CHUNK_GENERATION: ModelProvider.GROK,
+                ModelOperation.SUMMARIZATION: ModelProvider.VENICE
+            }
+            
+        # Initialize clients for the providers we'll use
+        agent._get_client(providers[ModelOperation.EMBEDDING])
+        agent._get_client(providers[ModelOperation.CHUNK_GENERATION])
+        agent._get_client(providers[ModelOperation.SUMMARIZATION])
+        
         # Load and prepare knowledge base
         library_df = pd.read_csv(knowledge_base_path)
         if len(library_df) == 0:
@@ -219,10 +234,11 @@ async def summarize_text(
         library_df = library_df[library_df['text'].str.len() >= 20]
         
         # Get unique related strings
-        embedding_provider = providers.get(ModelOperation.EMBEDDING) if providers else None
+        embedding_provider = providers.get(ModelOperation.EMBEDDING)
         unique_strings = retrieve_unique_strings(
             query,
             library_df,
+            agent,
             provider=embedding_provider
         )
         

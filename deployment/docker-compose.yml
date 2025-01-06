@@ -1,0 +1,144 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+      target: production
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../.env:/app/.env
+    ports:
+      - "5000:5000"
+    environment:
+      - SERVICE_TYPE=api
+      - DOCKER_ENV=true
+      - API_PORT=5000
+      - PYTHONPATH=/app
+      # Model API Keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROK_API_KEY=${GROK_API_KEY}
+      - VENICE_API_KEY=${VENICE_API_KEY}
+      
+      # Model Settings
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL}
+      - GROK_MODEL=${GROK_MODEL}
+      - GROK_EMBEDDING_MODEL=${GROK_EMBEDDING_MODEL}
+      - VENICE_MODEL=${VENICE_MODEL}
+      - VENICE_CHUNK_MODEL=${VENICE_CHUNK_MODEL}
+      
+      # Default Providers
+      - DEFAULT_EMBEDDING_PROVIDER=${DEFAULT_EMBEDDING_PROVIDER:-openai}
+      - DEFAULT_CHUNK_PROVIDER=${DEFAULT_CHUNK_PROVIDER:-openai}
+      - DEFAULT_SUMMARY_PROVIDER=${DEFAULT_SUMMARY_PROVIDER:-openai}
+      
+      # Application Settings
+      - FLASK_APP=api.app
+      - FLASK_ENV=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_TOKENS=${MAX_TOKENS:-2048}
+      - CHUNK_SIZE=${CHUNK_SIZE:-1000}
+      - BATCH_SIZE=${BATCH_SIZE:-100}
+      - CACHE_ENABLED=${CACHE_ENABLED:-true}
+      
+      # Data Paths
+      - ROOT_PATH=/app/data
+      - KNOWLEDGE_BASE=/app/data/knowledge_base.csv
+      - DATA_PATH=/app/data
+      - ALL_DATA=/app/data/all_data.csv
+      - ALL_DATA_STRATIFIED_PATH=/app/data/stratified
+      - PATH_TEMP=/app/temp_files
+      - FILE_TYPE=${FILE_TYPE:-csv}
+      
+      # AWS Configuration
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - S3_BUCKET=${S3_BUCKET}
+      - S3_BUCKET_PREFIX=${S3_BUCKET_PREFIX}
+      - S3_BUCKET_PROCESSED=${S3_BUCKET_PROCESSED}
+      - S3_BUCKET_MODELS=${S3_BUCKET_MODELS}
+    networks:
+      - knowledge-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+      target: production
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../.env:/app/.env
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVICE_TYPE=ui
+      - DOCKER_ENV=true
+      - API_PORT=5000
+      - PYTHONPATH=/app
+      # Model API Keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROK_API_KEY=${GROK_API_KEY}
+      - VENICE_API_KEY=${VENICE_API_KEY}
+      
+      # Model Settings
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL}
+      - GROK_MODEL=${GROK_MODEL}
+      - GROK_EMBEDDING_MODEL=${GROK_EMBEDDING_MODEL}
+      - VENICE_MODEL=${VENICE_MODEL}
+      - VENICE_CHUNK_MODEL=${VENICE_CHUNK_MODEL}
+      
+      # Default Providers
+      - DEFAULT_EMBEDDING_PROVIDER=${DEFAULT_EMBEDDING_PROVIDER:-openai}
+      - DEFAULT_CHUNK_PROVIDER=${DEFAULT_CHUNK_PROVIDER:-openai}
+      - DEFAULT_SUMMARY_PROVIDER=${DEFAULT_SUMMARY_PROVIDER:-openai}
+      
+      # Application Settings
+      - FLASK_ENV=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_TOKENS=${MAX_TOKENS:-2048}
+      - CHUNK_SIZE=${CHUNK_SIZE:-1000}
+      - BATCH_SIZE=${BATCH_SIZE:-100}
+      - CACHE_ENABLED=${CACHE_ENABLED:-true}
+      
+      # Data Paths
+      - ROOT_PATH=/app/data
+      - KNOWLEDGE_BASE=/app/data/knowledge_base.csv
+      - DATA_PATH=/app/data
+      - ALL_DATA=/app/data/all_data.csv
+      - ALL_DATA_STRATIFIED_PATH=/app/data/stratified
+      - PATH_TEMP=/app/temp_files
+      - FILE_TYPE=${FILE_TYPE:-csv}
+      
+      # AWS Configuration
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - S3_BUCKET=${S3_BUCKET}
+      - S3_BUCKET_PREFIX=${S3_BUCKET_PREFIX}
+      - S3_BUCKET_PROCESSED=${S3_BUCKET_PROCESSED}
+      - S3_BUCKET_MODELS=${S3_BUCKET_MODELS}
+    depends_on:
+      - api
+    networks:
+      - knowledge-net
+    restart: unless-stopped
+
+networks:
+  knowledge-net:
+    driver: bridge
+
+volumes:
+  data:
+  logs: 

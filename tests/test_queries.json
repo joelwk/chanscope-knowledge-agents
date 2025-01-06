@@ -1,0 +1,80 @@
+{
+    "single_queries": [
+        {
+            "query": "Analyze the discussion trends about AI from 2020 to 2023",
+            "process_new": true,
+            "batch_size": 100,
+            "embedding_provider": "openai",
+            "summary_provider": "openai"
+        },
+        {
+            "query": "What are the most discussed cryptocurrency topics in /biz/ during the 2021 bull run?",
+            "process_new": false,
+            "batch_size": 200,
+            "embedding_provider": "openai",
+            "summary_provider": "openai"
+        },
+        {
+            "query": "Track the evolution of COVID-19 discussions from January 2020 to December 2021",
+            "process_new": true,
+            "batch_size": 150,
+            "embedding_provider": "openai",
+            "summary_provider": "venice"
+        }
+    ],
+    "batch_queries": {
+        "queries": [
+            "How has the sentiment around GPT models evolved since their release?",
+            "What are the main themes in discussions about machine learning frameworks?",
+            "Analyze the impact of major tech layoffs on industry discussions"
+        ],
+        "process_new": true,
+        "batch_size": 100,
+        "embedding_provider": "openai",
+        "summary_provider": "openai"
+    },
+    "temporal_analysis": {
+        "query": "Track changes in cryptocurrency market sentiment during major price movements",
+        "process_new": true,
+        "batch_size": 300,
+        "embedding_provider": "openai",
+        "summary_provider": "openai",
+        "time_range": {
+            "start": "2020-01-01",
+            "end": "2023-12-31"
+        }
+    },
+    "board_specific": {
+        "technology": {
+            "query": "Analyze programming language discussions in /g/ over time",
+            "process_new": false,
+            "batch_size": 100,
+            "embedding_provider": "openai",
+            "summary_provider": "openai"
+        },
+        "business": {
+            "query": "Track startup and tech company discussions in /biz/",
+            "process_new": false,
+            "batch_size": 100,
+            "embedding_provider": "openai",
+            "summary_provider": "openai"
+        }
+    },
+    "debug_queries": {
+        "small_batch": {
+            "query": "Test query with minimal data",
+            "process_new": false,
+            "batch_size": 10,
+            "embedding_provider": "openai",
+            "summary_provider": "openai"
+        },
+        "all_providers": {
+            "query": "Test query using all available providers",
+            "process_new": false,
+            "batch_size": 50,
+            "embedding_provider": "openai",
+            "chunk_provider": "venice",
+            "summary_provider": "openai"
+        }
+    }
+} 

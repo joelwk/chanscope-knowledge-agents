@@ -1,10 +1,8 @@
 import pandas as pd
 import random
-import numpy as np
 import os
 import logging
 import warnings
-from datetime import datetime
 from dotenv import load_dotenv
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
