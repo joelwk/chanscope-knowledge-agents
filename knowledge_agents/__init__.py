@@ -7,27 +7,22 @@ It is designed to be configuration-agnostic and receive its settings from the ap
 from typing import Dict, Optional, Any
 from pathlib import Path
 from dataclasses import dataclass, field
-from enum import Enum, auto
+import logging
+from config.settings import Config
 
-class ModelProvider(str, Enum):
-    """Supported model providers"""
-    OPENAI = "openai"
-    GROK = "grok"
-    VENICE = "venice"
+from .model_ops import ModelProvider, ModelOperation
 
-class ModelOperation(str, Enum):
-    """Types of model operations"""
-    EMBEDDING = "embedding"
-    CHUNK_GENERATION = "chunk_generation"
-    SUMMARIZATION = "summarization"
+logger = logging.getLogger(__name__)
 
 @dataclass
 class KnowledgeAgentConfig:
     """Configuration for Knowledge Agents library.
     
     This class encapsulates all configuration needed by the library,
-    allowing it to be instantiated by the application layer without
-    directly accessing environment variables.
+    providing a type-safe interface that is independent of the application's
+    configuration system. It can be instantiated using either:
+    - from_settings(): Creates instance from application's Config object
+    - from_env(): Creates instance directly from environment variables
     """
     # Data paths
     root_path: Path
@@ -51,7 +46,7 @@ class KnowledgeAgentConfig:
     
     def __post_init__(self):
         """Validate and process configuration after initialization."""
-        # Convert string paths to Path objects
+        # Convert string paths to Path objects if they aren't already
         self.root_path = Path(self.root_path)
         self.knowledge_base_path = Path(self.knowledge_base_path)
         self.all_data_path = Path(self.all_data_path)
@@ -73,25 +68,51 @@ class KnowledgeAgentConfig:
             }
 
     @classmethod
-    def from_env(cls, env_vars: Dict[str, str]) -> 'KnowledgeAgentConfig':
-        """Create configuration from environment variables.
+    def from_env(cls, env: Dict[str, str]) -> 'KnowledgeAgentConfig':
+        """Create configuration from environment variables using Config class.
         
-        This factory method allows the application layer to pass environment
-        variables, but the library itself doesn't load them directly.
+        Args:
+            env: Dictionary of environment variables (typically os.environ)
+            
+        Returns:
+            KnowledgeAgentConfig: A new instance with settings from environment.
         """
+        # Use Config class which already handles all environment variables properly
+        config = Config()
+        return cls.from_settings(config)
+
+    @classmethod
+    def from_settings(cls, config) -> 'KnowledgeAgentConfig':
+        """Create configuration from settings.Config instance.
+        
+        Args:
+            config: An instance of config.settings.Config containing all application settings.
+            
+        Returns:
+            KnowledgeAgentConfig: A new instance with settings from the config object.
+        """
+        paths = config.get_data_paths()
+        processing = config.get_processing_settings()
+        providers = config.get_provider_settings()
+        
         return cls(
-            root_path=env_vars.get('ROOT_PATH', './data'),
-            knowledge_base_path=env_vars.get('KNOWLEDGE_BASE', './data/knowledge_base.csv'),
-            all_data_path=env_vars.get('ALL_DATA', './data/all_data.csv'),
-            stratified_data_path=env_vars.get('ALL_DATA_STRATIFIED_PATH', './data/stratified'),
-            temp_path=env_vars.get('PATH_TEMP', './temp_files'),
-            batch_size=int(env_vars.get('BATCH_SIZE', 100)),
-            max_workers=int(env_vars.get('MAX_WORKERS', 4)) if env_vars.get('MAX_WORKERS') else None,
-            sample_size=int(env_vars.get('SAMPLE_SIZE', 2500)),
+            root_path=paths['root'],
+            knowledge_base_path=paths['knowledge_base'],
+            all_data_path=paths['all_data'],
+            stratified_data_path=paths['stratified'],
+            temp_path=paths['temp'],
+            batch_size=processing['batch_size'],
+            max_workers=processing['max_workers'],
+            sample_size=processing.get('sample_size', 2500),  # Use default if not in config
             providers={
-                ModelOperation.EMBEDDING: ModelProvider(env_vars.get('DEFAULT_EMBEDDING_PROVIDER', 'openai')),
-                ModelOperation.CHUNK_GENERATION: ModelProvider(env_vars.get('DEFAULT_CHUNK_PROVIDER', 'openai')),
-                ModelOperation.SUMMARIZATION: ModelProvider(env_vars.get('DEFAULT_SUMMARY_PROVIDER', 'openai'))
+                ModelOperation.EMBEDDING: ModelProvider(providers['embedding_provider']),
+                ModelOperation.CHUNK_GENERATION: ModelProvider(providers['chunk_provider']),
+                ModelOperation.SUMMARIZATION: ModelProvider(providers['summary_provider'])
+            },
+            model_settings={
+                'max_tokens': processing['max_tokens'],
+                'chunk_size': processing['chunk_size'],
+                'cache_enabled': processing['cache_enabled']
             }
         )
 

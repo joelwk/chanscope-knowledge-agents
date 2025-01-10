@@ -33,20 +33,9 @@
         "embedding_provider": "openai",
         "summary_provider": "openai"
     },
-    "temporal_analysis": {
-        "query": "Track changes in cryptocurrency market sentiment during major price movements",
-        "process_new": true,
-        "batch_size": 300,
-        "embedding_provider": "openai",
-        "summary_provider": "openai",
-        "time_range": {
-            "start": "2020-01-01",
-            "end": "2023-12-31"
-        }
-    },
     "board_specific": {
-        "technology": {
-            "query": "Analyze programming language discussions in /g/ over time",
+        "science": {
+            "query": "Analyze programming language discussions in /sci/ over time",
             "process_new": false,
             "batch_size": 100,
             "embedding_provider": "openai",

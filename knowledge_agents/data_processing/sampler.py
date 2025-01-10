@@ -1,6 +1,7 @@
 import pandas as pd
+from typing import Optional
+from config.settings import Config
 import random
-import os
 import logging
 import warnings
 from dotenv import load_dotenv
@@ -12,37 +13,59 @@ logging.basicConfig(level=logging.INFO)
 load_dotenv()
 
 class Sampler:
-    def __init__(self, filter_date: str, time_column: str = 'posted_date_time', strata_column: str = None, initial_sample_size: int = 1000):
-        """Initialize the Sampler with configuration parameters."""
-        # Prioritize the passed parameter over config values
-        self.time_column = time_column if time_column is not None else os.getenv('TIME_COLUMN')
-        self.strata_column = strata_column if strata_column is not None else os.getenv('STRATA_COLUMN')
-        print(f"Time column: {self.time_column}, Strata column: {self.strata_column}")
-        self.freq = os.getenv('FREQ', 'H')
-        self.initial_sample_size = initial_sample_size if initial_sample_size is not None else int(os.getenv('INITIAL_SAMPLE_SIZE', '1000'))
-
-        # Prioritize the passed filter_date parameter over config values
-        config_filter_date = os.getenv('FILTER_DATE', None)
+    """Class to handle data sampling operations."""
+    
+    def __init__(
+        self,
+        time_column: Optional[str] = None,
+        strata_column: Optional[str] = None,
+        initial_sample_size: Optional[int] = None,
+        filter_date: Optional[str] = None
+    ):
+        """Initialize sampler with configuration."""
+        self.time_column = time_column or Config.TIME_COLUMN
+        self.strata_column = strata_column or Config.STRATA_COLUMN
+        self.freq = Config.FREQ if hasattr(Config, 'FREQ') else 'H'
+        self.initial_sample_size = initial_sample_size or Config.DEFAULT_BATCH_SIZE
+        
+        # Handle filter date - convert to datetime once during initialization
+        config_filter_date = Config.FILTER_DATE if hasattr(Config, 'FILTER_DATE') else None
+        filter_date = filter_date or config_filter_date
+        
         if filter_date:
-            self.filter_date = pd.to_datetime(filter_date, errors='coerce').date()
-        elif config_filter_date:
-            self.filter_date = pd.to_datetime(config_filter_date, errors='coerce').date()
+            try:
+                self.filter_date = pd.to_datetime(filter_date).date()
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid filter date format: {filter_date}, setting to None")
+                self.filter_date = None
         else:
             self.filter_date = None
 
-    def filter_and_standardize(self, df):
+    def filter_and_standardize(self, df: pd.DataFrame) -> pd.DataFrame:
         """Filter data by date and standardize time column if provided."""
-        if self.time_column:
-            df = self.filter_by_date(df)
-            df.loc[:, self.time_column] = pd.to_datetime(df[self.time_column].str.replace(r'\+00:00', '', regex=True), errors='coerce')
-        return df
+        if not self.time_column or self.time_column not in df.columns:
+            return df
+            
+        # Standardize datetime column first
+        df = df.copy()
+        df[self.time_column] = pd.to_datetime(
+            df[self.time_column].str.replace(r'\+00:00', '', regex=True), 
+            errors='coerce'
+        )
+        
+        # Then apply date filtering
+        return self.filter_by_date(df)
 
-    def filter_by_date(self, df):
+    def filter_by_date(self, df: pd.DataFrame) -> pd.DataFrame:
         """Filter data based on a given date threshold."""
-        if self.filter_date and self.time_column in df.columns:
-            df['date'] = pd.to_datetime(df[self.time_column])
-            df = df[df['date'].dt.date > self.filter_date]
-        return df
+        if not self.filter_date or not self.time_column or self.time_column not in df.columns:
+            return df
+            
+        # Convert to datetime.date for comparison
+        df['date'] = df[self.time_column].dt.date
+        filtered_df = df[df['date'] > self.filter_date]
+        filtered_df = filtered_df.drop(columns=['date'])
+        return filtered_df
         
     def stratified_sample(self, data):
         """Main stratified sampling method."""

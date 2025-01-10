@@ -4,13 +4,16 @@ from knowledge_agents.model_ops import ModelOperation, ModelProvider
 import logging
 import traceback
 
-# Setup logging
+# Setup logging only if handlers don't exist
 logger = logging.getLogger(__name__)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    # Prevent propagation to root logger
+    logger.propagate = False
 
 def register_routes(app):
     @app.route('/health', methods=['GET'])
@@ -57,7 +60,7 @@ def register_routes(app):
             chunks, response = await run_knowledge_agents(
                 query=data['query'],
                 config=config,
-                process_new=data.get('process_new', False)
+                force_refresh=data.get('force_refresh', False)
             )
             
             logger.info("Successfully processed query")
@@ -113,7 +116,7 @@ def register_routes(app):
                 chunks, response = await run_knowledge_agents(
                     query=query,
                     config=config,
-                    process_new=data.get('process_new', False)
+                    force_refresh=data.get('force_refresh', False)
                 )
                 results.append({
                     "query": query,
