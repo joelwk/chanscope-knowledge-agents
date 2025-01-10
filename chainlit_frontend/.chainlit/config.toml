@@ -6,15 +6,7 @@ enable_telemetry = true
 user_env = [
     "OPENAI_API_KEY",
     "GROK_API_KEY",
-    "VENICE_API_KEY",
-    "DATA_PATH",
-    "ROOT_PATH",
-    "ALL_DATA",
-    "ALL_DATA_STRATIFIED_PATH",
-    "KNOWLEDGE_BASE",
-    "DEFAULT_EMBEDDING_PROVIDER",
-    "DEFAULT_CHUNK_PROVIDER",
-    "DEFAULT_SUMMARY_PROVIDER"
+    "VENICE_API_KEY"
 ]
 
 # Duration (in seconds) during which the session is saved when the connection is lost
@@ -22,9 +14,6 @@ session_timeout = 3600
 
 # Enable third parties caching (e.g LangChain cache)
 cache = true
-
-# Follow symlink for asset mount (see https://github.com/Chainlit/chainlit/issues/317)
-# follow_symlink = false
 
 [features]
 # Show the prompt playground
@@ -36,8 +25,6 @@ multi_modal = false
 # Allows user to use speech to text
 [features.speech_to_text]
     enabled = false
-    # See all languages here https://github.com/JamesBrill/react-speech-recognition/blob/HEAD/docs/API.md#language-string
-    # language = "en-US"
 
 [UI]
 # Name of the app and chatbot.
@@ -58,13 +45,6 @@ default_expand_messages = true
 # Hide the chain of thought details from the user in the UI.
 hide_cot = false
 
-# Link to your github repo. This will add a github button in the UI's header.
-# github = ""
-
-# Specify a CSS file that can be used to customize the user interface.
-# The CSS file can be served from the public directory or via an external link.
-# custom_css = "/public/test.css"
-
 # Override default MUI light theme. (Check theme.ts)
 [UI.theme.light]
     background = "#FAFAFA"
@@ -84,7 +64,6 @@ hide_cot = false
         main = "#2D7FF9"
         dark = "#1B57B2"
         light = "#E8F1FE"
-
 
 [meta]
 generated_by = "0.7.604"

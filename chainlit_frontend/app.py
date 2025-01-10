@@ -5,8 +5,9 @@ from chainlit.input_widget import Select, Switch, Slider, TextInput
 import aiohttp
 from aiohttp import ClientTimeout
 import asyncio
-from chainlit_frontend import API_BASE_URL, is_docker, api_host, api_port
+from chainlit_frontend import API_BASE_URL, is_docker
 from datetime import datetime
+from config.settings import Config
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -16,8 +17,9 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# API timeout configuration - increased to 20 minutes
-API_TIMEOUT = ClientTimeout(total=1500, connect=60)  # 1200 seconds = 20 minutes
+# Get API settings
+api_settings = Config.get_api_settings()
+API_TIMEOUT = ClientTimeout(total=api_settings['timeout'], connect=60)
 
 async def process_query(query: str, settings: dict):
     """Process a query using the API endpoint."""
@@ -67,7 +69,7 @@ async def process_query(query: str, settings: dict):
                 )
     except aiohttp.ClientError as e:
         logger.error(f"API connection error: {str(e)}")
-        logger.error(f"Connection details: host={api_host}, port={api_port}, is_docker={is_docker}")
+        logger.error(f"Connection details: host={api_settings['host']}, port={api_settings['port']}, is_docker={is_docker}")
         raise Exception(f"Failed to connect to the API service at {API_BASE_URL}. Please try again in a moment.")
 
 def format_chunk(chunk):
@@ -86,26 +88,30 @@ async def start():
         content="Welcome to Chanscope. Before you start, please review the Readme to understand how to use this tool. It is not a chatbot, but a tool for querying 4chan data to generate insights and forecasts."
     ).send()
 
+    # Get settings from Config
+    processing_settings = Config.get_processing_settings()
+    provider_settings = Config.get_provider_settings()
+
     # Initialize chat settings with all configuration options
     settings = await cl.ChatSettings(
         [
             # Processing settings
             Switch(
-                id="process_new",
-                label="Process New Data",
+                id="force_refresh",
+                label="Force Data Refresh",
                 initial=False,
-                description="Enable to process new data in the knowledge base"
+                description="Enable to force refresh the knowledge base data"
             ),
             TextInput(
                 id="filter_date",
                 label="Filter Date (YYYY-MM-DD)",
-                initial=os.getenv('FILTER_DATE', '2024-12-24'),
+                initial=processing_settings['filter_date'],
                 description="Date to filter data from (format: YYYY-MM-DD)"
             ),
             Slider(
                 id="batch_size",
                 label="Batch Size",
-                initial=int(os.getenv('BATCH_SIZE', 100)),
+                initial=processing_settings['batch_size'],
                 min=10,
                 max=500,
                 step=10,
@@ -116,21 +122,21 @@ async def start():
                 id="embedding_provider",
                 label="Embedding Provider",
                 values=["openai", "grok", "venice"],
-                initial_index=["openai", "grok", "venice"].index(os.getenv('DEFAULT_EMBEDDING_PROVIDER', 'openai')),
+                initial_index=["openai", "grok", "venice"].index(provider_settings['embedding_provider']),
                 description="Select the provider for embeddings"
             ),
             Select(
                 id="chunk_provider",
                 label="Chunk Provider",
                 values=["openai", "grok", "venice"],
-                initial_index=["openai", "grok", "venice"].index(os.getenv('DEFAULT_CHUNK_PROVIDER', 'openai')),
+                initial_index=["openai", "grok", "venice"].index(provider_settings['chunk_provider']),
                 description="Select the provider for text chunking"
             ),
             Select(
                 id="summary_provider",
                 label="Summary Provider",
                 values=["openai", "grok", "venice"],
-                initial_index=["openai", "grok", "venice"].index(os.getenv('DEFAULT_SUMMARY_PROVIDER', 'openai')),
+                initial_index=["openai", "grok", "venice"].index(provider_settings['summary_provider']),
                 description="Select the provider for summarization"
             ),
         ]
@@ -138,13 +144,13 @@ async def start():
 
     # Store initial settings
     cl.user_session.set("settings", {
-        "process_new": False,
-        "filter_date": os.getenv('FILTER_DATE', '2024-12-24'),
-        "batch_size": int(os.getenv('BATCH_SIZE', 100)),
-        "max_workers": None,
-        "embedding_provider": os.getenv('DEFAULT_EMBEDDING_PROVIDER', 'openai'),
-        "chunk_provider": os.getenv('DEFAULT_CHUNK_PROVIDER', 'openai'),
-        "summary_provider": os.getenv('DEFAULT_SUMMARY_PROVIDER', 'openai')
+        "force_refresh": False,
+        "filter_date": processing_settings['filter_date'],
+        "batch_size": processing_settings['batch_size'],
+        "max_workers": processing_settings['max_workers'],
+        "embedding_provider": provider_settings['embedding_provider'],
+        "chunk_provider": provider_settings['chunk_provider'],
+        "summary_provider": provider_settings['summary_provider']
     })
 
 @cl.on_settings_update
@@ -164,13 +170,13 @@ async def setup_agent(settings: dict):
         
         # Store the updated settings
         cl.user_session.set("settings", {
-            "process_new": settings.get("process_new", False),
+            "force_refresh": settings.get("force_refresh", False),
             "filter_date": filter_date,
-            "batch_size": int(settings.get("batch_size", 100)),
+            "batch_size": int(settings.get("batch_size", Config.DEFAULT_BATCH_SIZE)),
             "max_workers": None,
-            "embedding_provider": settings.get("embedding_provider", "openai"),
-            "chunk_provider": settings.get("chunk_provider", "openai"),
-            "summary_provider": settings.get("summary_provider", "openai")
+            "embedding_provider": settings.get("embedding_provider", Config.DEFAULT_EMBEDDING_PROVIDER),
+            "chunk_provider": settings.get("chunk_provider", Config.DEFAULT_CHUNK_PROVIDER),
+            "summary_provider": settings.get("summary_provider", Config.DEFAULT_SUMMARY_PROVIDER)
         })
 
         await cl.Message(

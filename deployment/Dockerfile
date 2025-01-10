@@ -40,11 +40,16 @@ ENV PYTHONPATH=/app \
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
+# Export environment variables from .env if it exists\n\
+if [ -f /app/.env ]; then\n\
+    export $(cat /app/.env | grep -v "^#" | sed "s/'\''/'\'''\''/'\''/g" | xargs)\n\
+fi\n\
+\n\
 echo "Starting service: $SERVICE_TYPE in development mode"\n\
 \n\
 if [ "$SERVICE_TYPE" = "api" ]; then\n\
     echo "Starting API server..."\n\
-    exec poetry run python -m flask --app api.app run --host 0.0.0.0 --port 5000 --debug\n\
+    PYTHONUNBUFFERED=1 exec poetry run python -m flask --app api.app run --host 0.0.0.0 --port 5000 --debug --no-reload\n\
 elif [ "$SERVICE_TYPE" = "ui" ]; then\n\
     echo "Starting Chainlit UI..."\n\
     cd /app && exec poetry run python -m chainlit run chainlit_frontend/app.py --host 0.0.0.0 --port 8000\n\

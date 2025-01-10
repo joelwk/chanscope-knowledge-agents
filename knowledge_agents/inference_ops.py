@@ -211,8 +211,8 @@ async def summarize_text(
         if providers is None:
             providers = {
                 ModelOperation.EMBEDDING: ModelProvider.OPENAI,
-                ModelOperation.CHUNK_GENERATION: ModelProvider.GROK,
-                ModelOperation.SUMMARIZATION: ModelProvider.VENICE
+                ModelOperation.CHUNK_GENERATION: ModelProvider.OPENAI,
+                ModelOperation.SUMMARIZATION: ModelProvider.OPENAI
             }
             
         # Initialize clients for the providers we'll use
@@ -295,14 +295,49 @@ async def summarize_text(
                 )
                 futures.append(future)
             
+            # Use tqdm with position and leave=False to prevent duplicate bars
             # Collect results with progress bar
             for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
                 try:
                     result = future.result()
-                    if result["analysis"].strip():
-                        summaries.append(result["analysis"])
-                    if result["context"].strip():
-                        contexts.append(result["context"])
+                    if result:
+                        # Extract analysis and context from structured result
+                        if isinstance(result, dict):
+                            if result.get("analysis"):
+                                analysis_text = result["analysis"].get("thread_analysis", "").strip()
+                                if analysis_text:
+                                    summaries.append(analysis_text)
+                                
+                            if result.get("context"):
+                                context_text = []
+                                context_data = result["context"]
+                                
+                                # Format key claims
+                                if context_data.get("key_claims"):
+                                    context_text.append("Key Claims:")
+                                    context_text.extend([f"- {claim}" for claim in context_data["key_claims"]])
+                                
+                                # Format supporting text
+                                if context_data.get("supporting_text"):
+                                    context_text.append("\nSupporting Evidence:")
+                                    context_text.extend([f"- {text}" for text in context_data["supporting_text"]])
+                                
+                                # Format risk assessment
+                                if context_data.get("risk_assessment"):
+                                    context_text.append("\nRisk Assessment:")
+                                    context_text.extend([f"- {risk}" for risk in context_data["risk_assessment"]])
+                                
+                                # Format viral potential
+                                if context_data.get("viral_potential"):
+                                    context_text.append("\nViral Potential:")
+                                    context_text.extend([f"- {potential}" for potential in context_data["viral_potential"]])
+                                
+                                if context_text:
+                                    contexts.append("\n".join(context_text))
+                        else:
+                            # Handle legacy string format
+                            if result.strip():
+                                summaries.append(result.strip())
                 except Exception as e:
                     logger.error(f"Error processing chunk: {e}")
                     continue

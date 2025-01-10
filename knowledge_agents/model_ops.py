@@ -2,57 +2,34 @@ import os
 from enum import Enum
 from typing import Dict, Any, Optional, Tuple, List, Union
 from pydantic import BaseModel, Field
-import openai
 from openai import OpenAI
 import logging
 import yaml
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 from pathlib import Path
+from config.settings import Config
 
 logger = logging.getLogger(__name__)
 
-class ModelProvider(str, Enum):
+class ModelProvider(Enum):
     OPENAI = "openai"
     GROK = "grok"
     VENICE = "venice"
-
+    
     @classmethod
     def from_str(cls, value: str) -> "ModelProvider":
+        """Convert string to ModelProvider enum."""
+        if isinstance(value, cls):
+            return value
+            
         try:
-            return cls(value.lower())
+            return cls(value.lower() if isinstance(value, str) else value)
         except ValueError:
-            logger.warning(f"Invalid provider {value}, defaulting to OPENAI")
-            return cls.OPENAI
-
+            raise ValueError(f"Unknown model provider: {value}")
 class ModelOperation(str, Enum):
     EMBEDDING = "embedding"
     CHUNK_GENERATION = "chunk_generation"
     SUMMARIZATION = "summarization"
-
-class ModelConfig(BaseModel):
-    # OpenAI Configuration
-    openai_api_key: Optional[str] = None
-    openai_embedding_model: str = "text-embedding-3-large"
-    openai_completion_model: str = "gpt-4o"
-
-    # Grok Configuration
-    grok_api_key: Optional[str] = None
-    grok_embedding_model: Optional[str] = "grok-v1-embedding"
-    grok_completion_model: Optional[str] = "grok-2-1212"
-
-    # Venice Configuration
-    venice_api_key: Optional[str] = None
-    venice_summary_model: Optional[str] = "llama-3.1-405b"
-    venice_chunk_model: Optional[str] = "dolphin-2.9.2-qwen2-72b"
-
-    # Default providers for different operations
-    default_embedding_provider: ModelProvider = ModelProvider.OPENAI
-    default_chunk_provider: ModelProvider = ModelProvider.OPENAI
-    default_summary_provider: ModelProvider = ModelProvider.OPENAI
-
-    class Config:
-        use_enum_values = True
-
 class AppConfig(BaseModel):
     max_tokens: int = 8192
     chunk_size: int = 1000
@@ -70,6 +47,60 @@ class EmbeddingResponse(BaseModel):
     embedding: Union[List[float], List[List[float]]]
     model: str
     usage: Dict[str, int]
+    
+class ModelConfig:
+    """Configuration for model operations."""
+    
+    def __init__(
+        self,
+        openai_api_key: Optional[str] = None,
+        openai_embedding_model: Optional[str] = None,
+        openai_completion_model: Optional[str] = None,
+        grok_api_key: Optional[str] = None,
+        grok_embedding_model: Optional[str] = None,
+        grok_completion_model: Optional[str] = None,
+        venice_api_key: Optional[str] = None,
+        venice_summary_model: Optional[str] = None,
+        venice_chunk_model: Optional[str] = None,
+        default_embedding_provider: Optional[str] = None
+    ):
+        """Initialize with API keys and model configurations."""
+        # OpenAI settings - ensure we have a valid API key
+        self.openai_api_key = openai_api_key or Config.OPENAI_API_KEY
+        if not self.openai_api_key:
+            raise ValueError("OpenAI API key is required but not provided")
+            
+        self.openai_embedding_model = openai_embedding_model or Config.OPENAI_EMBEDDING_MODEL
+        self.openai_completion_model = openai_completion_model or Config.OPENAI_MODEL
+        
+        # Grok settings
+        self.grok_api_key = grok_api_key or Config.GROK_API_KEY
+        self.grok_embedding_model = grok_embedding_model or Config.GROK_EMBEDDING_MODEL
+        self.grok_completion_model = grok_completion_model or Config.GROK_MODEL
+        
+        # Venice settings
+        self.venice_api_key = venice_api_key or Config.VENICE_API_KEY
+        self.venice_summary_model = venice_summary_model or Config.VENICE_MODEL
+        self.venice_chunk_model = venice_chunk_model or Config.VENICE_CHUNK_MODEL
+        
+        # Default provider
+        self.default_embedding_provider = ModelProvider.from_str(
+            default_embedding_provider or Config.DEFAULT_EMBEDDING_PROVIDER
+        )
+        
+        # General settings
+        self.max_tokens = Config.MAX_TOKENS
+        self.chunk_size = Config.CHUNK_SIZE
+        self.cache_enabled = Config.CACHE_ENABLED
+        self.batch_size = Config.DEFAULT_BATCH_SIZE
+        
+        # Paths
+        self.root_path = Config.ROOT_PATH
+        self.all_data = Config.ALL_DATA
+        self.all_data_stratified_path = Config.ALL_DATA_STRATIFIED_PATH
+        self.knowledge_base = Config.KNOWLEDGE_BASE
+        self.sample_size = Config.DEFAULT_BATCH_SIZE
+        self.filter_date = Config.FILTER_DATE
 
 def load_prompts(prompt_path: str = None) -> Dict[str, Any]:
     """Load prompts from YAML file."""
@@ -78,166 +109,131 @@ def load_prompts(prompt_path: str = None) -> Dict[str, Any]:
             # Get the path to the knowledge_agents directory
             current_dir = Path(__file__).parent
             prompt_path = current_dir / 'prompt.yaml'
-            
         if not os.path.exists(prompt_path):
             raise FileNotFoundError(f"Prompt file not found at: {prompt_path}")
-            
         with open(prompt_path, 'r') as file:
             prompts = yaml.safe_load(file)
-            
         if not isinstance(prompts, dict):
             raise ValueError(f"Invalid prompt file format. Expected dict, got {type(prompts)}")
-            
         required_sections = {"system_prompts", "user_prompts"}
         missing_sections = required_sections - set(prompts.keys())
         if missing_sections:
             raise ValueError(f"Missing required sections in prompts: {missing_sections}")
-            
         return prompts
     except Exception as e:
         logger.error(f"Error loading prompts from {prompt_path}: {str(e)}")
         raise
-
+    
 def load_config() -> Tuple[ModelConfig, AppConfig]:
-    """Load configuration from environment variables."""
+    """Load configuration using Config class from settings."""
+    # Create model config using Config class values
     model_config = ModelConfig(
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        openai_embedding_model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"),
-        openai_completion_model=os.getenv("OPENAI_MODEL", "gpt-4o"),
-        grok_api_key=os.getenv("GROK_API_KEY"),
-        grok_embedding_model=os.getenv("GROK_EMBEDDING_MODEL", "grok-v1-embedding"),
-        grok_completion_model=os.getenv("GROK_MODEL", "grok-2-1212"),
-        venice_api_key=os.getenv("VENICE_API_KEY"),
-        venice_summary_model=os.getenv("VENICE_MODEL", "llama-3.1-405b"),
-        venice_chunk_model=os.getenv("VENICE_CHUNK_MODEL", "dolphin-2.9.2-qwen2-72b"),
-        default_embedding_provider=ModelProvider.from_str(os.getenv("DEFAULT_EMBEDDING_PROVIDER", "openai"))
+        openai_api_key=Config.OPENAI_API_KEY,
+        openai_embedding_model=Config.OPENAI_EMBEDDING_MODEL,
+        openai_completion_model=Config.OPENAI_MODEL,
+        grok_api_key=Config.GROK_API_KEY,
+        grok_embedding_model=Config.GROK_EMBEDDING_MODEL,
+        grok_completion_model=Config.GROK_MODEL,
+        venice_api_key=Config.VENICE_API_KEY,
+        venice_summary_model=Config.VENICE_MODEL,
+        venice_chunk_model=Config.VENICE_CHUNK_MODEL,
+        default_embedding_provider=Config.DEFAULT_EMBEDDING_PROVIDER
     )
 
     app_config = AppConfig(
-        max_tokens=int(os.getenv("MAX_TOKENS", "8192")),
-        chunk_size=int(os.getenv("CHUNK_SIZE", "1000")),
-        cache_enabled=os.getenv("CACHE_ENABLED", "true").lower() == "true",
-        batch_size=int(os.getenv("BATCH_SIZE", "100")),
-        root_path=os.getenv("ROOT_PATH"),
-        all_data=os.getenv("ALL_DATA"),
-        all_data_stratified_path=os.getenv("ALL_DATA_STRATIFIED_PATH"),
-        knowledge_base=os.getenv("KNOWLEDGE_BASE"),
-        sample_size=int(os.getenv("SAMPLE_SIZE", "1000")),
-        filter_date=os.getenv("FILTER_DATE"))
+        max_tokens=Config.MAX_TOKENS,
+        chunk_size=Config.CHUNK_SIZE,
+        cache_enabled=Config.CACHE_ENABLED,
+        batch_size=Config.DEFAULT_BATCH_SIZE,
+        root_path=Config.ROOT_PATH,
+        all_data=Config.ALL_DATA,
+        all_data_stratified_path=Config.ALL_DATA_STRATIFIED_PATH,
+        knowledge_base=Config.KNOWLEDGE_BASE,
+        sample_size=Config.DEFAULT_BATCH_SIZE,
+        filter_date=Config.FILTER_DATE
+    )
     return model_config, app_config
 
 class KnowledgeAgent:
-    def __init__(self, model_config: ModelConfig):
-        self.model_config = model_config
+    """Agent for handling model operations and API interactions."""
+    
+    def __init__(self):
+        """Initialize the KnowledgeAgent using settings from Config."""
+        # Load configuration
+        self.model_config, self.app_config = load_config()
+        
+        # Initialize API clients
         self.models = self._initialize_clients()
+        
+        # Load prompts
         self.prompts = load_prompts()
         
-    def _initialize_clients(self) -> Dict[str, OpenAI]:
-        """Initialize model clients dynamically based on provided configuration."""
+    def _initialize_clients(self):
+        """Initialize API clients based on available credentials."""
         clients = {}
         
-        # Validate OpenAI configuration
-        if not self.model_config.openai_api_key or not self.model_config.openai_api_key.strip():
-            logging.warning("OpenAI API key is missing or empty")
-        else:
+        # Check for OpenAI configuration
+        if self.model_config.openai_api_key:
             try:
-                openai.api_key = self.model_config.openai_api_key
-                clients[ModelProvider.OPENAI] = OpenAI(
-                    api_key=self.model_config.openai_api_key,
-                    max_retries=5,)
-                logging.info("OpenAI client initialized successfully")
+                clients['openai'] = OpenAI(api_key=self.model_config.openai_api_key)
+                logger.info("OpenAI client initialized successfully")
             except Exception as e:
-                logging.error(f"Failed to initialize OpenAI client: {str(e)}")
-        
-        # Validate Grok configuration
-        if self.model_config.grok_api_key and self.model_config.grok_api_key.strip():
-            try:
-                clients[ModelProvider.GROK] = OpenAI(
-                    api_key=self.model_config.grok_api_key,
-                    base_url="https://api.x.ai/v1",
-                )
-                logging.info("Grok client initialized successfully")
-            except Exception as e:
-                logging.error(f"Failed to initialize Grok client: {str(e)}")
-        # Validate Venice configuration
-        if self.model_config.venice_api_key and self.model_config.venice_api_key.strip():
-            try:
-                clients[ModelProvider.VENICE] = OpenAI(
-                    api_key=self.model_config.venice_api_key,
-                    base_url="https://api.venice.ai/api/v1",)
-                logging.info("Venice client initialized successfully")
-            except Exception as e:
-                logging.error(f"Failed to initialize Venice client: {str(e)}")
-        if not clients:
-            raise ValueError("No API providers configured. Please check your API keys in config.ini")
-        return clients
+                logger.warning(f"Failed to initialize OpenAI client: {str(e)}")
 
-    def _get_client(self, provider: ModelProvider) -> OpenAI:
-        """Retrieve the appropriate client for a provider."""
-        client = self.models.get(provider)
-        if not client:
-            available_providers = list(self.models.keys())
-            if not available_providers:
-                raise ValueError("No API providers are configured")
-            fallback_provider = available_providers[0]
-            logging.warning(f"Provider {provider} not configured, falling back to {fallback_provider}")
-            return self.models[fallback_provider]
-        return client
-    
+        # Check for Grok configuration
+        if self.model_config.grok_api_key:
+            try:
+                clients['grok'] = {'api_key': self.model_config.grok_api_key}
+                logger.info("Grok client initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Grok client: {str(e)}")
+
+        # Check for Venice configuration
+        if self.model_config.venice_api_key:
+            try:
+                clients['venice'] = {'api_key': self.model_config.venice_api_key}
+                logger.info("Venice client initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Venice client: {str(e)}")
+
+        if not clients:
+            raise ValueError(
+                "No API providers configured. Please set at least one of the following in settings:\n"
+                "- OPENAI_API_KEY (Required)\n"
+                "- GROK_API_KEY (Optional)\n"
+                "- VENICE_API_KEY (Optional)")
+        return clients
+        
     def _get_model_name(self, provider: ModelProvider, operation: ModelOperation) -> str:
         """Get the appropriate model name for a provider and operation type."""
         if operation == ModelOperation.EMBEDDING:
             if provider == ModelProvider.OPENAI:
-                return self.model_config.openai_embedding_model
+                return Config.OPENAI_EMBEDDING_MODEL
             elif provider == ModelProvider.GROK:
-                return self.model_config.grok_embedding_model or "grok-v1-embedding"
+                return Config.GROK_EMBEDDING_MODEL
             else:
                 raise ValueError(f"Unsupported embedding provider: {provider}")
         elif operation == ModelOperation.CHUNK_GENERATION:
             if provider == ModelProvider.OPENAI:
-                return self.model_config.openai_completion_model
+                return Config.OPENAI_MODEL
             elif provider == ModelProvider.GROK:
-                return self.model_config.grok_completion_model
+                return Config.GROK_MODEL
             elif provider == ModelProvider.VENICE:
-                return self.model_config.venice_chunk_model
+                return Config.VENICE_CHUNK_MODEL
             else:
-                raise ValueError(f"Unsupported completion provider: {provider}")
+                raise ValueError(f"Unsupported chunk generation provider: {provider}")
         elif operation == ModelOperation.SUMMARIZATION:
             if provider == ModelProvider.OPENAI:
-                return self.model_config.openai_completion_model
+                return Config.OPENAI_MODEL
             elif provider == ModelProvider.GROK:
-                return self.model_config.grok_completion_model
+                return Config.GROK_MODEL
             elif provider == ModelProvider.VENICE:
-                return self.model_config.venice_summary_model
+                return Config.VENICE_MODEL
             else:
-                raise ValueError(f"Unsupported completion provider: {provider}")
+                raise ValueError(f"Unsupported summarization provider: {provider}")
         else:
             raise ValueError(f"Unknown operation: {operation}")
 
-    def _get_default_provider(self, operation: ModelOperation) -> ModelProvider:
-        """Get the default provider for a specific operation."""
-        provider = None
-        if operation == ModelOperation.EMBEDDING:
-            provider = self.model_config.default_embedding_provider
-            # Only OpenAI and Grok support embeddings
-            if provider not in [ModelProvider.OPENAI, ModelProvider.GROK]:
-                provider = ModelProvider.OPENAI
-        elif operation == ModelOperation.CHUNK_GENERATION:
-            provider = self.model_config.default_chunk_provider
-        elif operation == ModelOperation.SUMMARIZATION:
-            provider = self.model_config.default_summary_provider
-        else:
-            raise ValueError(f"Unknown operation: {operation}")
-        # Validate provider is configured
-        if provider not in self.models:
-            available_providers = list(self.models.keys())
-            if not available_providers:
-                raise ValueError("No API providers are configured. Please check your API keys in config.ini")
-            provider = available_providers[0]
-            logging.warning(f"Default provider not configured, using {provider}")
-            
-        return provider
-    
     def generate_summary(
         self, 
         query: str, 
@@ -339,25 +335,107 @@ class KnowledgeAgent:
             )
                 
             result = response.choices[0].message.content
-            sections = result.split("<generated_context>")
+            if not result:
+                raise ValueError("Empty response from model")
+
+            # Split on signal_context as per prompt template
+            sections = result.split("<signal_context>")
+            
             if len(sections) > 1:
-                analysis = sections[0].strip()
-                context = sections[1].strip()
-            else:
-                analysis = result
-                context = "No specific context generated."
+                thread_analysis = sections[0].strip()
+                signal_context = sections[1].strip()
                 
-            return {
-                "analysis": analysis,
-                "context": context
-            }
+                # Parse thread analysis metrics
+                metrics = {}
+                for line in thread_analysis.split('\n'):
+                    if '(' in line and ')' in line:
+                        try:
+                            # Extract metrics from format: (t, metric, value, confidence)
+                            metric_str = line[line.find("(")+1:line.find(")")].strip()
+                            parts = [p.strip().strip("'\"") for p in metric_str.split(',')]                            
+                            # Skip header lines
+                            if parts[0] == 't' or 'metric' in parts:
+                                continue
+                                
+                            if len(parts) >= 4:
+                                timestamp, metric_name, value, confidence = parts[:4]
+                                try:
+                                    metrics[metric_name] = float(value)
+                                except (ValueError, TypeError):
+                                    logger.warning(f"Could not convert metric value to float: {value}")
+                        except Exception as e:
+                            logger.warning(f"Failed to parse metric line: {line}, error: {e}")
+                
+                # Parse context sections
+                context_elements = {
+                    "key_claims": [],
+                    "supporting_text": [],
+                    "risk_assessment": [],
+                    "viral_potential": []
+                }
+                
+                current_section = None
+                for line in signal_context.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                        
+                    # Check for section headers
+                    lower_line = line.lower()
+                    if "key claims" in lower_line:
+                        current_section = "key_claims"
+                    elif "supporting" in lower_line and "text" in lower_line:
+                        current_section = "supporting_text"
+                    elif "risk" in lower_line and "assessment" in lower_line:
+                        current_section = "risk_assessment"
+                    elif "viral" in lower_line and "potential" in lower_line:
+                        current_section = "viral_potential"
+                    elif current_section and (line.startswith('-') or line.startswith('*')):
+                        # Remove leading dash/asterisk and strip whitespace
+                        content = line.lstrip('-* ').strip()
+                        if content:  # Only add non-empty lines
+                            context_elements[current_section].append(content)
+                
+                return {
+                    "analysis": {
+                        "thread_analysis": thread_analysis,
+                        "metrics": metrics
+                    },
+                    "context": context_elements,
+                    "metrics": {
+                        "sections": len(sections),
+                        "analysis_length": len(thread_analysis),
+                        "context_length": len(signal_context),
+                        **metrics
+                    }
+                }
+            else:
+                # If no signal context found, try to parse as basic analysis
+                logger.warning("No signal_context found in response, using basic format")
+                return {
+                    "analysis": {
+                        "thread_analysis": result.strip(),
+                        "metrics": {}
+                    },
+                    "context": {
+                        "key_claims": [],
+                        "supporting_text": [],
+                        "risk_assessment": [],
+                        "viral_potential": []
+                    },
+                    "metrics": {
+                        "sections": 1,
+                        "analysis_length": len(result),
+                        "context_length": 0
+                    }
+                }
             
         except Exception as e:
-            logging.error(f"Error generating chunks with {provider}: {e}")
+            logger.error(f"Error generating chunks with {provider}: {e}")
             if provider != ModelProvider.OPENAI and ModelProvider.OPENAI in self.models:
-                logging.warning(f"Falling back to OpenAI for chunk generation")
+                logger.warning(f"Falling back to OpenAI for chunk generation")
                 return self.generate_chunks(content, provider=ModelProvider.OPENAI)
-            raise
+            raise ValueError(f"Failed to generate chunks with {provider}: {str(e)}")
         
     @retry(wait=wait_random_exponential(min=1, max=10), stop=stop_after_attempt(2))
     def embedding_request(
@@ -394,3 +472,43 @@ class KnowledgeAgent:
                 logging.warning("Falling back to OpenAI embeddings")
                 return self.embedding_request(text, provider=ModelProvider.OPENAI)
             raise
+
+    def _get_client(self, provider: ModelProvider) -> OpenAI:
+        """Retrieve the appropriate client for a provider."""
+        if not isinstance(provider, ModelProvider):
+            provider = ModelProvider.from_str(provider)
+            
+        client = self.models.get(provider.value)
+        if not client:
+            available_providers = list(self.models.keys())
+            if not available_providers:
+                raise ValueError("No API providers are configured")
+            fallback_provider = available_providers[0]
+            logging.warning(f"Provider {provider.value} not configured, falling back to {fallback_provider}")
+            return self.models[fallback_provider]
+        return client
+    
+    def _get_default_provider(self, operation: ModelOperation) -> ModelProvider:
+        """Get the default provider for a specific operation."""
+        provider = None
+        if operation == ModelOperation.EMBEDDING:
+            provider = ModelProvider.from_str(Config.DEFAULT_EMBEDDING_PROVIDER)
+            # Only OpenAI and Grok support embeddings
+            if provider not in [ModelProvider.OPENAI, ModelProvider.GROK]:
+                provider = ModelProvider.OPENAI
+        elif operation == ModelOperation.CHUNK_GENERATION:
+            provider = ModelProvider.from_str(Config.DEFAULT_CHUNK_PROVIDER)
+        elif operation == ModelOperation.SUMMARIZATION:
+            provider = ModelProvider.from_str(Config.DEFAULT_SUMMARY_PROVIDER)
+        else:
+            raise ValueError(f"Unknown operation: {operation}")
+            
+        # Validate provider is configured
+        if provider.value not in self.models:
+            available_providers = list(self.models.keys())
+            if not available_providers:
+                raise ValueError("No API providers are configured. Please check your API keys in settings")
+            provider = ModelProvider.from_str(available_providers[0])
+            logging.warning(f"Default provider not configured, using {provider.value}")
+            
+        return provider

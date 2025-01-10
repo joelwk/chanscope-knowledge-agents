@@ -5,17 +5,25 @@ from config.settings import Config
 from knowledge_agents import KnowledgeAgentConfig
 from .routes import register_routes
 
-# Setup logging
+# Setup logging only if handlers don't exist
 logger = logging.getLogger(__name__)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    # Prevent propagation to root logger to avoid duplicate logs
+    logger.propagate = False
 
 def create_app():
     # Create Flask app
     app = Flask(__name__)
+    
+    # Disable Flask's default logging when in debug mode
+    if app.debug:
+        werkzeug_logger = logging.getLogger('werkzeug')
+        werkzeug_logger.setLevel(logging.ERROR)
 
     # Load configuration
     config = Config()

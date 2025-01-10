@@ -1,7 +1,7 @@
 from csv import writer
 from .model_ops import KnowledgeAgent, load_config, ModelProvider
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 from pathlib import Path
 from tqdm import tqdm
 import pandas as pd
@@ -10,12 +10,16 @@ from tenacity import retry, wait_random_exponential, stop_after_attempt
 # Initialize logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s')
-
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
+# Load configuration using centralized Config
 model_config, app_config = load_config()
-agent = KnowledgeAgent(model_config)
+
+# Initialize agent with configuration
+logger.info("Initializing KnowledgeAgent with configuration from settings...")
+agent = KnowledgeAgent()
 
 class Article:
     """Data class for article information."""
@@ -50,10 +54,10 @@ def load_data_from_csvs(directory: str) -> List[Article]:
     for file_path in tqdm(csv_files, desc="Loading CSV files"):
         try:
             df = pd.read_csv(file_path, encoding='utf-8')
-            required_columns = {"thread_id", "posted_date_time", "text_clean"}
+            required_columns = {"thread_id", "posted_date_time", "text_clean", "filename"}
             
             if not required_columns.issubset(df.columns):
-                logger.error(f"Missing required columns in {file_path}. Found columns: {df.columns.tolist()}")
+                logger.error(f"Missing required columns in {file_path}")
                 continue
                 
             articles = [
@@ -87,17 +91,10 @@ def get_relevant_content(
     """
     kb_path = Path(knowledge_base)
     
-    # Check if knowledge base already exists and has actual data (not just headers)
-    if kb_path.exists():
-        try:
-            df = pd.read_csv(kb_path)
-            if len(df) > 0 and not df['embedding'].isna().all():
-                logger.info(f"Knowledge base '{knowledge_base}' already exists and has embeddings. Skipping.")
-                return
-            else:
-                logger.info(f"Knowledge base '{knowledge_base}' exists but is empty or has no embeddings. Recreating...")
-        except Exception as e:
-            logger.warning(f"Error reading existing knowledge base: {e}. Will recreate.")
+    # Check if knowledge base already exists and has content
+    if kb_path.exists() and kb_path.stat().st_size > 0:
+        logger.info(f"Knowledge base '{knowledge_base}' already exists. Skipping.")
+        return
     
     logger.info("Creating knowledge base with embeddings...")
     
@@ -106,8 +103,8 @@ def get_relevant_content(
         
         if not loaded_articles:
             logger.warning("No articles found in the library.")
-            # Create empty knowledge base file with headers
-            pd.DataFrame(columns=["thread_id", "posted_date_time", "text_clean", "embedding"]).to_csv(kb_path, index=False)
+            # Create empty knowledge base file
+            kb_path.touch()
             return
         
         # Process articles in batches
