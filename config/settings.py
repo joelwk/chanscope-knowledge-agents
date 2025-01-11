@@ -21,7 +21,11 @@ class Config:
             return key
             
         key = key.strip()
+        original_key = key  # Store original for comparison
         original_len = len(key)
+        
+        # Remove any hidden characters or whitespace
+        key = ''.join(c for c in key if c.isprintable()).strip()
         
         if key.startswith("<"):
             key = key[1:]
@@ -31,11 +35,25 @@ class Config:
         
         if len(key) != original_len:
             logger.info(f"API key was cleaned (length changed from {original_len} to {len(key)})")
+            if original_key.startswith("AKIA"):  # AWS Key specific logging
+                logger.info(f"AWS Key cleaning: Original prefix: {original_key[:7]}, New prefix: {key[:7]}")
+                logger.info(f"AWS Key contains hidden characters: {'Yes' if len(original_key.encode()) != len(original_key) else 'No'}")
             
-        if not key.startswith("sk-"):
-            logger.warning("Cleaned API key does not start with 'sk-', might be invalid")
+        if key.startswith("AKIA"):  # AWS specific validation
+            if len(key) != 20:  # AWS Access Keys are 20 characters
+                logger.warning(f"AWS Access Key has incorrect length: {len(key)}, expected 20")
+            # Ensure only allowed characters
+            if not all(c.isalnum() for c in key):
+                logger.warning("AWS Access Key contains non-alphanumeric characters")
             
         return key
+
+    @staticmethod
+    def _parse_none_value(value: str) -> str | None:
+        """Parse a string value that might represent None."""
+        if not value or value.lower() == 'none':
+            return None
+        return value.strip()
     
     @staticmethod
     def _validate_model_name(model_name: str, provider: str, model_type: str) -> str:
@@ -157,9 +175,38 @@ class Config:
         'chunk'
     )
     
-    # AWS settings
-    AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
-    AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+    # AWS settings with enhanced logging
+    logger.info("=== Environment Variable Sources ===")
+    logger.info(f"Current working directory: {os.getcwd()}")
+    logger.info(f"Environment files found: {[f for f in os.listdir() if '.env' in f]}")
+    
+    # Get raw AWS credentials with source tracking
+    _raw_aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+    _raw_aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+    
+    # Log raw AWS credentials state
+    logger.info("=== AWS Credentials Debug ===")
+    logger.info(f"Raw AWS Access Key ID present: {'Yes' if _raw_aws_access_key else 'No'}")
+    if _raw_aws_access_key:
+        logger.info(f"Raw AWS Key format check - Starts with AKIA: {_raw_aws_access_key.startswith('AKIA')}")
+        logger.info(f"Raw AWS Key length: {len(_raw_aws_access_key)}")
+        logger.info(f"Raw AWS Key value: {_raw_aws_access_key}")  # Log full key for debugging
+        logger.info(f"Expected AWS Key from .env: {os.getenv('AWS_ACCESS_KEY_ID', 'Not found in .env')}")
+    
+    # Clean and validate AWS credentials
+    AWS_ACCESS_KEY_ID = _clean_api_key(_raw_aws_access_key)
+    AWS_SECRET_ACCESS_KEY = _clean_api_key(_raw_aws_secret_key)
+    
+    # Log cleaned AWS credentials state
+    if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+        logger.info(f"AWS credentials after cleaning:")
+        logger.info(f"- Access Key ID: {AWS_ACCESS_KEY_ID[:7]}...")
+        logger.info(f"- Access Key length: {len(AWS_ACCESS_KEY_ID)}")
+        logger.info(f"- Access Key characters: {[c for c in AWS_ACCESS_KEY_ID]}")  # Log each character
+    else:
+        logger.warning("AWS credentials not properly configured")
+    logger.info("=== End AWS Credentials Debug ===")
+    
     AWS_DEFAULT_REGION = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
     S3_BUCKET = os.getenv('S3_BUCKET', 'rolling-data')
     S3_BUCKET_PREFIX = os.getenv('S3_BUCKET_PREFIX', 'data')
@@ -169,6 +216,7 @@ class Config:
     STRATA_COLUMN = os.getenv('STRATA_COLUMN')
     FREQ = os.getenv('FREQ', 'H')
     FILTER_DATE = os.getenv('FILTER_DATE')
+    SELECT_BOARD = _parse_none_value(os.getenv('SELECT_BOARD'))  # Now properly handles "None" as None
     PADDING_ENABLED = os.getenv('PADDING_ENABLED', 'false')
     CONTRACTION_MAPPING_ENABLED = os.getenv('CONTRACTION_MAPPING_ENABLED', 'false')
     NON_ALPHA_NUMERIC_ENABLED = os.getenv('NON_ALPHA_NUMERIC_ENABLED', 'false')

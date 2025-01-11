@@ -2,7 +2,7 @@
 from dotenv import load_dotenv
 import os
 import logging
-from config.base import ENV_PATH, ROOT_DIR
+from config.base import ENV_PATH
 
 logger = logging.getLogger(__name__)
 

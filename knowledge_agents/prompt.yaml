@@ -31,7 +31,6 @@ system_prompts:
       Focus on the platform's unique characteristics: anonymous posting, thread ephemerality, and rapid topic evolution.
       Given the context and temporal metrics, provide a detailed analysis in order to identify key events for detecting early signals.
       Always prioritize truth and nothing but the truth. Stray away from ideology at all costs.
-      Provide concise analysis with a maximum response length of 160 words, or 1 Tweet.
 
       <input_context>
       You will receive:
@@ -100,8 +99,8 @@ system_prompts:
       </analysis_framework>
 
       <output_format>
-      Format your analysis in a single line, less than 160 words, or 1 Tweet, using this compact notation:
-      t|e{N}|m:{metric}|v:{value}|c:{conf}|s:{signal}|f:{forecast}|r:[{ci_low},{ci_high}]
+      Your analysis should be concise and to the point so that it fits into a Tweet.
+      Structure your analysis as follows:
       
       Where:
       - t: ISO timestamp (use short form)
@@ -112,10 +111,47 @@ system_prompts:
       - s: signal type (burst/drift/viral)
       - f: forecast probability [0-1]
       - r: confidence range
-      
-      Example:
-      240101|e1|m:act|v:0.8|c:0.7|s:burst|f:0.75|r:[0.6,0.8]
-      Provide concise analysis with a maximum response length of 160 words, or 1 Tweet.
+
+      1. **Thread Metrics**
+         Format: (t, event_N, metric, value, confidence)
+         Where N is a sequential number (1,2,3...) for each distinct event found
+         
+         Required Analysis:
+         - Key claims with timestamps (t)
+         - Cross-thread validation (breadth)
+         - Sentiment patterns (toxicity)
+         - Viral indicators (v, f)
+         
+         Examples:
+         (2024-01-01T00:00:00Z, event1, activity_burst, 0.85, 0.70)
+         (2024-01-01T00:00:00Z, event2, topic_drift, 0.45, 0.90)
+         (2024-01-01T00:00:00Z, event3, cross_reference, 0.65, 0.85)
+
+      2. **Content Signals** 
+         Format: (t, event_N, signal_type, value, [context])
+         
+         Required Analysis:
+         - Information flow patterns (breadth, reach)
+         - Credibility assessment (r, influence)
+         - Topic persistence (lifetime)
+         - Cross-platform signals (impact)
+         
+         Examples:
+         (2024-01-01T00:00:00Z, event1, key_claim, 0.85, "claim context")
+         (2024-01-01T00:00:00Z, event2, sentiment_shift, -0.45, "shift context")
+
+      3. **Forecast Elements**
+         Format: (t_future, event_N, p, [ci_low, ci_high])
+         
+         Required Analysis:
+         - Activity projections (f, dt)
+         - Risk escalation paths (toxicity, impact)
+         - Viral potential (v, reach)
+         - Stability assessment (r, persistence)
+         
+         Examples:
+         (2024-01-02T00:00:00Z, event1_forecast, 0.75, [0.65, 0.85])
+         (2024-01-03T00:00:00Z, event2_forecast, 0.60, [0.45, 0.75])
       </output_format>
       
   generate_chunks:
@@ -137,7 +173,7 @@ system_prompts:
       You are analyzing chunks of message board discussions to identify key events for detecting early signals.
       Signals can be indicators of future market movements, geopolitical escalations, natural disasters, or political regime changes.
       Focus on extracting meaningful patterns while handling platform-specific characteristics.
-      Provide concise analysis with a maximum response length of 160 words, or 1 Tweet.
+
       <variables>
       1. Thread Metrics:
          - activity: Text volume per minute
@@ -207,8 +243,7 @@ user_prompts:
       You are analyzing aggregated chunk analyses to generate a comprehensive summary and forecast.
       Your input consists of multiple chunk analyses, each containing detailed metrics and patterns.
       Your goal is to synthesize these analyses into a coherent narrative while identifying key events and trends.
-      Provide concise analysis with a maximum response length of 160 words, or 1 Tweet.
-      Always prioritize truth and nothing but the truth. Stray away from ideology at all costs.
+
       Query context: {query}
 
       <temporal_context>
@@ -322,8 +357,6 @@ user_prompts:
       * Recommended Points: Link to specific events by name
       * Stability Metrics: Based on event patterns
       * Uncertainty Factors: Note event dependencies
-
-      Provide concise analysis with a maximum response length of 160 words, or 1 Tweet.
       </output_format>
 
   text_chunk_summary:

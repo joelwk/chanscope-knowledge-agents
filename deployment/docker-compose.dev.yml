@@ -31,10 +31,10 @@ services:
       - PYTHONPATH=/app
       - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
 
-      # API Keys - with explicit defaults
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - GROK_API_KEY=${GROK_API_KEY:-}
-      - VENICE_API_KEY=${VENICE_API_KEY:-}
+      # API Keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY}  # Required, no default
+      - GROK_API_KEY=${GROK_API_KEY}      # Optional
+      - VENICE_API_KEY=${VENICE_API_KEY}   # Optional
 
       # Model Settings
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4}
@@ -51,12 +51,13 @@ services:
 
       # Application Settings
       - BATCH_SIZE=${BATCH_SIZE:-100}
-      - FILTER_DATE=${FILTER_DATE:-}
+      - FILTER_DATE=${FILTER_DATE}
       - MAX_TOKENS=${MAX_TOKENS:-8192}
       - CHUNK_SIZE=${CHUNK_SIZE:-1000}
       - CACHE_ENABLED=${CACHE_ENABLED:-true}
+      - SELECT_BOARD=${SELECT_BOARD}
 
-      # Data Paths
+      # Data Paths (Fixed in container)
       - ROOT_PATH=/app/data
       - DATA_PATH=/app/data
       - KNOWLEDGE_BASE=/app/data/knowledge_base.csv
@@ -113,9 +114,9 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
 
       # API Keys
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GROK_API_KEY=${GROK_API_KEY}
-      - VENICE_API_KEY=${VENICE_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}  # Required
+      - GROK_API_KEY=${GROK_API_KEY}      # Optional
+      - VENICE_API_KEY=${VENICE_API_KEY}   # Optional
 
       # Model Settings
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4}
@@ -132,12 +133,13 @@ services:
 
       # Application Settings
       - BATCH_SIZE=${BATCH_SIZE:-100}
-      - FILTER_DATE=${FILTER_DATE:-2024-12-24}
+      - FILTER_DATE=${FILTER_DATE}
       - MAX_TOKENS=${MAX_TOKENS:-8192}
       - CHUNK_SIZE=${CHUNK_SIZE:-1000}
       - CACHE_ENABLED=${CACHE_ENABLED:-true}
+      - SELECT_BOARD=${SELECT_BOARD}
 
-      # Data Paths
+      # Data Paths (Fixed in container)
       - ROOT_PATH=/app/data
       - DATA_PATH=/app/data
       - KNOWLEDGE_BASE=/app/data/knowledge_base.csv
