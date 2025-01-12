@@ -1,0 +1,53 @@
+run = "./scripts/replit/api.sh"
+entrypoint = "api/app.py"
+modules = ["python-3.11:v18-20230807-322e88b"]
+
+# Commands available in the shell
+[commands]
+start_api = "./scripts/replit/api.sh"
+start_ui = "./scripts/replit/ui.sh"
+
+# Enable python package management
+[packager]
+language = "python3"
+ignoredPackages = ["unit_tests"]
+
+[packager.features]
+enabledForHosting = true
+packageSearch = true
+guessImports = true
+
+# Startup commands and environment
+[nix]
+channel = "stable-23_11"
+
+[env]
+PYTHONPATH = "${REPL_HOME}"
+FLASK_APP = "api.app"
+FLASK_ENV = "development"
+PYTHONUNBUFFERED = "1"
+
+# Language configuration
+[languages]
+[languages.python3]
+pattern = "**/*.py"
+syntax = "python"
+
+[languages.python3.languageServer]
+start = "pylsp"
+
+# Development server configuration
+[server]
+host = "0.0.0.0"
+port = 5000
+
+# Port forwarding configuration
+[[ports]]
+localPort = 5000
+externalPort = 80
+description = "Flask API Server"
+
+[[ports]]
+localPort = 8000
+externalPort = 3000
+description = "Chainlit UI" 
