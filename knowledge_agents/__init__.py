@@ -33,8 +33,8 @@ class KnowledgeAgentConfig:
     
     # Processing settings
     batch_size: int
-    max_workers: Optional[int] = None
     sample_size: int
+    max_workers: Optional[int] = None
     
     # Model settings
     providers: Dict[ModelOperation, ModelProvider] = None
