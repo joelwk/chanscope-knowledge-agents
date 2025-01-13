@@ -32,9 +32,9 @@ class KnowledgeAgentConfig:
     temp_path: Path
     
     # Processing settings
-    batch_size: int = 100
+    batch_size: int
     max_workers: Optional[int] = None
-    sample_size: int = 2500
+    sample_size: int
     
     # Model settings
     providers: Dict[ModelOperation, ModelProvider] = None
@@ -103,7 +103,7 @@ class KnowledgeAgentConfig:
             temp_path=paths['temp'],
             batch_size=processing['batch_size'],
             max_workers=processing['max_workers'],
-            sample_size=processing.get('sample_size', 2500),  # Use default if not in config
+            sample_size=processing['sample_size'],  # Use default if not in config
             providers={
                 ModelOperation.EMBEDDING: ModelProvider(providers['embedding_provider']),
                 ModelOperation.CHUNK_GENERATION: ModelProvider(providers['chunk_provider']),

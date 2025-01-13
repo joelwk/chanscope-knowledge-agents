@@ -1,4 +1,5 @@
 import boto3
+import os
 import pandas as pd
 import logging
 from pathlib import Path
@@ -18,13 +19,15 @@ class S3Handler:
         self.bucket_prefix = Config.S3_BUCKET_PREFIX
         self.local_path = Path(local_data_path).resolve()
         self.region_name = Config.AWS_DEFAULT_REGION
+        self.aws_access_key_id = Config.AWS_ACCESS_KEY_ID
+        self.aws_secret_access_key = Config.AWS_SECRET_ACCESS_KEY
         self.s3 = self._create_s3_client()
         
     def _create_s3_client(self):
         """Create an S3 client with credentials from Config."""
         session = boto3.Session(
-            aws_access_key_id=Config.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=Config.AWS_SECRET_ACCESS_KEY,
+            aws_access_key_id=self.aws_access_key_id,
+            aws_secret_access_key=self.aws_secret_access_key,
             region_name=self.region_name
         )
         return session.client('s3')
@@ -82,26 +85,21 @@ class S3Handler:
         logger.info(f"Uploaded file {local_file} to {self.bucket_name}/{key}")
 
 def load_all_csv_data_from_s3(latest_date_processed: str = None) -> pd.DataFrame:
-    """Load all CSV data from S3 bucket."""
+    """Load all CSV data from S3 bucket with memory-efficient chunked processing."""
     connector = S3Handler()
     s3_client = connector.get_s3_client()
+    chunk_size = 50000  # Process 50k rows at a time
+    
     try:
         logger.info("Loading data from S3 bucket: %s", Config.S3_BUCKET)
         logger.info("Using S3 prefix: %s", Config.S3_BUCKET_PREFIX)
         logger.info("AWS Region: %s", Config.AWS_DEFAULT_REGION)
         
         # Log AWS credentials state (safely)
-        if Config.AWS_ACCESS_KEY_ID:
-            logger.info("Using AWS Access Key ID: %s...", Config.AWS_ACCESS_KEY_ID[:7])
-            logger.info("AWS Access Key length: %d", len(Config.AWS_ACCESS_KEY_ID))
-        else:
-            logger.error("AWS Access Key ID is not set")
-            raise ValueError("AWS Access Key ID is not set")
+        if not Config.AWS_ACCESS_KEY_ID or not Config.AWS_SECRET_ACCESS_KEY:
+            logger.error("AWS credentials not properly configured")
+            raise ValueError("AWS credentials not properly configured")
             
-        if not Config.AWS_SECRET_ACCESS_KEY:
-            logger.error("AWS Secret Access Key is not set")
-            raise ValueError("AWS Secret Access Key is not set")
-        
         response = s3_client.list_objects_v2(Bucket=Config.S3_BUCKET, Prefix=Config.S3_BUCKET_PREFIX)
         if 'Contents' not in response:
             logger.warning(f"No files found in bucket {Config.S3_BUCKET} with prefix {Config.S3_BUCKET_PREFIX}")
@@ -118,9 +116,7 @@ def load_all_csv_data_from_s3(latest_date_processed: str = None) -> pd.DataFrame
         filtered_files = []
         for item in response.get('Contents', []):
             if item['Key'].endswith('.csv'):
-                # Apply board filter if specified
                 if Config.SELECT_BOARD is None or f'chanscope_{Config.SELECT_BOARD}' in item['Key']:
-                    # Apply date filter if specified
                     if latest_date_processed is None or item['LastModified'].astimezone(tz.UTC) > latest_date_processed:
                         filtered_files.append(item)
                         logger.debug(f"Found matching file: {item['Key']}")
@@ -132,8 +128,8 @@ def load_all_csv_data_from_s3(latest_date_processed: str = None) -> pd.DataFrame
             logger.warning("No CSV files found to process.")
             return pd.DataFrame()
         
-        all_data_frames = []
         required_columns = {'thread_id', 'posted_date_time', 'text_clean'}
+        result_df = None
         
         for file_key in csv_objects:
             try:
@@ -141,43 +137,49 @@ def load_all_csv_data_from_s3(latest_date_processed: str = None) -> pd.DataFrame
                 logger.info(f"Downloading {file_key} to {temp_file}")
                 s3_client.download_file(Config.S3_BUCKET, file_key, str(temp_file))
                 
-                # Read CSV with validation
-                df = pd.read_csv(temp_file, low_memory=False)
-                
-                # Validate DataFrame structure
-                if df.empty:
-                    logger.warning(f"Empty DataFrame in file {file_key}")
-                    continue
+                # Process file in chunks
+                chunk_list = []
+                for chunk in pd.read_csv(temp_file, chunksize=chunk_size, low_memory=False):
+                    if chunk.empty:
+                        continue
+                        
+                    # Check required columns
+                    missing_cols = required_columns - set(chunk.columns)
+                    if missing_cols:
+                        logger.error(f"Missing required columns in {file_key}: {missing_cols}")
+                        continue
                     
-                # Check required columns
-                missing_cols = required_columns - set(df.columns)
-                if missing_cols:
-                    logger.error(f"Missing required columns in {file_key}: {missing_cols}")
-                    continue
+                    # Validate posted_date_time format
+                    try:
+                        chunk['posted_date_time'] = pd.to_datetime(chunk['posted_date_time'], utc=True)
+                    except Exception as e:
+                        logger.error(f"Invalid datetime format in {file_key}: {str(e)}")
+                        continue
+                    
+                    # Remove rows with NaN in required columns
+                    chunk = chunk.dropna(subset=list(required_columns))
+                    
+                    if len(chunk) > 0:
+                        chunk_list.append(chunk)
+                    
+                    # Free memory
+                    del chunk
+                    import gc
+                    gc.collect()
                 
-                # Validate posted_date_time format
-                try:
-                    df['posted_date_time'] = pd.to_datetime(df['posted_date_time'], utc=True)
-                except Exception as e:
-                    logger.error(f"Invalid datetime format in {file_key}: {str(e)}")
-                    continue
-                
-                # Validate text_clean column
-                if df['text_clean'].isna().all():
-                    logger.warning(f"All text_clean values are NaN in {file_key}")
-                    continue
-                
-                # Remove rows with NaN in required columns
-                initial_rows = len(df)
-                df = df.dropna(subset=list(required_columns))
-                if len(df) < initial_rows:
-                    logger.warning(f"Dropped {initial_rows - len(df)} rows with NaN values in {file_key}")
-                
-                if len(df) > 0:  # Only append if we have valid rows
-                    logger.info(f"Successfully loaded {file_key} with {len(df)} valid rows")
-                    all_data_frames.append(df)
-                else:
-                    logger.warning(f"No valid rows in {file_key} after validation")
+                if chunk_list:
+                    file_df = pd.concat(chunk_list, ignore_index=True)
+                    logger.info(f"Successfully loaded {file_key} with {len(file_df)} valid rows")
+                    
+                    if result_df is None:
+                        result_df = file_df
+                    else:
+                        result_df = pd.concat([result_df, file_df], ignore_index=True)
+                    
+                    # Free memory
+                    del file_df
+                    del chunk_list
+                    gc.collect()
                     
             except Exception as e:
                 logger.error(f"Error processing file {file_key}: {str(e)}")
@@ -186,17 +188,12 @@ def load_all_csv_data_from_s3(latest_date_processed: str = None) -> pd.DataFrame
                 if temp_file.exists():
                     temp_file.unlink()
         
-        if not all_data_frames:
-            logger.error("No valid DataFrames to combine")
+        if result_df is None or result_df.empty:
+            logger.error("No valid data to return")
             return pd.DataFrame()
             
-        combined_data = pd.concat(all_data_frames, ignore_index=True)
-        if combined_data.empty:
-            logger.error("Combined DataFrame is empty")
-            return pd.DataFrame()
-            
-        logger.info(f"Combined data contains {len(combined_data)} rows")
-        return combined_data
+        logger.info(f"Combined data contains {len(result_df)} rows")
+        return result_df
         
     except Exception as e:
         logger.error(f"Critical error in load_all_csv_data_from_s3: {str(e)}")

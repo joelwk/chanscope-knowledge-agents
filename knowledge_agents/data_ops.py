@@ -10,6 +10,8 @@ from .data_processing.cloud_handler import load_all_csv_data_from_s3
 from .stratified_ops import split_dataframe
 from config.settings import Config
 from knowledge_agents.data_processing.sampler import Sampler
+import numpy as np
+import gc
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -43,8 +45,7 @@ class DataConfig:
             sample_size=Config.DEFAULT_BATCH_SIZE,
             filter_date=Config.FILTER_DATE if hasattr(Config, 'FILTER_DATE') else None,
             time_column=Config.TIME_COLUMN,
-            strata_column=Config.STRATA_COLUMN
-        )
+            strata_column=Config.STRATA_COLUMN)
 
 class DataStateManager:
     """Manages data state and validation."""
@@ -178,43 +179,29 @@ class DataOperations:
         await self._fetch_and_save_data()
 
     def _cleanup_existing_data(self):
-        """Clean up existing data files and directories while preserving mount points."""
-        self._logger.info("Cleaning up existing data")
+        """Clean up existing data files while preserving other directories and files."""
+        self._logger.info("Cleaning up data files")
         try:
-            paths_to_cleanup = [
-                self.config.all_data_path,
-                self.config.stratified_data_path,
-                self.config.knowledge_base_path
-            ]
+            # Only clean up specific data files and directories
+            if self.config.all_data_path.exists():
+                self.config.all_data_path.unlink()
+                self._logger.info(f"Removed file: {self.config.all_data_path}")
             
-            # Clean up each path individually
-            for path in paths_to_cleanup:
-                if path.exists():
-                    if path.is_file():
-                        path.unlink()
-                        self._logger.info(f"Removed file: {path}")
-                    elif path.is_dir():
-                        # Remove contents of directory instead of directory itself
-                        for item in path.glob("*"):
-                            if item.is_file():
-                                item.unlink()
-                                self._logger.info(f"Removed file: {item}")
-                            elif item.is_dir():
-                                shutil.rmtree(item)
-                                self._logger.info(f"Removed directory: {item}")
-                        self._logger.info(f"Cleaned directory contents: {path}")
-            
-            # Clean contents of root path if it exists, but don't remove the directory itself
-            if self.config.root_path.exists():
-                for item in self.config.root_path.glob("*"):
+            # Clean up stratified data directory contents
+            if self.config.stratified_data_path.exists():
+                for item in self.config.stratified_data_path.glob("*"):
                     if item.is_file():
                         item.unlink()
                         self._logger.info(f"Removed file: {item}")
                     elif item.is_dir():
-                        # Skip mounted directories
-                        if item != self.config.stratified_data_path:
-                            shutil.rmtree(item)
-                            self._logger.info(f"Removed directory: {item}")
+                        shutil.rmtree(item)
+                        self._logger.info(f"Removed directory: {item}")
+                self._logger.info(f"Cleaned stratified data directory: {self.config.stratified_data_path}")
+            
+            # Clean up knowledge base file if it exists
+            if self.config.knowledge_base_path.exists():
+                self.config.knowledge_base_path.unlink()
+                self._logger.info(f"Removed file: {self.config.knowledge_base_path}")
             
             self._logger.info("Data cleanup complete")
         except Exception as e:
@@ -222,33 +209,69 @@ class DataOperations:
             raise
         
     async def _fetch_and_save_data(self):
-        """Fetch and save new data."""
+        """Fetch and save new data in chunks."""
         self._logger.info(f"Fetching new data with filter date: {self.config.filter_date}")
         try:
             # Ensure parent directory exists before saving
             self.config.all_data_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # Load data in chunks and save directly
+            chunk_size = 50000  # Process 50k rows at a time
             new_data = load_all_csv_data_from_s3(latest_date_processed=self.config.filter_date)
-            new_data.to_csv(self.config.all_data_path, index=False)
-            self._logger.info(f"New data saved successfully: {len(new_data)} rows")
+            
+            # Save in chunks to avoid memory issues
+            if not new_data.empty:
+                for i, chunk in enumerate(np.array_split(new_data, max(1, len(new_data) // chunk_size))):
+                    mode = 'w' if i == 0 else 'a'
+                    header = i == 0
+                    chunk_df = pd.DataFrame(chunk)
+                    chunk_df.to_csv(self.config.all_data_path, index=False, mode=mode, header=header)
+                    del chunk_df
+                    gc.collect()
+                
+                self._logger.info(f"New data saved successfully: {len(new_data)} rows")
+            else:
+                self._logger.warning("No new data to save")
+                
+            # Clean up
+            del new_data
+            gc.collect()
+            
         except Exception as e:
             self._logger.error(f"Data fetch failed: {e}")
             raise
 
     async def _process_existing_data(self):
-        """Process and stratify existing data."""
+        """Process and stratify existing data in chunks."""
         self._logger.info("Processing existing data")
         try:
-            # Load data
-            data = pd.read_csv(self.config.all_data_path)
+            chunk_size = 50000  # Process 50k rows at a time
+            processed_chunks = []
             
-            # Stratify
-            stratified_data = await self.processor.stratify_data(data)
+            # Read and process data in chunks
+            for chunk in pd.read_csv(self.config.all_data_path, chunksize=chunk_size):
+                # Stratify chunk
+                stratified_chunk = await self.processor.stratify_data(chunk)
+                processed_chunks.append(stratified_chunk)
+                
+                # Clean up
+                del chunk
+                gc.collect()
             
-            # Split and save
-            await self.processor.split_data(stratified_data)
-            
+            # Combine processed chunks
+            if processed_chunks:
+                stratified_data = pd.concat(processed_chunks, ignore_index=True)
+                
+                # Split and save
+                await self.processor.split_data(stratified_data)
+                
+                # Clean up
+                del stratified_data
+                del processed_chunks
+                gc.collect()
+                
             self._logger.info("Data processing complete")
+            
         except Exception as e:
             self._logger.error(f"Data processing failed: {e}")
             raise

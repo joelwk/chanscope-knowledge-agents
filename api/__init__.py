@@ -1,9 +1,11 @@
-from flask import Flask
-from flask_cors import CORS
+from quart import Quart
+from quart_cors import cors
 import logging
 from dotenv import load_dotenv
 import os
 from pathlib import Path
+from config.settings import Config
+from knowledge_agents import KnowledgeAgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +32,17 @@ if not env_path.exists():
 logger.info(f"Loading environment from root: {env_path}")
 load_dotenv(env_path)
 
+def is_replit_env():
+    """Check if running in Replit environment."""
+    return bool(os.getenv('REPL_SLUG')) and bool(os.getenv('REPL_OWNER'))
+
 def create_app():
-    """Create and configure the Flask application."""
-    app = Flask(__name__)
+    """Create and configure the Quart application."""
+    app = Quart(__name__)
+    app.config['PROPAGATE_EXCEPTIONS'] = True
     
     # Enable CORS for all routes
-    CORS(app)
+    app = cors(app)
     
     # Configure logging
     if not app.debug:
@@ -45,15 +52,47 @@ def create_app():
         ))
         app.logger.addHandler(handler)
         app.logger.setLevel(logging.INFO)
+    else:
+        # Disable default logging in debug mode
+        werkzeug_logger = logging.getLogger('werkzeug')
+        werkzeug_logger.setLevel(logging.ERROR)
+
+    # Load configuration
+    config = Config()
+    logger.info("=== App Configuration ===")
+    logger.info(f"- QUART_ENV: {os.getenv('QUART_ENV', 'development')}")
+    logger.info(f"- API_HOST: {config.API_HOST}")
+    logger.info(f"- API_PORT: {config.API_PORT}")
+    logger.info(f"- REPLIT_ENV: {is_replit_env()}")
+
+    # Log all possible base URLs
+    api_settings = config.get_api_settings()
+    base_urls = api_settings.get('base_urls', [])
+    logger.info("Available API endpoints:")
+    for url in base_urls:
+        logger.info(f"- {url}")
+
+    if is_replit_env():
+        logger.info("=== Replit Environment Details ===")
+        logger.info(f"- REPL_SLUG: {os.getenv('REPL_SLUG')}")
+        logger.info(f"- REPL_OWNER: {os.getenv('REPL_OWNER')}")
+        logger.info(f"- REPL_PORT: {os.getenv('PORT')}")
+        logger.info(
+            f"- Expected URL: https://{os.getenv('REPL_SLUG')}.{os.getenv('REPL_OWNER')}.repl.co"
+        )
+
+    # Create knowledge agent configuration
+    app.config['KNOWLEDGE_CONFIG'] = {
+        'DEFAULT_SAMPLE_SIZE': config.DEFAULT_SAMPLE_SIZE,
+        'DEFAULT_BATCH_SIZE': config.DEFAULT_BATCH_SIZE,
+        'DEFAULT_MAX_WORKERS': config.DEFAULT_MAX_WORKERS,
+        'PROVIDERS': config.get_provider_settings(),
+        'PATHS': config.get_data_paths(),
+        'ROOT_PATH': config.PROJECT_ROOT
+    }
     
     # Import routes
     from .routes import register_routes
     register_routes(app)
-    
-    # Log that the app was created with environment info
-    logger.info("Flask app created and configured with environment:")
-    logger.info(f"- FLASK_ENV: {os.getenv('FLASK_ENV', 'development')}")
-    logger.info(f"- API_PORT: {os.getenv('API_PORT', 5000)}")
-    logger.info(f"- DOCKER_ENV: {os.getenv('DOCKER_ENV', 'false')}")
     
     return app 

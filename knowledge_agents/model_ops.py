@@ -2,7 +2,7 @@ import os
 from enum import Enum
 from typing import Dict, Any, Optional, Tuple, List, Union
 from pydantic import BaseModel, Field
-from openai import OpenAI
+from openai import AsyncOpenAI
 import logging
 import yaml
 from tenacity import retry, wait_random_exponential, stop_after_attempt
@@ -175,7 +175,7 @@ class KnowledgeAgent:
         # Check for OpenAI configuration
         if self.model_config.openai_api_key:
             try:
-                clients['openai'] = OpenAI(api_key=self.model_config.openai_api_key)
+                clients['openai'] = AsyncOpenAI(api_key=self.model_config.openai_api_key)
                 logger.info("OpenAI client initialized successfully")
             except Exception as e:
                 logger.warning(f"Failed to initialize OpenAI client: {str(e)}")
@@ -473,7 +473,7 @@ class KnowledgeAgent:
                 return self.embedding_request(text, provider=ModelProvider.OPENAI)
             raise
 
-    def _get_client(self, provider: ModelProvider) -> OpenAI:
+    def _get_client(self, provider: ModelProvider) -> AsyncOpenAI:
         """Retrieve the appropriate client for a provider."""
         if not isinstance(provider, ModelProvider):
             provider = ModelProvider.from_str(provider)

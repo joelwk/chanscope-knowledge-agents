@@ -43,3 +43,11 @@ htmlcov/
 
 # Docker
 .docker/
+
+# Replit specific
+.replit.backup
+.breakpoints
+replit.nix.backup
+.config/
+.upm/
+.cache/
