@@ -2,106 +2,173 @@ import numpy as np
 import os
 import logging
 from pathlib import Path
+from typing import Iterator, Optional
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+class StreamingStratifier:
+    """A streaming implementation of stratified sampling."""
+
+    def __init__(self, fraction: Optional[float] = None, 
+                 sample_size: Optional[int] = None,
+                 stratify_column: Optional[str] = None,
+                 seed: Optional[int] = None):
+        """Initialize the streaming stratifier.
+
+        Args:
+            fraction: Fraction of data to sample in each split
+            sample_size: Number of rows to include in each split
+            stratify_column: Column to stratify by
+            seed: Random seed for reproducibility
+        """
+        if fraction is not None and sample_size is not None:
+            raise ValueError("Cannot provide both 'fraction' and 'sample_size'")
+        if fraction is None and sample_size is None:
+            raise ValueError("Must provide either 'fraction' or 'sample_size'")
+
+        self.fraction = fraction
+        self.sample_size = sample_size
+        self.stratify_column = stratify_column
+        self.seed = seed
+        self.rng = np.random.RandomState(seed)
+
+        # Initialize state
+        self.current_split = []
+        self.current_split_size = 0
+        self.total_processed = 0
+        self.strata_counts = {}
+
+    def _calculate_target_size(self, chunk_size: int) -> int:
+        """Calculate target size for current chunk based on fraction or sample_size."""
+        if self.fraction is not None:
+            return int(chunk_size * self.fraction)
+        return min(self.sample_size, chunk_size)
+
+    def process_chunk(self, chunk: pd.DataFrame) -> Iterator[pd.DataFrame]:
+        """Process a chunk of data and yield complete splits when ready.
+
+        Args:
+            chunk: DataFrame chunk to process
+
+        Yields:
+            Complete splits of the data when they reach the target size
+        """
+        if self.stratify_column and self.stratify_column not in chunk.columns:
+            raise ValueError(f"Stratify column '{self.stratify_column}' not in chunk")
+
+        target_size = self._calculate_target_size(len(chunk))
+
+        if self.stratify_column:
+            # Update strata counts
+            current_strata = chunk[self.stratify_column].value_counts()
+            for stratum, count in current_strata.items():
+                self.strata_counts[stratum] = self.strata_counts.get(stratum, 0) + count
+
+            # Calculate sampling weights for each stratum
+            total_rows = sum(self.strata_counts.values())
+            strata_weights = {
+                stratum: count / total_rows 
+                for stratum, count in self.strata_counts.items()
+            }
+
+            # Sample from each stratum proportionally
+            sampled_indices = []
+            for stratum in chunk[self.stratify_column].unique():
+                stratum_mask = chunk[self.stratify_column] == stratum
+                stratum_size = int(target_size * strata_weights.get(stratum, 0))
+                if stratum_size > 0:
+                    stratum_indices = chunk[stratum_mask].index
+                    if len(stratum_indices) > stratum_size:
+                        sampled_indices.extend(
+                            self.rng.choice(stratum_indices, size=stratum_size, replace=False)
+                        )
+                    else:
+                        sampled_indices.extend(stratum_indices)
+
+            current_sample = chunk.loc[sampled_indices]
+        else:
+            # Simple random sampling
+            if len(chunk) > target_size:
+                current_sample = chunk.sample(n=target_size, random_state=self.rng)
+            else:
+                current_sample = chunk
+
+        self.current_split.append(current_sample)
+        self.current_split_size += len(current_sample)
+        self.total_processed += len(chunk)
+
+        # Yield complete splits
+        if self.sample_size and self.current_split_size >= self.sample_size:
+            combined_split = pd.concat(self.current_split, ignore_index=True)
+            if len(combined_split) > self.sample_size:
+                combined_split = combined_split.head(self.sample_size)
+            yield combined_split
+            self.current_split = []
+            self.current_split_size = 0
+
+    def get_remaining_split(self) -> Optional[pd.DataFrame]:
+        """Get any remaining data as a final split."""
+        if self.current_split:
+            return pd.concat(self.current_split, ignore_index=True)
+        return None
+
+def stream_stratified_split(data_iterator: Iterator[pd.DataFrame], 
+                          fraction: Optional[float] = None,
+                          sample_size: Optional[int] = None,
+                          stratify_column: Optional[str] = None,
+                          seed: Optional[int] = None) -> Iterator[pd.DataFrame]:
+    """Stream and stratify data in chunks.
+
+    Args:
+        data_iterator: Iterator yielding DataFrame chunks
+        fraction: Fraction of data to include in each split
+        sample_size: Number of rows to include in each split
+        stratify_column: Column to stratify by
+        seed: Random seed for reproducibility
+
+    Yields:
+        DataFrame splits of the specified size
+    """
+    stratifier = StreamingStratifier(
+        fraction=fraction,
+        sample_size=sample_size,
+        stratify_column=stratify_column,
+        seed=seed
+    )
+
+    for chunk in data_iterator:
+        yield from stratifier.process_chunk(chunk)
+
+    # Yield any remaining data
+    remaining = stratifier.get_remaining_split()
+    if remaining is not None:
+        yield remaining
+
+# Keep the original function for backwards compatibility
 def split_dataframe(df, fraction=None, sample_size=None, stratify_column=None, 
                    save_directory=None, seed=None, file_format='csv'):
-    """
-    Split a DataFrame into stratified subsets based on a fraction or sample size,
-    with an optional feature to save the subsets to a directory.
+    """Original function maintained for backwards compatibility."""
+    chunks = [df]  # Convert full DataFrame to single-chunk iterator
+    splits = list(stream_stratified_split(
+        chunks, fraction, sample_size, stratify_column, seed
+    ))
 
-    Parameters:
-    - df (pd.DataFrame): Input DataFrame.
-    - fraction (float, optional): Fraction of the data to include in each split. 
-                               Defaults to None.
-    - sample_size (int, optional): Number of rows to include in each split. 
-                                Defaults to None.
-    - stratify_column (str, optional): Column name to stratify the splits by. 
-                                    Must be present in the DataFrame. Defaults to None.
-    - save_directory (str, optional): Directory path to save the subsets. 
-                                   Defaults to None.
-    - seed (int, optional): Random seed for reproducibility. Defaults to None.
-    - file_format (str, optional): File format for saving (e.g., 'csv', 'pickle', 'excel'). 
-                                Defaults to 'csv'.
-    
-    Returns:
-    - list of pd.DataFrames: A list of stratified subsets of the original DataFrame.
-    """
-    # Input validation
-    if fraction is not None and sample_size is not None:
-        raise ValueError("Cannot provide both 'fraction' and 'sample_size'. Choose one.")
-        
-    if fraction is None and sample_size is None:
-        raise ValueError("Must provide either 'fraction' or 'sample_size'.")
-
-    if stratify_column is not None and stratify_column not in df.columns:
-        raise ValueError(f"'{stratify_column}' is not a column in the DataFrame.")
-
-    # Set random seed for reproducibility if provided
-    if seed is not None:
-        np.random.seed(seed)
-
-    # Reset index to avoid issues with index alignment
-    df = df.reset_index(drop=True)
-
-    # Calculate the number of splits based on the fraction or sample size
-    if fraction is not None:
-        sample_size = int(len(df) * fraction)
-    
-    num_splits = int(np.floor(len(df) / sample_size))
-    remaining_rows = len(df) % sample_size
-
-    # Initialize an empty list to store the subsets
-    subsets = []
-
-    # Stratified Split
-    if stratify_column:
-        remaining_df = df.copy()
-        while len(remaining_df) >= sample_size:
-            # Get stratified sample
-            stratified_sample = remaining_df.groupby(stratify_column, group_keys=False) \
-                .apply(lambda x: x.sample(min(len(x), int(np.ceil(sample_size * len(x) / len(remaining_df)))), 
-                                        random_state=seed))
-            
-            # Ensure we don't exceed sample_size
-            if len(stratified_sample) > sample_size:
-                stratified_sample = stratified_sample.sample(sample_size, random_state=seed)
-            
-            subsets.append(stratified_sample)
-            
-            # Remove sampled indices from remaining_df
-            remaining_df = remaining_df.drop(stratified_sample.index)
-        
-        # Handle remaining rows if any
-        if len(remaining_df) > 0:
-            subsets.append(remaining_df)
-    else:
-        # Random split
-        df_shuffled = df.sample(frac=1, random_state=seed)
-        for i in range(num_splits):
-            subsets.append(df_shuffled.iloc[i*sample_size:(i+1)*sample_size].copy())
-        
-        # Handle remaining rows
-        if remaining_rows > 0:
-            subsets.append(df_shuffled.tail(remaining_rows).copy())
-
-    # Save subsets if directory provided
     if save_directory:
         save_dir = Path(save_directory)
         save_dir.mkdir(parents=True, exist_ok=True)
-        
-        for i, subset in enumerate(subsets):
+
+        for i, split in enumerate(splits):
             filename = f"dataset_{i+1}_subset"
             filepath = save_dir / f"{filename}.{file_format}"
-            
+
             if file_format == 'csv':
-                subset.to_csv(filepath, index=False)
+                split.to_csv(filepath, index=False)
             elif file_format == 'pickle':
-                subset.to_pickle(filepath)
+                split.to_pickle(filepath)
             elif file_format == 'excel':
-                subset.to_excel(filepath, index=False)
+                split.to_excel(filepath, index=False)
             else:
                 raise ValueError(f"Unsupported file format: {file_format}")
 
-    return subsets
+    return splits

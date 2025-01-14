@@ -63,9 +63,20 @@ class KnowledgeAgentConfig:
         if self.providers is None:
             self.providers = {
                 ModelOperation.EMBEDDING: ModelProvider.OPENAI,
-                ModelOperation.CHUNK_GENERATION: ModelProvider.GROK,
-                ModelOperation.SUMMARIZATION: ModelProvider.VENICE
+                ModelOperation.CHUNK_GENERATION: ModelProvider.OPENAI,  # Default to OpenAI for chunk generation
+                ModelOperation.SUMMARIZATION: ModelProvider.OPENAI  # Default to OpenAI for summarization
             }
+        else:
+            # Ensure all required operations have providers
+            required_operations = {
+                ModelOperation.EMBEDDING,
+                ModelOperation.CHUNK_GENERATION,
+                ModelOperation.SUMMARIZATION
+            }
+            missing_ops = required_operations - set(self.providers.keys())
+            if missing_ops:
+                for op in missing_ops:
+                    self.providers[op] = ModelProvider.OPENAI  # Default to OpenAI for missing operations
 
     @classmethod
     def from_env(cls, env: Dict[str, str]) -> 'KnowledgeAgentConfig':

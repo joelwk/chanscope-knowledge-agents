@@ -6,8 +6,7 @@ import logging
 import warnings
 from dotenv import load_dotenv
 
-warnings.simplefilter(action='ignore', category=FutureWarning)
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -20,13 +19,13 @@ class Sampler:
         time_column: Optional[str] = None,
         strata_column: Optional[str] = None,
         initial_sample_size: Optional[int] = None,
-        filter_date: Optional[str] = None
-    ):
+        filter_date: Optional[str] = None):
+        
         """Initialize sampler with configuration."""
         self.time_column = time_column or Config.TIME_COLUMN
         self.strata_column = strata_column or Config.STRATA_COLUMN
         self.freq = Config.FREQ if hasattr(Config, 'FREQ') else 'H'
-        self.initial_sample_size = initial_sample_size or Config.DEFAULT_BATCH_SIZE
+        self.initial_sample_size = initial_sample_size or Config.DEFAULT_SAMPLE_SIZE
         
         # Handle filter date - convert to datetime once during initialization
         config_filter_date = Config.FILTER_DATE if hasattr(Config, 'FILTER_DATE') else None

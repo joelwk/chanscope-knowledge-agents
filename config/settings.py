@@ -121,41 +121,31 @@ class Config:
     FLASK_ENV = os.getenv('FLASK_ENV', 'development')
 
     # API settings
-    DEFAULT_BATCH_SIZE = int(os.getenv('BATCH_SIZE', 100))
-    DEFAULT_SAMPLE_SIZE = int(os.getenv('SAMPLE_SIZE', 2500))
-    DEFAULT_MAX_WORKERS = int(os.getenv('MAX_WORKERS', 4))
-    MAX_TOKENS = int(os.getenv('MAX_TOKENS', 2048))
-    CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', 1000))
+    DEFAULT_BATCH_SIZE = int(os.getenv('BATCH_SIZE'))
+    DEFAULT_SAMPLE_SIZE = int(os.getenv('SAMPLE_SIZE'))
+    DEFAULT_MAX_WORKERS = int(os.getenv('MAX_WORKERS'))
+    MAX_TOKENS = int(os.getenv('MAX_TOKENS'))
+    CHUNK_SIZE = int(os.getenv('CHUNK_SIZE'))
     CACHE_ENABLED = os.getenv('CACHE_ENABLED', 'true').lower() == 'true'
 
     # Model settings
-    DEFAULT_EMBEDDING_PROVIDER = os.getenv('DEFAULT_EMBEDDING_PROVIDER',
-                                           'openai')
+    DEFAULT_EMBEDDING_PROVIDER = os.getenv('DEFAULT_EMBEDDING_PROVIDER','openai')
     DEFAULT_CHUNK_PROVIDER = os.getenv('DEFAULT_CHUNK_PROVIDER', 'openai')
     DEFAULT_SUMMARY_PROVIDER = os.getenv('DEFAULT_SUMMARY_PROVIDER', 'openai')
 
     # OpenAI settings with model validation
-    OPENAI_MODEL = _validate_model_name(os.getenv('OPENAI_MODEL', 'gpt-4o'),
-                                        'openai', 'completion')
-    OPENAI_EMBEDDING_MODEL = _validate_model_name(
-        os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large'),
-        'openai', 'embedding')
+    OPENAI_MODEL = _validate_model_name(os.getenv('OPENAI_MODEL', 'gpt-4o'),'openai', 'completion')
+    OPENAI_EMBEDDING_MODEL = _validate_model_name(os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large'),'openai', 'embedding')
 
     # Grok settings with model validation
     GROK_API_KEY = _clean_api_key(os.getenv('GROK_API_KEY'))
-    GROK_MODEL = _validate_model_name(os.getenv('GROK_MODEL', 'grok-2-1212'),
-                                      'grok', 'completion')
-    GROK_EMBEDDING_MODEL = _validate_model_name(
-        os.getenv('GROK_EMBEDDING_MODEL', 'grok-v1-embedding'), 'grok',
-        'embedding')
+    GROK_MODEL = _validate_model_name(os.getenv('GROK_MODEL', 'grok-2-1212'), 'grok', 'completion')
+    GROK_EMBEDDING_MODEL = _validate_model_name(os.getenv('GROK_EMBEDDING_MODEL', 'grok-v1-embedding'), 'grok','embedding')
 
     # Venice settings with model validation
     VENICE_API_KEY = _clean_api_key(os.getenv('VENICE_API_KEY'))
-    VENICE_MODEL = _validate_model_name(
-        os.getenv('VENICE_MODEL', 'llama-3.1-405b'), 'venice', 'completion')
-    VENICE_CHUNK_MODEL = _validate_model_name(
-        os.getenv('VENICE_CHUNK_MODEL', 'dolphin-2.9.2-qwen2-72b'), 'venice',
-        'chunk')
+    VENICE_MODEL = _validate_model_name(os.getenv('VENICE_MODEL', 'llama-3.1-405b'), 'venice', 'completion')
+    VENICE_CHUNK_MODEL = _validate_model_name(os.getenv('VENICE_CHUNK_MODEL', 'dolphin-2.9.2-qwen2-72b'), 'venice','chunk')
 
     # AWS settings
     AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
@@ -169,17 +159,15 @@ class Config:
     STRATA_COLUMN = os.getenv('STRATA_COLUMN')
     FREQ = os.getenv('FREQ', 'H')
     FILTER_DATE = os.getenv('FILTER_DATE')
-    SELECT_BOARD = _parse_none_value(
-        os.getenv('SELECT_BOARD'))  # Now properly handles "None"
+    SELECT_BOARD = _parse_none_value(os.getenv('SELECT_BOARD'))  # Now properly handles "None"
     PADDING_ENABLED = os.getenv('PADDING_ENABLED', 'false')
-    CONTRACTION_MAPPING_ENABLED = os.getenv('CONTRACTION_MAPPING_ENABLED',
-                                            'false')
+    CONTRACTION_MAPPING_ENABLED = os.getenv('CONTRACTION_MAPPING_ENABLED','false')
     NON_ALPHA_NUMERIC_ENABLED = os.getenv('NON_ALPHA_NUMERIC_ENABLED', 'false')
 
     # API Configuration
-    API_HOST = os.getenv('API_HOST', '0.0.0.0')  # Host for
+    API_HOST = os.getenv('API_HOST')  # Host for
     # Use Replit's PORT env var if available, otherwise use API_PORT from env or default to 5000
-    API_PORT = 5000
+    API_PORT = os.getenv('API_PORT')
     API_TIMEOUT = 1500  # 25 minutes in seconds
 
     @classmethod

@@ -74,7 +74,7 @@ async def _run_knowledge_agents_async(
         # Step 1: Generate embeddings using embedding model
         logger.info(f"Using {config.providers[ModelOperation.EMBEDDING]} for embeddings")
         try:
-            get_relevant_content(
+            await get_relevant_content(
                 library=str(config.stratified_data_path),
                 knowledge_base=str(config.knowledge_base_path),
                 batch_size=config.batch_size,

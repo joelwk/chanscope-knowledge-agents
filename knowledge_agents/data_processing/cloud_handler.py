@@ -2,10 +2,12 @@ import boto3
 import os
 import pandas as pd
 import logging
+import gc
 from pathlib import Path
 from typing import Optional
 from dateutil import tz
 from config.settings import Config
+from io import StringIO
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -84,117 +86,100 @@ class S3Handler:
         self.s3.upload_file(local_file, self.bucket_name, key)
         logger.info(f"Uploaded file {local_file} to {self.bucket_name}/{key}")
 
-def load_all_csv_data_from_s3(latest_date_processed: str = None) -> pd.DataFrame:
-    """Load all CSV data from S3 bucket with memory-efficient chunked processing."""
-    connector = S3Handler()
-    s3_client = connector.get_s3_client()
-    chunk_size = 50000  # Process 50k rows at a time
-    
-    try:
-        logger.info("Loading data from S3 bucket: %s", Config.S3_BUCKET)
-        logger.info("Using S3 prefix: %s", Config.S3_BUCKET_PREFIX)
-        logger.info("AWS Region: %s", Config.AWS_DEFAULT_REGION)
+    def stream_csv_data(self, latest_date_processed: str = None):
+        """Stream CSV data from S3, filtering by LastModified date.
         
-        # Log AWS credentials state (safely)
-        if not Config.AWS_ACCESS_KEY_ID or not Config.AWS_SECRET_ACCESS_KEY:
-            logger.error("AWS credentials not properly configured")
-            raise ValueError("AWS credentials not properly configured")
+        Args:
+            latest_date_processed: Optional date string to filter data
             
-        response = s3_client.list_objects_v2(Bucket=Config.S3_BUCKET, Prefix=Config.S3_BUCKET_PREFIX)
-        if 'Contents' not in response:
-            logger.warning(f"No files found in bucket {Config.S3_BUCKET} with prefix {Config.S3_BUCKET_PREFIX}")
-            return pd.DataFrame()
-        
-        # Handle date filtering
-        if latest_date_processed:
-            latest_date_processed = pd.to_datetime(latest_date_processed, utc=True)
-            if latest_date_processed.tzinfo is None or latest_date_processed.tzinfo != tz.UTC:
-                latest_date_processed = latest_date_processed.astimezone(tz.UTC)
-            logger.info(f"Latest date processed: {latest_date_processed}")
-        
-        # Filter files based on board prefix and latest_date_processed
-        filtered_files = []
-        for item in response.get('Contents', []):
-            if item['Key'].endswith('.csv'):
-                if Config.SELECT_BOARD is None or f'chanscope_{Config.SELECT_BOARD}' in item['Key']:
-                    if latest_date_processed is None or item['LastModified'].astimezone(tz.UTC) > latest_date_processed:
-                        filtered_files.append(item)
+        Yields:
+            pd.DataFrame: Chunks of filtered data
+        """
+        try:
+            logger.info("Streaming data from S3 bucket: %s", self.bucket_name)
+            
+            # Convert latest_date_processed to UTC datetime for metadata comparison
+            if latest_date_processed:
+                latest_date = pd.to_datetime(latest_date_processed, utc=True)
+                if latest_date.tzinfo is None or latest_date.tzinfo != tz.UTC:
+                    latest_date = latest_date.astimezone(tz.UTC)
+                logger.info(f"Latest date processed: {latest_date}")
+            else:
+                latest_date = None
+            
+            response = self.s3.list_objects_v2(
+                Bucket=self.bucket_name, 
+                Prefix=self.bucket_prefix
+            )
+            
+            if 'Contents' not in response:
+                logger.warning(f"No files found in bucket {self.bucket_name}")
+                return
+                
+            # Filter files based on board prefix and LastModified date
+            csv_objects = []
+            for item in response.get('Contents', []):
+                if (item['Key'].endswith('.csv') and 
+                    (Config.SELECT_BOARD is None or f'chanscope_{Config.SELECT_BOARD}' in item['Key'])):
+                    if latest_date is None or item['LastModified'].astimezone(tz.UTC) > latest_date:
+                        csv_objects.append(item['Key'])
                         logger.debug(f"Found matching file: {item['Key']}")
-        
-        csv_objects = [item['Key'] for item in filtered_files]
-        logger.info(f"Found {len(csv_objects)} CSV files to process")
-        
-        if not csv_objects:
-            logger.warning("No CSV files found to process.")
-            return pd.DataFrame()
-        
-        required_columns = {'thread_id', 'posted_date_time', 'text_clean'}
-        result_df = None
-        
-        for file_key in csv_objects:
-            try:
-                temp_file = Path(f"temp_{Path(file_key).name}")
-                logger.info(f"Downloading {file_key} to {temp_file}")
-                s3_client.download_file(Config.S3_BUCKET, file_key, str(temp_file))
-                
-                # Process file in chunks
-                chunk_list = []
-                for chunk in pd.read_csv(temp_file, chunksize=chunk_size, low_memory=False):
-                    if chunk.empty:
-                        continue
-                        
-                    # Check required columns
-                    missing_cols = required_columns - set(chunk.columns)
-                    if missing_cols:
-                        logger.error(f"Missing required columns in {file_key}: {missing_cols}")
-                        continue
-                    
-                    # Validate posted_date_time format
-                    try:
-                        chunk['posted_date_time'] = pd.to_datetime(chunk['posted_date_time'], utc=True)
-                    except Exception as e:
-                        logger.error(f"Invalid datetime format in {file_key}: {str(e)}")
-                        continue
-                    
-                    # Remove rows with NaN in required columns
-                    chunk = chunk.dropna(subset=list(required_columns))
-                    
-                    if len(chunk) > 0:
-                        chunk_list.append(chunk)
-                    
-                    # Free memory
-                    del chunk
-                    import gc
-                    gc.collect()
-                
-                if chunk_list:
-                    file_df = pd.concat(chunk_list, ignore_index=True)
-                    logger.info(f"Successfully loaded {file_key} with {len(file_df)} valid rows")
-                    
-                    if result_df is None:
-                        result_df = file_df
-                    else:
-                        result_df = pd.concat([result_df, file_df], ignore_index=True)
-                    
-                    # Free memory
-                    del file_df
-                    del chunk_list
-                    gc.collect()
-                    
-            except Exception as e:
-                logger.error(f"Error processing file {file_key}: {str(e)}")
-                continue
-            finally:
-                if temp_file.exists():
-                    temp_file.unlink()
-        
-        if result_df is None or result_df.empty:
-            logger.error("No valid data to return")
-            return pd.DataFrame()
             
-        logger.info(f"Combined data contains {len(result_df)} rows")
-        return result_df
-        
-    except Exception as e:
-        logger.error(f"Critical error in load_all_csv_data_from_s3: {str(e)}")
-        raise
+            logger.info(f"Found {len(csv_objects)} CSV files to process")
+            
+            for s3_key in csv_objects:
+                try:
+                    # Create a temporary file
+                    temp_file = Path(f"temp_{Path(s3_key).name}")
+                    try:
+                        # Download the file
+                        logger.info(f"Downloading {s3_key}")
+                        self.s3.download_file(self.bucket_name, s3_key, str(temp_file))
+                        
+                        # Process file in chunks with robust error handling
+                        for chunk in pd.read_csv(
+                            temp_file,
+                            chunksize=Config.DEFAULT_BATCH_SIZE,
+                            usecols=['thread_id', 'posted_date_time', 'text_clean'],
+                            on_bad_lines='skip',
+                            encoding='utf-8'
+                        ):
+                            try:
+                                # Convert posted_date_time to datetime
+                                chunk['posted_date_time'] = pd.to_datetime(chunk['posted_date_time'], utc=True, errors='coerce')
+                                chunk = chunk.dropna(subset=['posted_date_time'])
+                                
+                                # Filter by date if needed
+                                if latest_date is not None:
+                                    chunk = chunk[chunk['posted_date_time'] > latest_date]
+                                
+                                if not chunk.empty:
+                                    yield chunk
+                                    
+                            except Exception as e:
+                                logger.error(f"Error processing chunk from {s3_key}: {str(e)}")
+                                continue
+                                
+                    except Exception as e:
+                        logger.error(f"Error processing file {s3_key}: {str(e)}")
+                    finally:
+                        # Clean up temporary file
+                        if temp_file.exists():
+                            temp_file.unlink()
+                            
+                except Exception as e:
+                    logger.error(f"Error handling file {s3_key}: {str(e)}")
+                    continue
+                
+        except Exception as e:
+            logger.error(f"Critical error in stream_csv_data: {str(e)}")
+            raise
+
+def load_all_csv_data_from_s3(latest_date_processed: str = None):
+    """Load all CSV data from S3 bucket using streaming and S3 Select.
+    
+    Yields:
+        pd.DataFrame: Chunks of the filtered data.
+    """
+    connector = S3Handler()
+    yield from connector.stream_csv_data(latest_date_processed)

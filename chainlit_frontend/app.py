@@ -27,23 +27,18 @@ API_TIMEOUT = ClientTimeout(
 async def process_query(query: str, settings: dict):
     """Process a query using the API endpoint."""
     last_error = None
-
     # Get all possible base URLs to try
     api_settings = Config.get_api_settings()
     base_urls = api_settings.get('base_urls', [])
-
     # In Replit, ensure we use the correct URL format
     if os.getenv('REPL_SLUG') and os.getenv('REPL_OWNER'):
         replit_url = f"https://{os.getenv('REPL_SLUG')}.{os.getenv('REPL_OWNER')}.repl.co"
         if replit_url not in base_urls:
             base_urls.insert(0, replit_url)  # Add Replit URL as primary
-
         # Adjust batch size for Replit environment
-        original_batch_size = settings.get('batch_size', 100)
-        settings['batch_size'] = min(original_batch_size, 100)
+        original_batch_size = settings.get('batch_size')
         if settings['batch_size'] != original_batch_size:
             logger.warning(f"Reduced batch size from {original_batch_size} to {settings['batch_size']} for Replit environment")
-
     logger.info("=== API Connection Attempt ===")
     logger.info(f"Available API endpoints: {base_urls}")
     logger.info(f"Using settings: {settings}")

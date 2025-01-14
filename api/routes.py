@@ -3,13 +3,8 @@ from knowledge_agents.run import run_knowledge_agents
 from knowledge_agents.model_ops import ModelOperation, ModelProvider, KnowledgeAgent
 from knowledge_agents import KnowledgeAgentConfig
 from knowledge_agents.data_processing.cloud_handler import S3Handler
-import aioboto3
-import openai
+import aioboto3, openai, logging, traceback, time, os
 
-import logging
-import traceback
-import time
-import os
 from config.settings import Config
 logger = logging.getLogger(__name__)
 
@@ -216,19 +211,41 @@ def register_routes(app):
                 logger.error("Missing required parameter: query")
                 return jsonify({"error": "Missing required parameter: query"}), 400
 
-            # Get base configuration and update with request parameters
+            # Get base configuration and validate it exists
+            if 'KNOWLEDGE_CONFIG' not in app.config:
+                error_msg = "KNOWLEDGE_CONFIG not found in application configuration"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 500
+
             knowledge_config = app.config['KNOWLEDGE_CONFIG']
+
+            # Validate required configuration fields
+            required_fields = ['PATHS', 'ROOT_PATH', 'PROVIDERS']
+            missing_fields = [field for field in required_fields if field not in knowledge_config]
+            if missing_fields:
+                error_msg = f"Missing required configuration fields: {', '.join(missing_fields)}"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 500
+
             paths = knowledge_config['PATHS']
-            
+
+            # Validate required paths
+            required_paths = ['knowledge_base', 'all_data', 'stratified', 'temp']
+            missing_paths = [path for path in required_paths if path not in paths]
+            if missing_paths:
+                error_msg = f"Missing required paths in configuration: {', '.join(missing_paths)}"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 500
+
             config = KnowledgeAgentConfig(
                 root_path=knowledge_config['ROOT_PATH'],
                 knowledge_base_path=paths['knowledge_base'],
                 all_data_path=paths['all_data'],
                 stratified_data_path=paths['stratified'],
                 temp_path=paths['temp'],
-                sample_size=int(data.get('sample_size', knowledge_config['DEFAULT_SAMPLE_SIZE'])),
-                batch_size=int(data.get('batch_size', knowledge_config['DEFAULT_BATCH_SIZE'])),
-                max_workers=int(data.get('max_workers', knowledge_config['DEFAULT_MAX_WORKERS'])),
+                sample_size=int(data.get('sample_size', knowledge_config.get('DEFAULT_SAMPLE_SIZE', 2500))),
+                batch_size=int(data.get('batch_size', knowledge_config.get('DEFAULT_BATCH_SIZE', 100))),
+                max_workers=int(data.get('max_workers') or knowledge_config.get('DEFAULT_MAX_WORKERS') or 4),
                 providers=knowledge_config['PROVIDERS'].copy()
             )
 
@@ -279,19 +296,41 @@ def register_routes(app):
                 logger.error("Missing required parameter: queries")
                 return jsonify({"error": "Missing required parameter: queries"}), 400
 
-            # Get base configuration and update with request parameters
+            # Get base configuration and validate it exists
+            if 'KNOWLEDGE_CONFIG' not in app.config:
+                error_msg = "KNOWLEDGE_CONFIG not found in application configuration"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 500
+
             knowledge_config = app.config['KNOWLEDGE_CONFIG']
+
+            # Validate required configuration fields
+            required_fields = ['PATHS', 'ROOT_PATH', 'PROVIDERS']
+            missing_fields = [field for field in required_fields if field not in knowledge_config]
+            if missing_fields:
+                error_msg = f"Missing required configuration fields: {', '.join(missing_fields)}"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 500
+
             paths = knowledge_config['PATHS']
-            
+
+            # Validate required paths
+            required_paths = ['knowledge_base', 'all_data', 'stratified', 'temp']
+            missing_paths = [path for path in required_paths if path not in paths]
+            if missing_paths:
+                error_msg = f"Missing required paths in configuration: {', '.join(missing_paths)}"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 500
+
             config = KnowledgeAgentConfig(
                 root_path=knowledge_config['ROOT_PATH'],
                 knowledge_base_path=paths['knowledge_base'],
                 all_data_path=paths['all_data'],
                 stratified_data_path=paths['stratified'],
                 temp_path=paths['temp'],
-                sample_size=int(data.get('sample_size', knowledge_config['DEFAULT_SAMPLE_SIZE'])),
-                batch_size=int(data.get('batch_size', knowledge_config['DEFAULT_BATCH_SIZE'])),
-                max_workers=int(data.get('max_workers', knowledge_config['DEFAULT_MAX_WORKERS'])),
+                sample_size=int(data.get('sample_size', knowledge_config.get('DEFAULT_SAMPLE_SIZE', 2500))),
+                batch_size=int(data.get('batch_size', knowledge_config.get('DEFAULT_BATCH_SIZE', 100))),
+                max_workers=int(data.get('max_workers') or knowledge_config.get('DEFAULT_MAX_WORKERS') or 4),
                 providers=knowledge_config['PROVIDERS'].copy()
             )
 
