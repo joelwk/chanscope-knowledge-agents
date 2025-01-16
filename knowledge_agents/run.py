@@ -1,11 +1,11 @@
 """Knowledge agents runner module."""
 import logging
 import asyncio
-from typing import Tuple, List, Union
+from typing import Tuple, List, Union, Dict, Any
 from . import KnowledgeAgentConfig
 from .model_ops import ModelProvider, ModelOperation, KnowledgeAgent
 from .data_ops import DataConfig, DataOperations
-from .inference_ops import summarize_text
+from .inference_ops import process_multiple_queries
 from .embedding_ops import get_relevant_content
 from config.settings import Config
 import nest_asyncio
@@ -41,8 +41,8 @@ logger.setLevel(logging.INFO)
 async def _run_knowledge_agents_async(
     query: str,
     config: KnowledgeAgentConfig,
-    force_refresh: bool = False,
-) -> Tuple[List[str], str]:
+    force_refresh: bool = False
+) -> Tuple[List[Dict[str, Any]], str]:
     """Async implementation of knowledge agents pipeline with three distinct models."""
     try:
         logger.info("Starting knowledge agents pipeline")
@@ -77,7 +77,7 @@ async def _run_knowledge_agents_async(
             await get_relevant_content(
                 library=str(config.stratified_data_path),
                 knowledge_base=str(config.knowledge_base_path),
-                batch_size=config.batch_size,
+                batch_size=config.embedding_batch_size,
                 provider=config.providers[ModelOperation.EMBEDDING]
             )
         except Exception as e:
@@ -88,14 +88,18 @@ async def _run_knowledge_agents_async(
         logger.info(f"Using {config.providers[ModelOperation.CHUNK_GENERATION]} for chunk analysis")
         logger.info(f"Using {config.providers[ModelOperation.SUMMARIZATION]} for final summary")
         try:
-            chunks, response = await summarize_text(
-                query=query,
+            # Process single query using batch processing function
+            results = await process_multiple_queries(
+                queries=[query],  # Wrap single query in list
                 agent=agent,
                 knowledge_base_path=str(config.knowledge_base_path),
-                batch_size=config.batch_size,
+                chunk_batch_size=config.chunk_batch_size,
+                summary_batch_size=config.summary_batch_size,
                 max_workers=config.max_workers,
                 providers=config.providers
             )
+            # Unpack results for single query case
+            chunks, response = results[0]
             logger.info("Summary generated successfully")
             return chunks, response
             
@@ -111,7 +115,7 @@ def run_knowledge_agents(
     query: str,
     config: KnowledgeAgentConfig,
     force_refresh: bool = False,
-) -> Union[Tuple[List[str], str], "asyncio.Future"]:
+) -> Union[Tuple[List[Dict[str, Any]], str], "asyncio.Future"]:
     """Run knowledge agents pipeline in both notebook and script environments.
     
     This function detects the environment and handles the async execution appropriately.
@@ -144,87 +148,62 @@ def run_knowledge_agents(
 def main():
     """Main entry point with support for three-model pipeline selection."""
     import argparse
-    from pathlib import Path
-    
-    parser = argparse.ArgumentParser(description='Run knowledge agents with three-model pipeline')
-    parser.add_argument('query', type=str, help='Search query')
-    parser.add_argument('--force-refresh', action='store_true', help='Force refresh of data and knowledge base')
-    
-    # Use Config class defaults for optional arguments
-    parser.add_argument('--batch-size', type=int, default=Config.DEFAULT_BATCH_SIZE, 
-                       help='Batch size for processing')
-    parser.add_argument('--max-workers', type=int, default=Config.DEFAULT_MAX_WORKERS,
-                       help='Maximum number of worker threads')
-    parser.add_argument('--root-path', type=str, default=Config.ROOT_PATH,
-                       help='Root path for data storage')
-    parser.add_argument('--sample-size', type=int, default=Config.DEFAULT_BATCH_SIZE,
-                       help='Sample size for data processing')
-    
-    # Add provider arguments with Config defaults
-    provider_settings = Config.get_provider_settings()
-    parser.add_argument('--embedding-provider', type=str, 
-                       choices=['openai', 'grok', 'venice'],
-                       default=provider_settings['embedding_provider'],
-                       help='Provider for embeddings')
-    parser.add_argument('--chunk-provider', type=str,
-                       choices=['openai', 'grok', 'venice'],
-                       default=provider_settings['chunk_provider'],
-                       help='Provider for chunk generation and context analysis')
-    parser.add_argument('--summary-provider', type=str,
-                       choices=['openai', 'grok', 'venice'],
-                       default=provider_settings['summary_provider'],
-                       help='Provider for final analysis and forecasting')
-    
+    """Main entry point for the script."""
+    parser = argparse.ArgumentParser(description='Run knowledge agents pipeline')
+    parser.add_argument('--query', type=str, required=True,
+                      help='Query to process')
+    parser.add_argument('--force-refresh', action='store_true',
+                      help='Force refresh of cached results')
+    parser.add_argument('--sample-size', type=int, default=Config.SAMPLE_SIZE,
+                      help='Number of samples to process')
+    parser.add_argument('--embedding-batch-size', type=int, default=Config.EMBEDDING_BATCH_SIZE,
+                      help='Batch size for embedding operations')
+    parser.add_argument('--chunk-batch-size', type=int, default=Config.CHUNK_BATCH_SIZE,
+                      help='Batch size for chunk generation')
+    parser.add_argument('--summary-batch-size', type=int, default=Config.SUMMARY_BATCH_SIZE,
+                      help='Batch size for summary generation')
+    parser.add_argument('--max-workers', type=int, default=Config.MAX_WORKERS,
+                      help='Maximum number of workers for parallel processing')
     args = parser.parse_args()
-    
-    try:
-        # Build providers dictionary from arguments
-        providers = {
-            ModelOperation.EMBEDDING: ModelProvider(args.embedding_provider),
-            ModelOperation.CHUNK_GENERATION: ModelProvider(args.chunk_provider),
-            ModelOperation.SUMMARIZATION: ModelProvider(args.summary_provider)
+
+    # Create configuration
+    config = KnowledgeAgentConfig(
+        root_path=Config.ROOT_PATH,
+        all_data_path=Config.ALL_DATA,
+        stratified_data_path=Config.ALL_DATA_STRATIFIED_PATH,
+        knowledge_base_path=Config.KNOWLEDGE_BASE,
+        sample_size=args.sample_size,
+        embedding_batch_size=args.embedding_batch_size,
+        chunk_batch_size=args.chunk_batch_size,
+        summary_batch_size=args.summary_batch_size,
+        max_workers=args.max_workers,
+        providers={
+            ModelOperation.EMBEDDING: ModelProvider.OPENAI,
+            ModelOperation.CHUNK_GENERATION: ModelProvider.OPENAI,
+            ModelOperation.SUMMARIZATION: ModelProvider.OPENAI
         }
-            
-        # Get paths from Config
-        paths = Config.get_data_paths()
-        root_path = Path(args.root_path)
-        
-        # Create configuration using Config class values
-        config = KnowledgeAgentConfig(
-            root_path=root_path,
-            all_data_path=paths['all_data'],
-            stratified_data_path=paths['stratified'],
-            knowledge_base_path=paths['knowledge_base'],
-            sample_size=args.sample_size,
-            batch_size=args.batch_size,
-            max_workers=args.max_workers,
-            providers=providers
+    )
+
+    # Run the pipeline
+    loop = asyncio.get_event_loop()
+    chunks, response = loop.run_until_complete(
+        _run_knowledge_agents_async(
+            query=args.query,
+            config=config,
+            force_refresh=args.force_refresh
         )
-        
-        # Run the pipeline
-        loop = asyncio.get_event_loop()
-        chunks, response = loop.run_until_complete(
-            _run_knowledge_agents_async(
-                query=args.query,
-                config=config,
-                force_refresh=args.force_refresh
-            )
-        )
-        
-        print("\nRelevant Chunks:")
-        print("-" * 80)
-        for chunk in chunks:
-            print(chunk)
-            print("-" * 80)
-            
-        print("\nGenerated Summary:")
-        print("-" * 80)
-        print(response)
+    )
+
+    print("\nRelevant Chunks:")
+    print("-" * 80)
+    for chunk in chunks:
+        print(chunk)
         print("-" * 80)
         
-    except Exception as e:
-        logger.error(f"Error running knowledge agents: {e}")
-        raise
+    print("\nGenerated Summary:")
+    print("-" * 80)
+    print(response)
+    print("-" * 80)
 
 if __name__ == "__main__":
     main()

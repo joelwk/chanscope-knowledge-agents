@@ -4,6 +4,8 @@ from knowledge_agents.model_ops import ModelOperation, ModelProvider, KnowledgeA
 from knowledge_agents import KnowledgeAgentConfig
 from knowledge_agents.data_processing.cloud_handler import S3Handler
 import aioboto3, openai, logging, traceback, time, os
+from typing import Dict, Any
+from pathlib import Path
 
 from config.settings import Config
 logger = logging.getLogger(__name__)
@@ -31,6 +33,20 @@ async def check_openai() -> bool:
         return False
 
 def register_routes(app):
+    @app.route('/', methods=['GET'])
+    async def root():
+        """Root endpoint providing API information."""
+        return jsonify({
+            "name": "Knowledge Agents API",
+            "version": "1.0",
+            "health_check": "/health",
+            "documentation": {
+                "process_query": "/process_query",
+                "batch_process": "/batch_process",
+                "health_check": "/health",
+                "connections": "/health/connections"
+            }
+        })
     @app.route('/health', methods=['GET'])
     async def health_check():
         """Health check endpoint."""
@@ -196,8 +212,8 @@ def register_routes(app):
                 "latency_ms": round((time.time() - start_time) * 1000, 2)
             }), 500
 
-    @app.route('/process_query', methods=['POST'])
-    async def process_query():
+    @app.post("/process_query")
+    async def process_query() -> Dict[str, Any]:
         """Process a query using the knowledge agents pipeline."""
         try:
             logger.info("Received process_query request")
@@ -237,23 +253,28 @@ def register_routes(app):
                 logger.error(error_msg)
                 return jsonify({"error": error_msg}), 500
 
-            config = KnowledgeAgentConfig(
-                root_path=knowledge_config['ROOT_PATH'],
-                knowledge_base_path=paths['knowledge_base'],
-                all_data_path=paths['all_data'],
-                stratified_data_path=paths['stratified'],
-                temp_path=paths['temp'],
-                sample_size=int(data.get('sample_size', knowledge_config.get('DEFAULT_SAMPLE_SIZE', 2500))),
-                batch_size=int(data.get('batch_size', knowledge_config.get('DEFAULT_BATCH_SIZE', 100))),
-                max_workers=int(data.get('max_workers') or knowledge_config.get('DEFAULT_MAX_WORKERS') or 4),
-                providers=knowledge_config['PROVIDERS'].copy()
-            )
+            # Extract batch sizes with appropriate defaults
+            embedding_batch_size = int(data.get('embedding_batch_size', Config.EMBEDDING_BATCH_SIZE))
+            chunk_batch_size = int(data.get('chunk_batch_size', Config.CHUNK_BATCH_SIZE))
+            summary_batch_size = int(data.get('summary_batch_size', Config.SUMMARY_BATCH_SIZE))
 
-            # Update providers if specified
-            for op in [ModelOperation.EMBEDDING, ModelOperation.CHUNK_GENERATION, ModelOperation.SUMMARIZATION]:
-                provider_key = f"{op.value}_provider"
-                if provider_key in data:
-                    config.providers[op] = ModelProvider(data[provider_key])
+            # Create configuration
+            config = KnowledgeAgentConfig(
+                root_path=Path(knowledge_config['ROOT_PATH']),
+                knowledge_base_path=Path(paths['knowledge_base']),
+                all_data_path=Path(paths['all_data']),
+                stratified_data_path=Path(paths['stratified']),
+                sample_size=int(data.get('sample_size', Config.SAMPLE_SIZE)),
+                embedding_batch_size=embedding_batch_size,
+                chunk_batch_size=chunk_batch_size,
+                summary_batch_size=summary_batch_size,
+                max_workers=int(data.get('max_workers', Config.MAX_WORKERS)),
+                providers={
+                    ModelOperation.EMBEDDING: ModelProvider(data.get('embedding_provider', 'openai')),
+                    ModelOperation.CHUNK_GENERATION: ModelProvider(data.get('chunk_provider', 'openai')),
+                    ModelOperation.SUMMARIZATION: ModelProvider(data.get('summary_provider', 'openai'))
+                }
+            )
 
             # Process the query
             chunks, response = await run_knowledge_agents(
@@ -323,14 +344,15 @@ def register_routes(app):
                 return jsonify({"error": error_msg}), 500
 
             config = KnowledgeAgentConfig(
-                root_path=knowledge_config['ROOT_PATH'],
-                knowledge_base_path=paths['knowledge_base'],
-                all_data_path=paths['all_data'],
-                stratified_data_path=paths['stratified'],
-                temp_path=paths['temp'],
-                sample_size=int(data.get('sample_size', knowledge_config.get('DEFAULT_SAMPLE_SIZE', 2500))),
-                batch_size=int(data.get('batch_size', knowledge_config.get('DEFAULT_BATCH_SIZE', 100))),
-                max_workers=int(data.get('max_workers') or knowledge_config.get('DEFAULT_MAX_WORKERS') or 4),
+                root_path=Path(knowledge_config['ROOT_PATH']),
+                knowledge_base_path=Path(paths['knowledge_base']),
+                all_data_path=Path(paths['all_data']),
+                stratified_data_path=Path(paths['stratified']),
+                sample_size=int(data.get('sample_size', Config.SAMPLE_SIZE)),
+                embedding_batch_size=int(data.get('embedding_batch_size', Config.EMBEDDING_BATCH_SIZE)),
+                chunk_batch_size=int(data.get('chunk_batch_size', Config.CHUNK_BATCH_SIZE)),
+                summary_batch_size=int(data.get('summary_batch_size', Config.SUMMARY_BATCH_SIZE)),
+                max_workers=int(data.get('max_workers', Config.MAX_WORKERS)),
                 providers=knowledge_config['PROVIDERS'].copy()
             )
 

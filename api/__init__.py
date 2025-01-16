@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 from config.settings import Config
-from knowledge_agents import KnowledgeAgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -83,12 +82,12 @@ def create_app():
 
     # Create knowledge agent configuration
     app.config['KNOWLEDGE_CONFIG'] = {
-        'DEFAULT_SAMPLE_SIZE': config.DEFAULT_SAMPLE_SIZE,
-        'DEFAULT_BATCH_SIZE': config.DEFAULT_BATCH_SIZE,
-        'DEFAULT_MAX_WORKERS': config.DEFAULT_MAX_WORKERS,
-        'PROVIDERS': config.get_provider_settings(),
-        'PATHS': config.get_data_paths(),
-        'ROOT_PATH': config.PROJECT_ROOT
+        'PATHS': Config.get_data_paths(),
+        'ROOT_PATH': Config.ROOT_PATH,
+        'PROVIDERS': Config.get_provider_settings(),
+        'SAMPLE_SIZE': Config.SAMPLE_SIZE,
+        'MAX_WORKERS': Config.MAX_WORKERS,
+        'CACHE_ENABLED': Config.CACHE_ENABLED
     }
     
     # Import routes

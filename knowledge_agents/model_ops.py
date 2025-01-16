@@ -37,12 +37,11 @@ class AppConfig(BaseModel):
     max_tokens: int 
     chunk_size: int
     cache_enabled: bool
-    batch_size: int
+    sample_size: int
     root_path: str
     all_data: str
     all_data_stratified_path: str
     knowledge_base: str
-    sample_size: int
     filter_date: Optional[str]
 
 class EmbeddingResponse(BaseModel):
@@ -95,14 +94,13 @@ class ModelConfig:
         self.max_tokens = Config.MAX_TOKENS
         self.chunk_size = Config.CHUNK_SIZE
         self.cache_enabled = Config.CACHE_ENABLED
-        self.batch_size = Config.DEFAULT_BATCH_SIZE
 
         # Paths
         self.root_path = Config.ROOT_PATH
         self.all_data = Config.ALL_DATA
         self.all_data_stratified_path = Config.ALL_DATA_STRATIFIED_PATH
         self.knowledge_base = Config.KNOWLEDGE_BASE
-        self.sample_size = Config.DEFAULT_BATCH_SIZE
+        self.sample_size = Config.SAMPLE_SIZE
         self.filter_date = Config.FILTER_DATE
 
 def load_prompts(prompt_path: str = None) -> Dict[str, Any]:
@@ -140,19 +138,18 @@ def load_config() -> Tuple[ModelConfig, AppConfig]:
         venice_api_key=Config.VENICE_API_KEY,
         venice_summary_model=Config.VENICE_MODEL,
         venice_chunk_model=Config.VENICE_CHUNK_MODEL,
-        default_embedding_provider=Config.DEFAULT_EMBEDDING_PROVIDER
+        default_embedding_provider=Config.EMBEDDING_PROVIDER
     )
 
     app_config = AppConfig(
         max_tokens=Config.MAX_TOKENS,
         chunk_size=Config.CHUNK_SIZE,
         cache_enabled=Config.CACHE_ENABLED,
-        batch_size=Config.DEFAULT_BATCH_SIZE,
+        sample_size=Config.SAMPLE_SIZE,
         root_path=Config.ROOT_PATH,
         all_data=Config.ALL_DATA,
         all_data_stratified_path=Config.ALL_DATA_STRATIFIED_PATH,
         knowledge_base=Config.KNOWLEDGE_BASE,
-        sample_size=Config.DEFAULT_BATCH_SIZE,
         filter_date=Config.FILTER_DATE
     )
     return model_config, app_config
@@ -170,6 +167,11 @@ class KnowledgeAgent:
 
         # Load prompts
         self.prompts = load_prompts()
+
+        # Set default values
+        self.sample_size = Config.SAMPLE_SIZE
+        self.max_workers = Config.MAX_WORKERS
+        self.cache_enabled = Config.CACHE_ENABLED
 
     def _initialize_clients(self):
         """Initialize API clients based on available credentials."""
@@ -492,13 +494,257 @@ class KnowledgeAgent:
                 return await self.generate_chunks(content, provider=ModelProvider.OPENAI)
             raise ValueError(f"Failed to generate chunks with {provider}: {str(e)}")
 
+    async def generate_chunks_batch(
+        self,
+        contents: List[str],
+        provider: Optional[ModelProvider] = None,
+        chunk_batch_size: int = 20  # OpenAI recommends 20 requests per batch
+    ) -> List[Dict[str, str]]:
+        """Generate chunks for multiple contents in batches."""
+        if provider is None:
+            provider = self._get_default_provider(ModelOperation.CHUNK_GENERATION)
+
+        client = self._get_client(provider)
+        model = self._get_model_name(provider, ModelOperation.CHUNK_GENERATION)
+        results = []
+
+        # Process in batches
+        for i in range(0, len(contents), chunk_batch_size):
+            batch = contents[i:i + chunk_batch_size]
+            try:
+                # Create messages for each content in batch
+                messages = [
+                    {
+                        "role": "system",
+                        "content": self.prompts["system_prompts"]["generate_chunks"]["content"]
+                    }
+                ]
+                for content in batch:
+                    messages.append({
+                        "role": "user",
+                        "content": self.prompts["user_prompts"]["text_chunk_summary"]["content"].format(
+                            content=content
+                        )
+                    })
+
+                # Make batch request
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.1,
+                    presence_penalty=0.1,
+                    frequency_penalty=0.1
+                )
+
+                # Process responses
+                for choice in response.choices:
+                    result = self._process_chunk_response(choice.message.content)
+                    results.append(result)
+
+            except Exception as e:
+                logger.error(f"Error in batch chunk generation: {e}")
+                # Fall back to individual processing if batch fails
+                for content in batch:
+                    try:
+                        result = await self.generate_chunks(content, provider)
+                        results.append(result)
+                    except Exception as inner_e:
+                        logger.error(f"Error in fallback chunk generation: {inner_e}")
+                        results.append(None)
+
+        return results
+
+    async def generate_summaries_batch(
+        self,
+        queries: List[str],
+        results_list: List[str],
+        contexts: Optional[List[str]] = None,
+        temporal_contexts: Optional[List[Dict[str, str]]] = None,
+        provider: Optional[ModelProvider] = None,
+        summary_batch_size: int = 20  # OpenAI recommends 20 requests per batch
+    ) -> List[str]:
+        """Generate summaries for multiple queries in batches."""
+        if provider is None:
+            provider = self._get_default_provider(ModelOperation.SUMMARIZATION)
+
+        client = self._get_client(provider)
+        model = self._get_model_name(provider, ModelOperation.SUMMARIZATION)
+
+        # Initialize optional parameters
+        if contexts is None:
+            contexts = [None] * len(queries)
+        if temporal_contexts is None:
+            temporal_contexts = [{"start_date": "Unknown", "end_date": "Unknown"}] * len(queries)
+
+        summaries = []
+
+        # Process in batches
+        for i in range(0, len(queries), summary_batch_size):
+            batch_queries = queries[i:i + summary_batch_size]
+            batch_results = results_list[i:i + summary_batch_size]
+            batch_contexts = contexts[i:i + summary_batch_size]
+            batch_temporal = temporal_contexts[i:i + summary_batch_size]
+
+            try:
+                # Create messages for each query in batch
+                messages = []
+                for q, r, c, t in zip(batch_queries, batch_results, batch_contexts, batch_temporal):
+                    messages.extend([
+                        {
+                            "role": "system",
+                            "content": self.prompts["system_prompts"]["objective_analysis"]["content"]
+                        },
+                        {
+                            "role": "user",
+                            "content": self.prompts["user_prompts"]["summary_generation"]["content"].format(
+                                query=q,
+                                temporal_context=f"Time Range: {t['start_date']} to {t['end_date']}",
+                                context=c or "No additional context provided.",
+                                results=r,
+                                start_date=t['start_date'],
+                                end_date=t['end_date']
+                            )
+                        }
+                    ])
+
+                # Make batch request
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.3,
+                    presence_penalty=0.2,
+                    frequency_penalty=0.2
+                )
+
+                # Process responses
+                batch_summaries = [choice.message.content for choice in response.choices]
+                summaries.extend(batch_summaries)
+
+            except Exception as e:
+                logger.error(f"Error in batch summary generation: {e}")
+                # Fall back to individual processing if batch fails
+                for q, r, c, t in zip(batch_queries, batch_results, batch_contexts, batch_temporal):
+                    try:
+                        summary = await self.generate_summary(q, r, c, t, provider)
+                        summaries.append(summary)
+                    except Exception as inner_e:
+                        logger.error(f"Error in fallback summary generation: {inner_e}")
+                        summaries.append(None)
+
+        return summaries
+
+    def _process_chunk_response(self, result: str) -> Dict[str, Any]:
+        """Process chunk response and extract structured data."""
+        if not result:
+            raise ValueError("Empty response from model")
+
+        # Split on signal_context as per prompt template
+        sections = result.split("<signal_context>")
+
+        if len(sections) > 1:
+            thread_analysis = sections[0].strip()
+            signal_context = sections[1].strip()
+
+            # Parse thread analysis metrics
+            metrics = {}
+            for line in thread_analysis.split('\n'):
+                if '(' in line and ')' in line:
+                    try:
+                        metric_str = line[line.find("(")+1:line.find(")")].strip()
+                        parts = [p.strip().strip("'\"") for p in metric_str.split(',')]
+                        if parts[0] == 't' or 'metric' in parts:
+                            continue
+                        if len(parts) >= 4:
+                            timestamp, metric_name, value, confidence = parts[:4]
+                            try:
+                                metrics[metric_name] = float(value)
+                            except (ValueError, TypeError):
+                                logger.warning(f"Could not convert metric value to float: {value}")
+                    except Exception as e:
+                        logger.warning(f"Failed to parse metric line: {line}, error: {e}")
+
+            # Parse context sections
+            context_elements = self._parse_context_sections(signal_context)
+
+            return {
+                "analysis": {
+                    "thread_analysis": thread_analysis,
+                    "metrics": metrics
+                },
+                "context": context_elements,
+                "metrics": {
+                    "sections": len(sections),
+                    "analysis_length": len(thread_analysis),
+                    "context_length": len(signal_context),
+                    **metrics
+                }
+            }
+        else:
+            return {
+                "analysis": {
+                    "thread_analysis": result.strip(),
+                    "metrics": {}
+                },
+                "context": {
+                    "key_claims": [],
+                    "supporting_text": [],
+                    "risk_assessment": [],
+                    "viral_potential": []
+                },
+                "metrics": {
+                    "sections": 1,
+                    "analysis_length": len(result),
+                    "context_length": 0
+                }
+            }
+
+    def _parse_context_sections(self, signal_context: str) -> Dict[str, List[str]]:
+        """Parse context sections from signal context."""
+        context_elements = {
+            "key_claims": [],
+            "supporting_text": [],
+            "risk_assessment": [],
+            "viral_potential": []
+        }
+
+        current_section = None
+        for line in signal_context.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+
+            # Check for section headers
+            lower_line = line.lower()
+            if "key claims" in lower_line:
+                current_section = "key_claims"
+            elif "supporting" in lower_line and "text" in lower_line:
+                current_section = "supporting_text"
+            elif "risk" in lower_line and "assessment" in lower_line:
+                current_section = "risk_assessment"
+            elif "viral" in lower_line and "potential" in lower_line:
+                current_section = "viral_potential"
+            elif current_section and (line.startswith('-') or line.startswith('*')):
+                content = line.lstrip('-* ').strip()
+                if content:
+                    context_elements[current_section].append(content)
+
+        return context_elements
+
     @retry(wait=wait_random_exponential(min=1, max=10), stop=stop_after_attempt(2))
     async def embedding_request(
         self,
         text: Union[str, List[str]],
-        provider: Optional[ModelProvider] = None
+        provider: Optional[ModelProvider] = None,
+        batch_size: Optional[int] = None
     ) -> EmbeddingResponse:
-        """Get embeddings for text using specified provider."""
+        """Get embeddings for text using specified provider.
+        
+        This implementation follows OpenAI's best practices for batching:
+        - Respects the passed batch_size parameter for number of items per batch
+        - Counts tokens to ensure we don't exceed OpenAI's limits (max 8191 tokens per text)
+        - Falls back to token-based batching if no batch_size specified
+        - Properly handles both single and batch requests
+        """
         if provider is None:
             provider = self._get_default_provider(ModelOperation.EMBEDDING)
 
@@ -509,16 +755,79 @@ class KnowledgeAgent:
         model = self._get_model_name(provider, ModelOperation.EMBEDDING)
 
         try:
-            response = await client.embeddings.create(
-                input=text,
-                model=model,
-                encoding_format="float",
-                dimensions=3072)
-            embeddings = [data.embedding for data in response.data]
+            # Ensure text is properly formatted
+            if isinstance(text, str):
+                input_text = text.strip()
+                if not input_text:
+                    raise ValueError("Empty text input")
+                texts_to_process = [input_text]
+            elif isinstance(text, list):
+                # Filter and clean list input
+                texts_to_process = [str(t).strip() for t in text if t and str(t).strip()]
+                if not texts_to_process:
+                    raise ValueError("No valid text inputs in list")
+            else:
+                raise ValueError(f"Invalid input type: {type(text)}")
+
+            # Get token counts for validation
+            encoding = tiktoken.get_encoding("cl100k_base")
+            token_counts = [len(encoding.encode(t)) for t in texts_to_process]
+            
+            # Validate token counts (OpenAI limit is 8191 per text)
+            MAX_TOKENS_PER_TEXT = 8191
+            for text_item, token_count in zip(texts_to_process, token_counts):
+                if token_count > MAX_TOKENS_PER_TEXT:
+                    logger.warning(f"Text exceeds token limit ({token_count} > {MAX_TOKENS_PER_TEXT}). Truncating...")
+                    # Truncate text to fit within limits
+                    truncated_text = encoding.decode(encoding.encode(text_item)[:MAX_TOKENS_PER_TEXT])
+                    texts_to_process[texts_to_process.index(text_item)] = truncated_text
+            
+            all_embeddings = []
+            
+            if batch_size:
+                # Use the specified batch_size for batching
+                for i in range(0, len(texts_to_process), batch_size):
+                    batch = texts_to_process[i:i + batch_size]
+                    response = await client.embeddings.create(
+                        input=batch,
+                        model=model,
+                        encoding_format="float",
+                        dimensions=3072)
+                    all_embeddings.extend([data.embedding for data in response.data])
+            else:
+                # Fall back to token-based batching if no batch_size specified
+                tokens_per_batch = 2048
+                current_batch = []
+                current_tokens = 0
+                
+                for text_item, token_count in zip(texts_to_process, token_counts):
+                    if current_tokens + token_count > tokens_per_batch and current_batch:
+                        response = await client.embeddings.create(
+                            input=current_batch,
+                            model=model,
+                            encoding_format="float",
+                            dimensions=3072)
+                        all_embeddings.extend([data.embedding for data in response.data])
+                        current_batch = []
+                        current_tokens = 0
+                    
+                    current_batch.append(text_item)
+                    current_tokens += token_count
+                
+                # Process any remaining items
+                if current_batch:
+                    response = await client.embeddings.create(
+                        input=current_batch,
+                        model=model,
+                        encoding_format="float",
+                        dimensions=3072)
+                    all_embeddings.extend([data.embedding for data in response.data])
+
+            # Return appropriate format based on input type
             return EmbeddingResponse(
-                embedding=embeddings[0] if isinstance(text, str) else embeddings,
+                embedding=all_embeddings[0] if isinstance(text, str) else all_embeddings,
                 model=model,
-                usage=response.usage.model_dump()
+                usage=response.usage.model_dump()  # Using last response's usage
             )
 
         except Exception as e:

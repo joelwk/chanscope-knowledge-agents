@@ -19,12 +19,14 @@ if __name__ == '__main__':
     config = Config()
     
     # Set minimal configuration needed
-    app.config['TIMEOUT'] = 300  # 5 minutes timeout
+    app.config['TIMEOUT'] = 1200  # 20 minutes timeout
     app.config['KNOWLEDGE_CONFIG'] = {
-        'DEFAULT_SAMPLE_SIZE': config.DEFAULT_SAMPLE_SIZE,
-        'DEFAULT_BATCH_SIZE': config.DEFAULT_BATCH_SIZE,
-        'DEFAULT_MAX_WORKERS': config.DEFAULT_MAX_WORKERS,
-        'PROVIDERS': config.get_provider_settings()
+        'PATHS': Config.get_data_paths(),
+        'ROOT_PATH': Config.ROOT_PATH,
+        'PROVIDERS': Config.get_provider_settings(),
+        'SAMPLE_SIZE': Config.SAMPLE_SIZE,
+        'MAX_WORKERS': Config.MAX_WORKERS,
+        'CACHE_ENABLED': Config.CACHE_ENABLED
     }
 
     if is_replit_env():

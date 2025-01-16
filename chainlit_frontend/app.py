@@ -5,7 +5,7 @@ from chainlit.input_widget import Select, Switch, Slider, TextInput
 import aiohttp
 from aiohttp import ClientTimeout
 import asyncio
-from chainlit_frontend import API_BASE_URL, is_docker
+from chainlit_frontend import API_BASE_URL
 from datetime import datetime
 from config.settings import Config
 
@@ -21,8 +21,7 @@ logger.setLevel(logging.INFO)
 api_settings = Config.get_api_settings()
 API_PORT = api_settings.get('port')
 API_BASE_URL = api_settings.get('base_url')
-API_TIMEOUT = ClientTimeout(
-    total=600, connect=120)  # Increase total timeout to 10 minutes
+API_TIMEOUT = ClientTimeout(total=1200, connect=120)  # Increase total timeout to 10 minutes
 
 async def process_query(query: str, settings: dict):
     """Process a query using the API endpoint."""
@@ -35,10 +34,10 @@ async def process_query(query: str, settings: dict):
         replit_url = f"https://{os.getenv('REPL_SLUG')}.{os.getenv('REPL_OWNER')}.repl.co"
         if replit_url not in base_urls:
             base_urls.insert(0, replit_url)  # Add Replit URL as primary
-        # Adjust batch size for Replit environment
-        original_batch_size = settings.get('batch_size')
-        if settings['batch_size'] != original_batch_size:
-            logger.warning(f"Reduced batch size from {original_batch_size} to {settings['batch_size']} for Replit environment")
+        # Adjust sample size for Replit environment
+        original_sample_size = settings.get('sample_size')
+        if settings['sample_size'] != original_sample_size:
+            logger.warning(f"Reduced sample size from {original_sample_size} to {settings['sample_size']} for Replit environment")
     logger.info("=== API Connection Attempt ===")
     logger.info(f"Available API endpoints: {base_urls}")
     logger.info(f"Using settings: {settings}")
@@ -133,9 +132,9 @@ async def start():
                   label="Filter Date (YYYY-MM-DD)",
                   initial=processing_settings['filter_date'],
                   description="Date to filter data from (format: YYYY-MM-DD)"),
-        Slider(id="batch_size",
-               label="Batch Size",
-               initial=processing_settings['batch_size'],
+        Slider(id="sample_size",
+               label="Sample Size",
+               initial=processing_settings['sample_size'],
                min=10,
                max=500,
                step=10,
@@ -166,7 +165,7 @@ async def start():
         "settings", {
             "force_refresh": False,
             "filter_date": processing_settings['filter_date'],
-            "batch_size": processing_settings['batch_size'],
+            "sample_size": processing_settings['sample_size'],
             "max_workers": processing_settings['max_workers'],
             "embedding_provider": provider_settings['embedding_provider'],
             "chunk_provider": provider_settings['chunk_provider'],
@@ -197,10 +196,10 @@ async def setup_agent(settings: dict):
                 settings.get("force_refresh", False),
                 "filter_date":
                 filter_date,
-                "batch_size":
-                int(settings.get("batch_size", Config.DEFAULT_BATCH_SIZE)),
+                "sample_size":
+                int(settings.get("sample_size", Config.SAMPLE_SIZE)),
                 "max_workers":
-                None,
+                Config.MAX_WORKERS,
                 "embedding_provider":
                 settings.get("embedding_provider",
                              Config.DEFAULT_EMBEDDING_PROVIDER),
@@ -282,4 +281,4 @@ if __name__ == "__main__":
     from chainlit.cli import run_chainlit
     app_path = os.path.abspath(__file__)
     logger.info(f"Starting Chainlit with app path: {app_path}")
-    run_chainlit(app_path, host='0.0.0.0', port=5000)
+    run_chainlit(app_path, host='0.0.0.0', port=8000)

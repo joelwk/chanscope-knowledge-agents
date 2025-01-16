@@ -1,5 +1,6 @@
 run = "./scripts/replit/api.sh"
 entrypoint = "api/app.py"
+modules = ["python-3.11"]
 
 [nix]
 channel = "stable-23_11"
@@ -18,6 +19,10 @@ ignorePorts = false
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
 
 [languages.python3]
 pattern = "**/*.py"

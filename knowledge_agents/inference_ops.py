@@ -3,11 +3,9 @@ import json
 import pandas as pd
 from scipy import spatial
 import tiktoken
-import concurrent.futures
 from tqdm import tqdm
 from typing import List, Dict, Any, Optional, Tuple
 from .model_ops import KnowledgeAgent, ModelProvider, ModelOperation
-from .embedding_ops import get_relevant_content
 import logging
 import numpy as np
 
@@ -185,17 +183,28 @@ async def retrieve_unique_strings(
         logger.error(f"Error retrieving unique strings: {e}")
         raise
 
-async def summarize_text(
-    query: str,
+async def process_multiple_queries(
+    queries: List[str],
     agent: KnowledgeAgent,
     knowledge_base_path: str = ".",
-    batch_size: int = 5,
+    chunk_batch_size: int = 20,  # OpenAI recommended batch size for chunks
+    summary_batch_size: int = 20,  # OpenAI recommended batch size for summaries
     max_workers: Optional[int] = None,
     providers: Optional[Dict[ModelOperation, ModelProvider]] = None
-) -> Tuple[List[Dict[str, Any]], str]:
-    """Generate a summary of text chunks based on query relevance."""
+) -> List[Tuple[List[Dict[str, Any]], str]]:
+    """Process multiple queries in parallel using batch processing.
+    
+    Args:
+        queries: List of queries to process
+        agent: KnowledgeAgent instance
+        knowledge_base_path: Path to knowledge base
+        chunk_batch_size: Batch size for chunk generation (OpenAI recommends 20)
+        summary_batch_size: Batch size for summary generation (OpenAI recommends 20)
+        max_workers: Maximum number of worker threads
+        providers: Dictionary mapping operations to model providers
+    """
     try:
-        # Load knowledge base
+        # Load knowledge base once for all queries
         try:
             library_df = pd.read_csv(knowledge_base_path)
         except Exception as e:
@@ -205,60 +214,83 @@ async def summarize_text(
         if library_df.empty:
             raise ValueError("Knowledge base is empty")
 
-        # Get unique related strings
+        # Process all queries in parallel
         embedding_provider = providers.get(ModelOperation.EMBEDDING)
-        unique_strings = await retrieve_unique_strings(
-            query,
-            library_df,
-            agent,
-            required_count=batch_size,
-            provider=embedding_provider
-        )
-
-        if not unique_strings:
-            return [], "No relevant content found."
-
-        # Process chunks in parallel
-        chunk_results = []
         chunk_provider = providers.get(ModelOperation.CHUNK_GENERATION)
+        summary_provider = providers.get(ModelOperation.SUMMARIZATION)
 
-        for chunk in unique_strings:
-            try:
-                result = await agent.generate_chunks(
-                    content=chunk["text_clean"],
-                    provider=chunk_provider
-                )
+        # Get relevant strings for all queries
+        all_strings = []
+        for query in queries:
+            strings = await retrieve_unique_strings(
+                query,
+                library_df,
+                agent,
+                required_count=chunk_batch_size,  # Use chunk batch size for retrieval
+                provider=embedding_provider
+            )
+            all_strings.append(strings)
+
+        # Process chunks in batches for all queries
+        all_chunk_results = []
+        for strings in all_strings:
+            if not strings:
+                all_chunk_results.append([])
+                continue
+
+            texts = [chunk["text_clean"] for chunk in strings]
+            chunk_results_raw = await agent.generate_chunks_batch(
+                contents=texts,
+                provider=chunk_provider,
+                chunk_batch_size=chunk_batch_size  # Use chunk-specific batch size
+            )
+
+            # Combine results with metadata
+            chunk_results = []
+            for chunk, result in zip(strings, chunk_results_raw):
                 if result:
                     chunk_results.append({
                         "thread_id": chunk["thread_id"],
                         "posted_date_time": chunk["posted_date_time"],
                         "analysis": result
                     })
-            except Exception as e:
-                logger.error(f"Error processing chunk: {e}")
+            all_chunk_results.append(chunk_results)
+
+        # Generate summaries in batches
+        summary_inputs = []
+        temporal_contexts = []
+        for chunk_results in all_chunk_results:
+            if not chunk_results:
+                summary_inputs.append("")
+                temporal_contexts.append({
+                    "start_date": "Unknown",
+                    "end_date": "Unknown"
+                })
                 continue
 
-        if not chunk_results:
-            return [], "Failed to analyze content chunks."
+            dates = pd.to_datetime([r["posted_date_time"] for r in chunk_results])
+            temporal_contexts.append({
+                "start_date": dates.min().strftime("%Y-%m-%d"),
+                "end_date": dates.max().strftime("%Y-%m-%d")
+            })
+            summary_inputs.append(json.dumps(chunk_results, indent=2))
 
-        # Get temporal context
-        dates = pd.to_datetime([r["posted_date_time"] for r in chunk_results])
-        temporal_context = {
-            "start_date": dates.min().strftime("%Y-%m-%d"),
-            "end_date": dates.max().strftime("%Y-%m-%d")
-        }
-
-        # Generate summary
-        summary_provider = providers.get(ModelOperation.SUMMARIZATION)
-        summary = await agent.generate_summary(
-            query=query,
-            results=json.dumps(chunk_results, indent=2),
-            temporal_context=temporal_context,
-            provider=summary_provider
+        # Generate summaries in batches
+        summaries = await agent.generate_summaries_batch(
+            queries=queries,
+            results_list=summary_inputs,
+            temporal_contexts=temporal_contexts,
+            provider=summary_provider,
+            summary_batch_size=summary_batch_size  # Use summary-specific batch size
         )
 
-        return chunk_results, summary
+        # Combine results
+        results = []
+        for chunk_results, summary in zip(all_chunk_results, summaries):
+            results.append((chunk_results or [], summary or "Failed to generate summary."))
+
+        return results
 
     except Exception as e:
-        logger.error(f"Error in summarize_text: {e}")
+        logger.error(f"Error in process_multiple_queries: {e}")
         raise

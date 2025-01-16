@@ -7,6 +7,7 @@ from tqdm import tqdm
 import pandas as pd
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 import json
+import numpy as np
 
 # Initialize logging
 logging.basicConfig(
@@ -58,6 +59,15 @@ def load_data_from_csvs(directory: str) -> List[Article]:
             if not required_columns.issubset(df.columns):
                 logger.error(f"Missing required columns in {file_path}")
                 continue
+            
+            # Convert embeddings from JSON if they exist
+            if 'embedding' in df.columns:
+                try:
+                    df['embedding'] = df['embedding'].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
+                except Exception as e:
+                    logger.error(f"Error parsing embeddings: {str(e)}")
+                    # Remove invalid embeddings
+                    df = df.drop(columns=['embedding'])
                 
             articles = [
                 Article.from_dict({
@@ -95,7 +105,7 @@ async def get_relevant_content(
         # Process articles in batches
         results = await process_article_batch(
             articles=articles,
-            batch_size=batch_size,
+            embedding_batch_size=batch_size,
             provider=provider
         )
         
@@ -106,8 +116,10 @@ async def get_relevant_content(
                 results,
                 columns=['thread_id', 'posted_date_time', 'text_clean', 'embedding']
             )
-            # Convert embeddings to strings for CSV storage
-            df['embedding'] = df['embedding'].apply(json.dumps)
+            # Ensure embeddings are valid before converting to JSON
+            df['embedding'] = df['embedding'].apply(lambda x: json.dumps(x) if isinstance(x, (list, np.ndarray)) else None)
+            # Remove rows with invalid embeddings
+            df = df.dropna(subset=['embedding'])
             df.to_csv(knowledge_base, index=False)
             logger.info(f"Saved {len(df)} articles with embeddings to knowledge base")
         else:
@@ -120,33 +132,64 @@ async def get_relevant_content(
 @retry(wait=wait_random_exponential(min=1, max=40), stop=stop_after_attempt(3))
 async def process_article_batch(
     articles: List[Article],
-    batch_size: int = 100,
+    embedding_batch_size: int = 100,
     provider: Optional[ModelProvider] = None
 ) -> List[List]:
     """Process a batch of articles to get embeddings using the specified provider.
     
-    This function should only be used with embedding-specific models.
+    This function implements proper batching for embedding requests following OpenAI's
+    recommendations. It processes articles in batches and handles rate limits appropriately.
+    The embedding_batch_size parameter controls how many articles are processed in each API call.
     """
     results = []
     
-    for i in range(0, len(articles), batch_size):
-        batch = articles[i:i + batch_size]
+    # Process in batches according to the specified embedding_batch_size
+    for i in range(0, len(articles), embedding_batch_size):
+        batch = articles[i:i + embedding_batch_size]
         try:
-            # Get embeddings for all texts in batch at once
-            texts = [article.text_clean for article in batch]
-            response = await agent.embedding_request(texts, provider)
+            # Get embeddings for all texts in batch
+            texts = [str(article.text_clean).strip() for article in batch]
+            # Filter out empty or invalid texts
+            valid_texts = []
+            valid_articles = []
+            for text, article in zip(texts, batch):
+                if text and len(text.strip()) > 0:
+                    valid_texts.append(text)
+                    valid_articles.append(article)
             
-            # Create results
-            for article, embedding in zip(batch, response.embedding):
-                results.append([
-                    article.thread_id,
-                    article.posted_date_time,
-                    article.text_clean,
-                    embedding,
-                ])
+            if not valid_texts:
+                logger.warning(f"No valid texts in batch {i//embedding_batch_size}")
+                continue
+
+            try:
+                # Make a single embedding request for the batch
+                response = await agent.embedding_request(
+                    text=valid_texts,
+                    provider=provider,
+                    batch_size=embedding_batch_size  # Pass the embedding_batch_size parameter
+                )
                 
+                if not hasattr(response, 'embedding'):
+                    error_msg = f"Invalid response format from provider {provider}"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+                
+                # Create results only for valid texts
+                embeddings = response.embedding if isinstance(response.embedding, list) else [response.embedding]
+                for article, embedding in zip(valid_articles, embeddings):
+                    results.append([
+                        article.thread_id,
+                        article.posted_date_time,
+                        article.text_clean,
+                        embedding,
+                    ])
+                    
+            except Exception as embed_err:
+                logger.error(f"Embedding request failed: {str(embed_err)}")
+                raise RuntimeError(f"Embedding request failed: {str(embed_err)}") from embed_err
+
         except Exception as e:
-            logger.error(f"Error processing batch {i//batch_size}: {str(e)}")
+            logger.error(f"Error processing batch {i//embedding_batch_size}: {type(e).__name__}: {str(e)}")
             raise
             
     return results

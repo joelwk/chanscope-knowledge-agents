@@ -139,7 +139,7 @@ class S3Handler:
                         # Process file in chunks with robust error handling
                         for chunk in pd.read_csv(
                             temp_file,
-                            chunksize=Config.DEFAULT_BATCH_SIZE,
+                            chunksize=Config.SAMPLE_SIZE,
                             usecols=['thread_id', 'posted_date_time', 'text_clean'],
                             on_bad_lines='skip',
                             encoding='utf-8'

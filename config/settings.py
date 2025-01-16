@@ -6,7 +6,6 @@ from config.base import ROOT_DIR, get_base_paths, ensure_base_paths
 
 logger = logging.getLogger(__name__)
 
-
 class Config:
     """Base configuration."""
 
@@ -115,23 +114,27 @@ class Config:
         )
     else:
         logger.error("OPENAI_API_KEY is not set or was cleaned to empty")
-
-    # Flask settings
-    FLASK_APP = 'api.app'
-    FLASK_ENV = os.getenv('FLASK_ENV', 'development')
+        
+    # QUART settings
+    QUART_APP = 'api.app'
+    QUART_ENV = os.getenv('QUART_ENV')
 
     # API settings
-    DEFAULT_BATCH_SIZE = int(os.getenv('BATCH_SIZE'))
-    DEFAULT_SAMPLE_SIZE = int(os.getenv('SAMPLE_SIZE'))
-    DEFAULT_MAX_WORKERS = int(os.getenv('MAX_WORKERS'))
+    SAMPLE_SIZE = int(os.getenv('SAMPLE_SIZE'))
+    MAX_WORKERS = int(os.getenv('MAX_WORKERS'))
     MAX_TOKENS = int(os.getenv('MAX_TOKENS'))
     CHUNK_SIZE = int(os.getenv('CHUNK_SIZE'))
     CACHE_ENABLED = os.getenv('CACHE_ENABLED', 'true').lower() == 'true'
 
     # Model settings
-    DEFAULT_EMBEDDING_PROVIDER = os.getenv('DEFAULT_EMBEDDING_PROVIDER','openai')
-    DEFAULT_CHUNK_PROVIDER = os.getenv('DEFAULT_CHUNK_PROVIDER', 'openai')
-    DEFAULT_SUMMARY_PROVIDER = os.getenv('DEFAULT_SUMMARY_PROVIDER', 'openai')
+    EMBEDDING_PROVIDER = os.getenv('EMBEDDING_PROVIDER','openai')
+    CHUNK_PROVIDER = os.getenv('CHUNK_PROVIDER', 'openai')
+    SUMMARY_PROVIDER = os.getenv('SUMMARY_PROVIDER', 'openai')
+    
+    # Default providers (used as fallbacks)
+    DEFAULT_EMBEDDING_PROVIDER = 'openai'
+    DEFAULT_CHUNK_PROVIDER = 'openai'  
+    DEFAULT_SUMMARY_PROVIDER = 'openai'
 
     # OpenAI settings with model validation
     OPENAI_MODEL = _validate_model_name(os.getenv('OPENAI_MODEL', 'gpt-4o'),'openai', 'completion')
@@ -169,6 +172,11 @@ class Config:
     # Use Replit's PORT env var if available, otherwise use API_PORT from env or default to 5000
     API_PORT = os.getenv('API_PORT')
     API_TIMEOUT = 1500  # 25 minutes in seconds
+
+    # Batch size settings with appropriate defaults
+    EMBEDDING_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE'))
+    CHUNK_BATCH_SIZE = int(os.getenv('CHUNK_BATCH_SIZE', '20'))  # OpenAI recommended
+    SUMMARY_BATCH_SIZE = int(os.getenv('SUMMARY_BATCH_SIZE', '20'))  # OpenAI recommended
 
     @classmethod
     def _get_base_urls(cls):
@@ -208,9 +216,9 @@ class Config:
     def get_provider_settings(cls):
         """Get provider settings with defaults."""
         return {
-            "embedding_provider": cls.DEFAULT_EMBEDDING_PROVIDER,
-            "chunk_provider": cls.DEFAULT_CHUNK_PROVIDER,
-            "summary_provider": cls.DEFAULT_SUMMARY_PROVIDER,
+            "embedding_provider": cls.EMBEDDING_PROVIDER,
+            "chunk_provider": cls.CHUNK_PROVIDER,
+            "summary_provider": cls.SUMMARY_PROVIDER,
         }
     @classmethod
     def get_data_paths(cls):
@@ -228,9 +236,8 @@ class Config:
     def get_processing_settings(cls):
         """Get data processing settings."""
         return {
-            "batch_size": cls.DEFAULT_BATCH_SIZE,
-            "sample_size": cls.DEFAULT_SAMPLE_SIZE,
-            "max_workers": cls.DEFAULT_MAX_WORKERS,
+            "sample_size": cls.SAMPLE_SIZE,
+            "max_workers": cls.MAX_WORKERS,
             "max_tokens": cls.MAX_TOKENS,
             "chunk_size": cls.CHUNK_SIZE,
             "cache_enabled": cls.CACHE_ENABLED,

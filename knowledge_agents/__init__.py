@@ -16,116 +16,132 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class KnowledgeAgentConfig:
-    """Configuration for Knowledge Agents library.
+    """Configuration for knowledge agent operations.
     
-    This class encapsulates all configuration needed by the library,
-    providing a type-safe interface that is independent of the application's
-    configuration system. It can be instantiated using either:
-    - from_settings(): Creates instance from application's Config object
-    - from_env(): Creates instance directly from environment variables
+    This class handles two types of batching:
+    1. Sample-based batching: Controls the number of items processed (sample_size)
+    2. Token-based batching: Controls the batch sizes for API calls based on token limits
+        - embedding_batch_size: Max 2048 tokens per batch for embeddings
+        - chunk_batch_size: Max 20 items per batch for chunk generation (OpenAI recommended)
+        - summary_batch_size: Max 20 items per batch for summary generation (OpenAI recommended)
     """
-    # Data paths
-    root_path: Path
-    knowledge_base_path: Path
-    all_data_path: Path
-    stratified_data_path: Path
-    temp_path: Path
-    
-    # Processing settings
-    batch_size: int
-    sample_size: int
-    max_workers: Optional[int] = None
-    
-    # Model settings
-    providers: Dict[ModelOperation, ModelProvider] = None
-    model_settings: Dict[str, Any] = field(default_factory=lambda: {
-        'max_tokens': 8192,
-        'chunk_size': 1000,
-        'cache_enabled': True
-    })
-    
+    def __init__(
+        self,
+        root_path: str = Config.ROOT_PATH,
+        all_data_path: str = Config.ALL_DATA,
+        stratified_data_path: str = Config.ALL_DATA_STRATIFIED_PATH,
+        knowledge_base_path: str = Config.KNOWLEDGE_BASE,
+        sample_size: int = Config.SAMPLE_SIZE,  # Number of items to process
+        embedding_batch_size: int = Config.EMBEDDING_BATCH_SIZE,  # Token-based batching (2048)
+        chunk_batch_size: int = Config.CHUNK_BATCH_SIZE,  # OpenAI recommended (20)
+        summary_batch_size: int = Config.SUMMARY_BATCH_SIZE,  # OpenAI recommended (20)
+        max_workers: Optional[int] = Config.MAX_WORKERS,
+        providers: Optional[Dict[ModelOperation, ModelProvider]] = None
+    ):
+        """Initialize knowledge agent configuration.
+        
+        Args:
+            root_path: Root path for data storage
+            all_data_path: Path to all data
+            stratified_data_path: Path to stratified data
+            knowledge_base_path: Path to knowledge base
+            sample_size: Number of items to process in each batch (sample-based batching)
+            embedding_batch_size: Maximum tokens per batch for embedding operations (default: 2048)
+            chunk_batch_size: Maximum items per batch for chunk generation (default: 20)
+            summary_batch_size: Maximum items per batch for summary generation (default: 20)
+            max_workers: Maximum number of worker threads
+            providers: Dictionary mapping operations to model providers
+        """
+        self.root_path = root_path
+        self.all_data_path = all_data_path
+        self.stratified_data_path = stratified_data_path
+        self.knowledge_base_path = knowledge_base_path
+        self.sample_size = sample_size
+        self.embedding_batch_size = embedding_batch_size
+        self.chunk_batch_size = chunk_batch_size
+        self.summary_batch_size = summary_batch_size
+        self.max_workers = max_workers
+        self.providers = providers or {}
+
     def __post_init__(self):
-        """Validate and process configuration after initialization."""
-        # Convert string paths to Path objects if they aren't already
-        self.root_path = Path(self.root_path)
-        self.knowledge_base_path = Path(self.knowledge_base_path)
-        self.all_data_path = Path(self.all_data_path)
-        self.stratified_data_path = Path(self.stratified_data_path)
-        self.temp_path = Path(self.temp_path)
-        
-        # Create directories if they don't exist
-        self.root_path.mkdir(parents=True, exist_ok=True)
-        self.stratified_data_path.mkdir(parents=True, exist_ok=True)
-        self.temp_path.mkdir(parents=True, exist_ok=True)
-        self.knowledge_base_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Initialize default providers if none provided
-        if self.providers is None:
-            self.providers = {
-                ModelOperation.EMBEDDING: ModelProvider.OPENAI,
-                ModelOperation.CHUNK_GENERATION: ModelProvider.OPENAI,  # Default to OpenAI for chunk generation
-                ModelOperation.SUMMARIZATION: ModelProvider.OPENAI  # Default to OpenAI for summarization
-            }
-        else:
-            # Ensure all required operations have providers
-            required_operations = {
-                ModelOperation.EMBEDDING,
-                ModelOperation.CHUNK_GENERATION,
-                ModelOperation.SUMMARIZATION
-            }
-            missing_ops = required_operations - set(self.providers.keys())
-            if missing_ops:
-                for op in missing_ops:
-                    self.providers[op] = ModelProvider.OPENAI  # Default to OpenAI for missing operations
+        """Validate configuration after initialization."""
+        # Validate paths
+        for path_attr in ['root_path', 'all_data_path', 'stratified_data_path', 'knowledge_base_path']:
+            path = getattr(self, path_attr)
+            if not isinstance(path, (str, Path)):
+                raise ValueError(f"{path_attr} must be a string or Path")
+
+        # Validate numeric values
+        for num_attr in ['sample_size', 'embedding_batch_size', 'chunk_batch_size', 'summary_batch_size']:
+            value = getattr(self, num_attr)
+            if not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{num_attr} must be a positive integer")
+
+        # Validate max_workers
+        if self.max_workers is not None and (not isinstance(self.max_workers, int) or self.max_workers <= 0):
+            raise ValueError("max_workers must be None or a positive integer")
+
+        # Validate providers
+        if not isinstance(self.providers, dict):
+            raise ValueError("providers must be a dictionary")
+        for op, provider in self.providers.items():
+            if not isinstance(op, ModelOperation):
+                raise ValueError("Provider keys must be ModelOperation instances")
+            if not isinstance(provider, ModelProvider):
+                raise ValueError("Provider values must be ModelProvider instances")
 
     @classmethod
-    def from_env(cls, env: Dict[str, str]) -> 'KnowledgeAgentConfig':
-        """Create configuration from environment variables using Config class.
-        
-        Args:
-            env: Dictionary of environment variables (typically os.environ)
-            
-        Returns:
-            KnowledgeAgentConfig: A new instance with settings from environment.
-        """
-        # Use Config class which already handles all environment variables properly
-        config = Config()
-        return cls.from_settings(config)
-
-    @classmethod
-    def from_settings(cls, config) -> 'KnowledgeAgentConfig':
-        """Create configuration from settings.Config instance.
-        
-        Args:
-            config: An instance of config.settings.Config containing all application settings.
-            
-        Returns:
-            KnowledgeAgentConfig: A new instance with settings from the config object.
-        """
-        paths = config.get_data_paths()
-        processing = config.get_processing_settings()
-        providers = config.get_provider_settings()
-        
+    def from_env(cls) -> 'KnowledgeAgentConfig':
+        """Create configuration from environment variables through Config."""
         return cls(
-            root_path=paths['root'],
-            knowledge_base_path=paths['knowledge_base'],
-            all_data_path=paths['all_data'],
-            stratified_data_path=paths['stratified'],
-            temp_path=paths['temp'],
-            batch_size=processing['batch_size'],
-            max_workers=processing['max_workers'],
-            sample_size=processing['sample_size'],  # Use default if not in config
+            root_path=Config.ROOT_PATH,
+            all_data_path=Config.ALL_DATA,
+            stratified_data_path=Config.ALL_DATA_STRATIFIED_PATH,
+            knowledge_base_path=Config.KNOWLEDGE_BASE,
+            sample_size=Config.SAMPLE_SIZE,
+            embedding_batch_size=Config.EMBEDDING_BATCH_SIZE,
+            chunk_batch_size=Config.CHUNK_BATCH_SIZE,
+            summary_batch_size=Config.SUMMARY_BATCH_SIZE,
+            max_workers=Config.MAX_WORKERS,
             providers={
-                ModelOperation.EMBEDDING: ModelProvider(providers['embedding_provider']),
-                ModelOperation.CHUNK_GENERATION: ModelProvider(providers['chunk_provider']),
-                ModelOperation.SUMMARIZATION: ModelProvider(providers['summary_provider'])
-            },
-            model_settings={
-                'max_tokens': processing['max_tokens'],
-                'chunk_size': processing['chunk_size'],
-                'cache_enabled': processing['cache_enabled']
+                ModelOperation.EMBEDDING: ModelProvider(Config.EMBEDDING_PROVIDER),
+                ModelOperation.CHUNK_GENERATION: ModelProvider(Config.CHUNK_PROVIDER),
+                ModelOperation.SUMMARIZATION: ModelProvider(Config.SUMMARY_PROVIDER)
             }
         )
+
+    @classmethod
+    def from_settings(cls, settings: Any) -> 'KnowledgeAgentConfig':
+        """Create configuration from settings object."""
+        return cls(
+            root_path=getattr(settings, 'ROOT_PATH', Config.ROOT_PATH),
+            all_data_path=getattr(settings, 'ALL_DATA', Config.ALL_DATA),
+            stratified_data_path=getattr(settings, 'ALL_DATA_STRATIFIED_PATH', Config.ALL_DATA_STRATIFIED_PATH),
+            knowledge_base_path=getattr(settings, 'KNOWLEDGE_BASE', Config.KNOWLEDGE_BASE),
+            sample_size=int(getattr(settings, 'SAMPLE_SIZE', Config.SAMPLE_SIZE)),
+            embedding_batch_size=int(getattr(settings, 'EMBEDDING_BATCH_SIZE', Config.EMBEDDING_BATCH_SIZE)),
+            chunk_batch_size=int(getattr(settings, 'CHUNK_BATCH_SIZE', Config.CHUNK_BATCH_SIZE)),
+            summary_batch_size=int(getattr(settings, 'SUMMARY_BATCH_SIZE', Config.SUMMARY_BATCH_SIZE)),
+            max_workers=int(getattr(settings, 'MAX_WORKERS', Config.MAX_WORKERS)),
+            providers={
+                ModelOperation.EMBEDDING: ModelProvider(getattr(settings, 'EMBEDDING_PROVIDER', Config.EMBEDDING_PROVIDER)),
+                ModelOperation.CHUNK_GENERATION: ModelProvider(getattr(settings, 'CHUNK_PROVIDER', Config.CHUNK_PROVIDER)),
+                ModelOperation.SUMMARIZATION: ModelProvider(getattr(settings, 'SUMMARY_PROVIDER', Config.SUMMARY_PROVIDER))
+            }
+        )
+
+    def get_batch_config(self) -> Dict[str, int]:
+        """Get the current batch configuration.
+        
+        Returns:
+            Dict containing all batch-related settings
+        """
+        return {
+            "sample_size": self.sample_size,
+            "embedding_batch_size": self.embedding_batch_size,
+            "chunk_batch_size": self.chunk_batch_size,
+            "summary_batch_size": self.summary_batch_size
+        }
 
 # Export public interface
 from .run import run_knowledge_agents

@@ -4,7 +4,7 @@ import shutil
 import logging
 from pathlib import Path
 from typing import Dict, Optional, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from .data_processing.sampler import Sampler
 from .data_processing.cloud_handler import load_all_csv_data_from_s3
 from .stratified_ops import split_dataframe
@@ -28,8 +28,9 @@ class DataConfig:
     all_data_path: Path
     stratified_data_path: Path
     knowledge_base_path: Path
-    sample_size: int
+    
     filter_date: str
+    sample_size: int = field(default_factory=lambda: Config.SAMPLE_SIZE)
     time_column: str = 'posted_date_time'
     strata_column: Optional[str] = None
 
@@ -42,7 +43,7 @@ class DataConfig:
             all_data_path=Path(Config.ALL_DATA),
             stratified_data_path=Path(Config.ALL_DATA_STRATIFIED_PATH),
             knowledge_base_path=Path(Config.KNOWLEDGE_BASE),
-            sample_size=Config.DEFAULT_BATCH_SIZE,
+            sample_size=Config.SAMPLE_SIZE,
             filter_date=Config.FILTER_DATE if hasattr(Config, 'FILTER_DATE') else None,
             time_column=Config.TIME_COLUMN,
             strata_column=Config.STRATA_COLUMN)
@@ -74,7 +75,7 @@ class DataStateManager:
                 
                 valid_rows = 0
                 for chunk in pd.read_csv(self.config.all_data_path, 
-                                       chunksize=Config.DEFAULT_BATCH_SIZE,
+                                       chunksize=Config.SAMPLE_SIZE,
                                        on_bad_lines='warn',
                                        low_memory=False):
                     # Check required columns
@@ -94,6 +95,36 @@ class DataStateManager:
                 integrity['all_data'] = False
                 integrity['data_not_empty'] = False
         return integrity
+
+    def check_data_integrity(self) -> bool:
+        """Check if data files exist and are valid."""
+        try:
+            # Validate configuration
+            if not isinstance(self.config.sample_size, int) or self.config.sample_size <= 0:
+                logger.error(f"Invalid sample_size: {self.config.sample_size}")
+                return False
+
+            # Check if required paths exist
+            required_paths = [
+                self.config.root_path,
+                self.config.all_data_path,
+                self.config.stratified_data_path,
+                self.config.knowledge_base_path
+            ]
+
+            for path in required_paths:
+                if not isinstance(path, (str, Path)):
+                    logger.error(f"Invalid path type for {path}")
+                    return False
+                if not Path(path).exists():
+                    logger.error(f"Required path does not exist: {path}")
+                    return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Data integrity check failed: {str(e)}")
+            return False
 
 class DataProcessor:
     """Handles data processing operations."""
@@ -122,16 +153,13 @@ class DataProcessor:
         """Split data into train/test sets."""
         try:
             self._logger.info("Splitting stratified data")
-            
             # Ensure required columns are present
             required_columns = {'thread_id', 'posted_date_time', 'text_clean'}
             missing_cols = required_columns - set(data.columns)
             if missing_cols:
                 raise ValueError(f"Missing required columns for stratification: {missing_cols}")
-            
             # Only keep necessary columns before splitting
             data_to_split = data[list(required_columns)]
-            
             # Split the data
             split_dataframe(
                 data_to_split,
@@ -244,8 +272,7 @@ class DataOperations:
             
             # Initialize CSV file with headers
             pd.DataFrame(columns=['thread_id', 'posted_date_time', 'text_clean']).to_csv(
-                self.config.all_data_path, index=False, mode='w'
-            )
+                self.config.all_data_path, index=False, mode='w')
             
             # Stream data directly from S3 to disk
             total_rows = 0
@@ -318,6 +345,36 @@ class DataOperations:
         except Exception as e:
             self._logger.error(f"Data processing failed: {e}")
             raise
+
+    def process_data(self, force_refresh: bool = False) -> bool:
+        """Process data files and prepare for knowledge agent operations."""
+        try:
+            # Create required directories
+            self._create_directory_structure()
+
+            # Check if processing is needed
+            if not force_refresh and self._is_processing_complete():
+                logger.info("Data processing already complete")
+                return True
+
+            # Read and process data in chunks
+            logger.info("Processing data files...")
+            valid_rows = 0
+            for chunk in pd.read_csv(self.config.all_data_path, 
+                                  chunksize=self.config.sample_size,
+                                  on_bad_lines='warn',
+                                  low_memory=False):
+                # Process chunk
+                processed_chunk = self._process_chunk(chunk)
+                if processed_chunk is not None:
+                    valid_rows += len(processed_chunk)
+
+            logger.info(f"Processed {valid_rows} valid rows")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error processing data: {str(e)}")
+            return False
 
 async def prepare_knowledge_base(force_refresh: bool = False) -> str:
     """Main entry point for data preparation."""

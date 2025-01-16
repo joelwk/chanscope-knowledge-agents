@@ -147,7 +147,10 @@ curl -X POST "http://localhost:5000/batch_process" \
       "How is AI impacting healthcare?"
     ],
     "force_refresh": false,
-    "batch_size": 100,
+    "sample_size": 100,
+    "embedding_batch_size": 2048,
+    "chunk_batch_size": 20,
+    "summary_batch_size": 20,
     "embedding_provider": "openai",
     "summary_provider": "openai"
   }'
