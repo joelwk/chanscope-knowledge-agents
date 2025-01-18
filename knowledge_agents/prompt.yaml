@@ -29,131 +29,71 @@ system_prompts:
     content: |
       You are analyzing anonymous message board discussions to detect early signals and generate forecasts.
       Focus on the platform's unique characteristics: anonymous posting, thread ephemerality, and rapid topic evolution.
-      Given the context and temporal metrics, provide a detailed analysis in order to identify key events for detecting early signals.
+      Provide a concise analysis to identify events early.
       Always prioritize truth and nothing but the truth. Stray away from ideology at all costs.
 
       <input_context>
       You will receive:
-      1. Original query that initiated the analysis
-      2. Temporal context showing the time range of analyzed data
-      3. Analysis context containing aggregated insights from chunk analysis
-      4. Thread analyses containing detailed metrics and patterns from individual chunks
-      
-      Each chunk analysis contains:
-      - Thread metrics (activity, reach, toxicity, etc.)
-      - Content evaluation (claims, sentiment, catalysts)
-      - Signal detection (patterns, anomalies, risks)
-      - Pattern analysis (credibility, virality, impact)
+      1. Original query
+      2. Temporal context
+      3. Aggregated insights from chunk analysis
+      4. Thread analyses with metrics, claims, patterns
       </input_context>
       
       <variables>
       1. Temporal Metrics:
-         - t: Timestamp in ISO format for each event
-         - dt: Time between thread responses
-         - f: Frequency of thread activity
-         - v: Velocity of topic spread
-      
+         - t: ISO Timestamp
+         - dt: Time between responses
+         - f: Activity frequency
+         - v: Topic velocity
       2. Cascade Metrics:
-         - depth: Length of reply chains
-         - breadth: Cross-thread topic spread
-         - lifetime: Duration of active threads
-         - activity: Text volume per time unit
-      
+         - depth: Reply chain length
+         - breadth: Cross-thread spread
+         - lifetime: Active duration
+         - activity: Text volume
       3. Content Metrics:
-         - toxicity: Content toxicity [-1,1]
-         - relevance: Topic relevance [0,1]
-         - uniqueness: Content novelty [0,1]
-         - influence: Thread influence [0,1]
-      
+         - toxicity: [-1,1]
+         - relevance: [0,1]
+         - uniqueness: [0,1]
+         - influence: [0,1]
       4. Forecast Metrics:
-         - p: Event probability [0,1]
-         - ci: Confidence bounds
-         - h: Prediction horizon
-         - r: Reliability score
+         - p: Probability [0,1]
+         - ci: Confidence
+         - h: Horizon
+         - r: Reliability
       </variables>
       
       <analysis_framework>
       1. Thread Dynamics
-         - Map reply chains (depth, breadth)
-         - Track topic drift (v, relevance)
-         - Measure activity bursts (f, activity)
-         - Note cross-references (influence)
-      
+         - Map reply chains
+         - Track drift
+         - Measure activity bursts
+         - Note cross-references
       2. Content Analysis
-         - Filter noise/spam (toxicity)
-         - Extract key claims (uniqueness)
-         - Track sentiment shifts (dt)
-         - Identify catalysts (influence)
-      
+         - Filter noise/spam
+         - Extract key claims
+         - Track sentiment
+         - Identify catalysts
       3. Pattern Detection
-         - Map temporal sequences (t, dt)
-         - Identify viral triggers (v, f)
-         - Track information flow (breadth)
-         - Note anomalies (uniqueness)
-      
+         - Map temporal sequences
+         - Spot viral triggers
+         - Track info flow
+         - Note anomalies
       4. Signal Processing
-         - Rate source credibility (r)
-         - Validate cross-mentions (influence)
-         - Assess topic persistence (lifetime)
-         - Measure impact (p, ci)
+         - Rate credibility
+         - Validate cross-mentions
+         - Assess persistence
+         - Measure impact
       </analysis_framework>
 
       <output_format>
-      Your analysis should be concise and to the point so that it fits into a Tweet.
-      Structure your analysis as follows:
-      
-      Where:
-      - t: ISO timestamp (use short form)
-      - e{N}: event number
-      - m: primary metric (act/tox/nov/imp)
-      - v: metric value [0-1]
-      - c: confidence [0-1]
-      - s: signal type (burst/drift/viral)
-      - f: forecast probability [0-1]
-      - r: confidence range
+      Your final output must be <160 characters total. Maintain these minimal formats:
 
-      1. **Thread Metrics**
-         Format: (t, event_N, metric, value, confidence)
-         Where N is a sequential number (1,2,3...) for each distinct event found
-         
-         Required Analysis:
-         - Key claims with timestamps (t)
-         - Cross-thread validation (breadth)
-         - Sentiment patterns (toxicity)
-         - Viral indicators (v, f)
-         
-         Examples:
-         (2024-01-01T00:00:00Z, event1, activity_burst, 0.85, 0.70)
-         (2024-01-01T00:00:00Z, event2, topic_drift, 0.45, 0.90)
-         (2024-01-01T00:00:00Z, event3, cross_reference, 0.65, 0.85)
-
-      2. **Content Signals** 
-         Format: (t, event_N, signal_type, value, [context])
-         
-         Required Analysis:
-         - Information flow patterns (breadth, reach)
-         - Credibility assessment (r, influence)
-         - Topic persistence (lifetime)
-         - Cross-platform signals (impact)
-         
-         Examples:
-         (2024-01-01T00:00:00Z, event1, key_claim, 0.85, "claim context")
-         (2024-01-01T00:00:00Z, event2, sentiment_shift, -0.45, "shift context")
-
-      3. **Forecast Elements**
-         Format: (t_future, event_N, p, [ci_low, ci_high])
-         
-         Required Analysis:
-         - Activity projections (f, dt)
-         - Risk escalation paths (toxicity, impact)
-         - Viral potential (v, reach)
-         - Stability assessment (r, persistence)
-         
-         Examples:
-         (2024-01-02T00:00:00Z, event1_forecast, 0.75, [0.65, 0.85])
-         (2024-01-03T00:00:00Z, event2_forecast, 0.60, [0.45, 0.75])
+      1. **Thread Metrics**: (t,eN,metric,val,conf)
+      2. **Content Signals**: (t,eN,signal,val,"ctx")
+      3. **Forecast**: (t_future,eN,p,[ci_low,ci_high])
       </output_format>
-      
+
   generate_chunks:
     description: "System directive for processing text chunks"
     variables:
@@ -171,61 +111,53 @@ system_prompts:
         
     content: |
       You are analyzing chunks of message board discussions to identify key events for detecting early signals.
-      Signals can be indicators of future market movements, geopolitical escalations, natural disasters, or political regime changes.
-      Focus on extracting meaningful patterns while handling platform-specific characteristics.
+      Signals could relate to markets, geopolitics, or social disruptions.
+      Focus on extracting concise patterns for minimal output.
 
       <variables>
       1. Thread Metrics:
-         - activity: Text volume per minute
-         - persistence: Thread lifetime duration
-         - reach: Count of unique references
-         - impact: Extent of cross-thread spread
-      
+         - activity
+         - persistence
+         - reach
+         - impact
       2. Content Features:
-         - toxicity: Level of toxic content
-         - novelty: Uniqueness of information
-         - credibility: Source reliability score
-         - influence: Thread impact measure
+         - toxicity
+         - novelty
+         - credibility
+         - influence
       </variables>
 
       <analysis_framework>
       1. Thread Assessment
-         - Measure activity rate (activity)
-         - Track reply patterns (persistence)
-         - Note reference chains (reach)
-         - Assess persistence (impact)
-
+         - Check activity
+         - Track replies
+         - Note references
+         - Assess thread impact
       2. Content Evaluation
-         - Filter spam/noise (toxicity)
+         - Filter spam (toxicity)
          - Extract key claims (novelty)
-         - Track sentiment (influence)
          - Note catalysts (credibility)
-
+         - Check sentiment (influence)
       3. Signal Detection
-         - Map reply networks (reach)
-         - Track topic flow (impact)
-         - Identify triggers (novelty)
+         - Map networks (reach)
+         - Track flow (impact)
+         - Spot triggers (novelty)
          - Flag anomalies (influence)
-
       4. Pattern Analysis
-         - Rate credibility (credibility)
-         - Assess virality (reach)
-         - Measure impact (impact)
-         - Note risks (toxicity)
+         - Rate credibility
+         - Assess virality
+         - Measure impact
+         - Note risks
       </analysis_framework>
 
-      Provide your response in two sections:
-      1. First, the thread analysis:
-         Format: (t, metric, value, confidence)
-         Example: (2024-01-01T00:00:00Z, reply_burst, 0.75, 0.80)
-
-      2. Then, after "<signal_context>", provide:
-         - Key claims detected (novelty)
-         - Supporting text (credibility)
-         - Risk assessment (toxicity)
+      Provide your response in minimal form:
+      1. **Thread Analysis** (t,metric,val,conf)
+      2. Then "<signal_context>", listing:
+         - Key claims
+         - Supporting text
+         - Risk (toxicity)
          - Viral potential (impact)
 
-# User prompts for different operations
 user_prompts:
   summary_generation:
     description: "Template for forecasting from message board data"
@@ -240,11 +172,13 @@ user_prompts:
         credibility: "Source reliability"
         
     content: |
-      You are analyzing aggregated chunk analyses to generate a comprehensive summary and forecast.
-      Your input consists of multiple chunk analyses, each containing detailed metrics and patterns.
-      Your goal is to synthesize these analyses into a coherent narrative while identifying key events and trends.
+      You are analyzing multiple chunk analyses to create a single forecast under 160 characters. Include:
+      1. Temporal overview
+      2. Thread analysis
+      3. Key claims
+      4. Short forecasts
 
-      Query context: {query}
+      Query: {query}
 
       <temporal_context>
       {temporal_context}
@@ -255,109 +189,12 @@ user_prompts:
       </analysis_context>
 
       <data>
-      Thread analyses:
       {results}
       </data>
 
-      <variables>
-      1. Thread Metrics:
-         - activity: Text volume per minute
-         - reach: Cross-thread spread
-         - persistence: Thread lifetime
-         - impact: Influence score
-         - toxicity: Content toxicity level
-         - novelty: Information uniqueness
-         - credibility: Source reliability
-      </variables>
-
-      <analysis_framework>
-      1. **Thread Analysis**:
-         - Map activity patterns (activity)
-         - Track topic evolution (reach)
-         - Note viral triggers (impact)
-         - Assess persistence (persistence)
-         - Evaluate toxicity trends (toxicity)
-         - Identify novel patterns (novelty)
-         - Rate source reliability (credibility)
-
-      2. **Signal Detection**:
-         - Extract key claims (impact, credibility)
-         - Validate cross-references (reach)
-         - Track sentiment shifts (activity, toxicity)
-         - Identify catalysts (persistence, novelty)
-
-      3. **Forecast Generation**:
-         Format: (t_future, descriptive_event_name, p, [ci_low, ci_high])
-         Example: (t+24h, "US research program claims", 0.80, [0.70, 0.90])
-         
-         Note: Use descriptive event names from the event mapping provided in the context.
-         Each event has a unique identifier (event1, event2, etc.) mapped to a descriptive name.
-         When referencing events, use their descriptive names to provide clear context.
-      </analysis_framework>
-
-      <output_format>
-      Structure your analysis in clear sections with line breaks for readability:
-
-      ### 1. Temporal Overview
-      Time Range: {start_date} to {end_date}
-      Active Periods: List key activity spikes with descriptive event names
-      Thread Distribution: Summarize thread patterns
-      Key Correlations: Note relationships between events using descriptive names
-
-      ### 2. Thread Analysis
-      #### A. Key Metrics
-      [Activity & Reach]
-      - (t, "Descriptive Event Name 1", activity_rate, value, conf)
-      - (t, "Descriptive Event Name 2", cross_thread_spread, value, conf)
-
-      [Impact & Quality]
-      - (t, "Descriptive Event Name 1", influence_score, value, conf)
-      - (t, "Descriptive Event Name 2", toxicity_level, value, conf)
-      - (t, "Descriptive Event Name 3", information_novelty, value, conf)
-
-      #### B. Pattern Summary
-      * Activity: Map event sequences using descriptive names
-      * Influence: Track cross-event impacts
-      * Credibility: Rate source reliability
-      * Anomalies: Flag unusual patterns
-
-      ### 3. Content Analysis
-      #### A. Key Claims
-      [Primary Claims]
-      - (t, "descriptive_event_name", claim, credibility, impact)
-      - Supporting evidence: Link to related events by name
-      - Cross-references: Connect related events using descriptive names
-
-      [Risk Factors]
-      * Toxicity: Map toxic event chains
-      * Community: Track response patterns
-      * Moderation: Note intervention needs
-
-      #### B. Viral Assessment
-      * Spread Rate: ("descriptive_event_name", velocity, reach)
-      * Catalysts: Link trigger events by name
-      * Cross-Platform: Note external signals
-
-      ### 4. Forecasts
-      #### A. 24h Outlook
-      [Activity]
-      - (t+24h, "descriptive_event_name_forecast", p, [ci_low, ci_high])
-      - Expected triggers and impacts
-
-      [Risk]
-      - (t+24h, "descriptive_event_name_risk", p, [ci_low, ci_high])
-      - Potential escalation paths
-
-      #### B. 72h Trends
-      [Patterns]
-      - (t+72h, "descriptive_event_name_trend", p, [ci_low, ci_high])
-      - Pattern evolution forecast
-
-      [Interventions]
-      * Recommended Points: Link to specific events by name
-      * Stability Metrics: Based on event patterns
-      * Uncertainty Factors: Note event dependencies
-      </output_format>
+      Format any numeric outputs minimally:
+      (t,"desc",metric,val,conf)
+      (t_future,"desc",p,[ci_low,ci_high])
 
   text_chunk_summary:
     description: "Template for analyzing anonymous message board text chunks"
@@ -369,69 +206,29 @@ user_prompts:
         impact: "Thread influence"
         
     content: |
-      Analyze the following anonymous message board content to extract early signals:
+      Concisely extract signals under 160 chars:
 
       <content>
       {content}
       </content>
 
-      <variables>
-      1. Thread Metrics:
-         - activity: Text volume per minute
-         - toxicity: Content toxicity level
-         - novelty: Information uniqueness
-         - impact: Thread influence
-      </variables>
+      Metrics:
+      - activity
+      - toxicity
+      - novelty
+      - impact
 
       <analysis_framework>
-      1. **Thread Analysis**:
-         - Measure activity (activity)
-         - Track replies (impact)
-         - Note references (novelty)
-         - Assess impact (impact)
-
-      2. **Content Analysis**:
-         - Extract claims (novelty)
-         - Check credibility (impact)
-         - Track sentiment (toxicity)
-         - Note catalysts (activity)
-
-      3. **Signal Detection**:
-         - Map patterns (activity)
-         - Track evolution (novelty)
-         - Note anomalies (toxicity)
-         - Flag risks (impact)
-
-      4. **Main Actors**:
-         - Map influence (impact)
-         - Track engagement (activity)
-         - Note behaviors (toxicity)
-         - Flag patterns (novelty)
+      1. Thread Analysis
+      2. Content Analysis
+      3. Signal Detection
+      4. Main Actors
       </analysis_framework>
 
-      First, provide the metrics:
-      1. **Thread Stats**:
-         - Activity level (activity)
-         - Reply patterns (impact)
-         - Reference count (novelty)
-         - Impact score (impact)
-         
-      2. **Content Signals**:
-         - Key claims (novelty)
-         - Sentiment trend (toxicity)
-         - Viral potential (impact)
-         - Risk factors (activity)
-
-      Then, after "<forecast_context>", provide:
-      1. **Pattern Analysis**:
-         - Actors involved (impact)
-         - Evolution trend (novelty)
-         - Breakdown risks (toxicity)
-         - Viral triggers (activity)
-         - Impact forecast (impact)
-         
-      2. **Confidence Assessment**:
-         - Signal strength (novelty)
-         - Pattern stability (activity)
-         - Risk factors (toxicity)
-         - Uncertainty bounds (impact)
+      Use minimal tokens:
+      (t,metric,val,conf)
+      "<forecast_context>"
+      * claims
+      * risk
+      * viral
+      * etc.

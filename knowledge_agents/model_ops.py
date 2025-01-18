@@ -11,7 +11,15 @@ from config.settings import Config
 import json
 import tiktoken
 
+# Initialize logging
 logger = logging.getLogger(__name__)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+# Prevent propagation to root logger to avoid duplicate logs
+logger.propagate = False
 
 class ModelProvider(Enum):
     OPENAI = "openai"

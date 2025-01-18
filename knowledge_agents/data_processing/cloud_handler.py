@@ -121,7 +121,7 @@ class S3Handler:
             for item in response.get('Contents', []):
                 if (item['Key'].endswith('.csv') and 
                     (Config.SELECT_BOARD is None or f'chanscope_{Config.SELECT_BOARD}' in item['Key'])):
-                    if latest_date is None or item['LastModified'].astimezone(tz.UTC) > latest_date:
+                    if latest_date is None or item['LastModified'].astimezone(tz.UTC) >= latest_date:
                         csv_objects.append(item['Key'])
                         logger.debug(f"Found matching file: {item['Key']}")
             
@@ -151,7 +151,7 @@ class S3Handler:
                                 
                                 # Filter by date if needed
                                 if latest_date is not None:
-                                    chunk = chunk[chunk['posted_date_time'] > latest_date]
+                                    chunk = chunk[chunk['posted_date_time'] >= latest_date]
                                 
                                 if not chunk.empty:
                                     yield chunk

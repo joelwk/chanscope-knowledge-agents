@@ -10,11 +10,14 @@ import json
 import numpy as np
 
 # Initialize logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+# Prevent propagation to root logger to avoid duplicate logs
+logger.propagate = False
 
 # Load configuration using centralized Config
 model_config, app_config = load_config()

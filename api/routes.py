@@ -6,6 +6,9 @@ from knowledge_agents.data_processing.cloud_handler import S3Handler
 import aioboto3, openai, logging, traceback, time, os
 from typing import Dict, Any
 from pathlib import Path
+from datetime import datetime, timedelta
+import yaml
+import pytz
 
 from config.settings import Config
 logger = logging.getLogger(__name__)
@@ -43,8 +46,12 @@ def register_routes(app):
             "documentation": {
                 "process_query": "/process_query",
                 "batch_process": "/batch_process",
+                "process_recent_query": "/process_recent_query",
                 "health_check": "/health",
-                "connections": "/health/connections"
+                "health_replit": "/health_replit",
+                "connections": "/health/connections",
+                "s3_health": "/health/s3",
+                "provider_health": "/health/provider/{provider}"
             }
         })
     @app.route('/health', methods=['GET'])
@@ -390,3 +397,135 @@ def register_routes(app):
                 "message": str(e),
                 "type": type(e).__name__
             }), 500
+
+    @app.route('/process_recent_query', methods=['GET'])
+    async def process_recent_query():
+        """Process a query with preconfigured settings for recent data.
+        
+        This endpoint automatically processes data from the last 3 hours with a sample size of 1000.
+        Query parameters:
+        - force_refresh (optional): Whether to force refresh the data. Defaults to True
+        """
+        try:
+            logger.info("Received process_recent_query request")
+            
+            # Load stored queries
+            stored_queries_path = Path(Config.PROJECT_ROOT) / 'config' / 'stored_queries.yaml'
+            try:
+                with open(stored_queries_path, 'r') as f:
+                    stored_queries = yaml.safe_load(f)
+            except Exception as e:
+                logger.error(f"Error loading stored queries: {str(e)}")
+                return jsonify({
+                    "error": "Failed to load stored queries",
+                    "message": str(e)
+                }), 500
+            
+            # Get the query template
+            try:
+                query = stored_queries['query_template']
+            except KeyError as e:
+                logger.error(f"Missing required key in stored queries: {str(e)}")
+                return jsonify({
+                    "error": "Invalid stored queries format",
+                    "message": f"Missing key: {str(e)}"
+                }), 500
+            
+            # Get query parameters - default to True for force_refresh
+            force_refresh = request.args.get('force_refresh', 'true').lower() != 'false'
+            logger.info(f"Force refresh enabled: {force_refresh}")
+            
+            # Calculate date range for last 3 hours using UTC
+            end_time = datetime.now(pytz.UTC)
+            start_time = end_time - timedelta(hours=3)
+            
+            # Set the filter date in environment for data operations with UTC timezone
+            filter_date = start_time.strftime('%Y-%m-%d %H:%M:%S+00:00')
+            os.environ['FILTER_DATE'] = filter_date
+            logger.info(f"Set filter date to: {filter_date} (UTC)")
+            
+            # Get base configuration and validate it exists
+            if 'KNOWLEDGE_CONFIG' not in app.config:
+                error_msg = "KNOWLEDGE_CONFIG not found in application configuration"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 500
+
+            knowledge_config = app.config['KNOWLEDGE_CONFIG']
+
+            # Validate required configuration fields
+            required_fields = ['PATHS', 'ROOT_PATH', 'PROVIDERS']
+            missing_fields = [field for field in required_fields if field not in knowledge_config]
+            if missing_fields:
+                error_msg = f"Missing required configuration fields: {', '.join(missing_fields)}"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 500
+
+            paths = knowledge_config['PATHS']
+
+            # Validate required paths
+            required_paths = ['knowledge_base', 'all_data', 'stratified', 'temp']
+            missing_paths = [path for path in required_paths if path not in paths]
+            if missing_paths:
+                error_msg = f"Missing required paths in configuration: {', '.join(missing_paths)}"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 500
+
+            # Create configuration with preconfigured settings
+            config = KnowledgeAgentConfig(
+                root_path=Path(knowledge_config['ROOT_PATH']),
+                knowledge_base_path=Path(paths['knowledge_base']),
+                all_data_path=Path(paths['all_data']),
+                stratified_data_path=Path(paths['stratified']),
+                sample_size=1000,  # Fixed sample size for recent data
+                embedding_batch_size=Config.EMBEDDING_BATCH_SIZE,
+                chunk_batch_size=Config.CHUNK_BATCH_SIZE,
+                summary_batch_size=Config.SUMMARY_BATCH_SIZE,
+                max_workers=Config.MAX_WORKERS,
+                providers={
+                    ModelOperation.EMBEDDING: ModelProvider.OPENAI,
+                    ModelOperation.CHUNK_GENERATION: ModelProvider.OPENAI,
+                    ModelOperation.SUMMARIZATION: ModelProvider.OPENAI
+                }
+            )
+
+            # Process the query
+            logger.info(f"Processing query with force_refresh={force_refresh}")
+            chunks, response = await run_knowledge_agents(
+                query=query,
+                config=config,
+                force_refresh=force_refresh
+            )
+
+            logger.info("Successfully processed recent query")
+            return jsonify({
+                "success": True,
+                "results": {
+                    "query": query,
+                    "time_range": {
+                        "start": start_time.isoformat(),
+                        "end": end_time.isoformat()
+                    },
+                    "chunks": chunks,
+                    "summary": response
+                }
+            })
+
+        except Exception as e:
+            logger.error(f"Error processing recent query: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Determine if this is a known error type
+            error_type = type(e).__name__
+            if error_type in ['ValueError', 'KeyError', 'TypeError']:
+                status_code = 400  # Bad request
+            else:
+                status_code = 500  # Internal server error
+                
+            return jsonify({
+                "error": "Error processing query",
+                "message": str(e),
+                "type": error_type,
+                "details": {
+                    "traceback": traceback.format_exc()
+                } if app.debug else {}
+            }), status_code

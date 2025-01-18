@@ -272,7 +272,6 @@ class Config:
                 # Continue even if directory creation fails
                 pass
 
-
 class DevelopmentConfig(Config):
     """Development configuration."""
     DEBUG = True

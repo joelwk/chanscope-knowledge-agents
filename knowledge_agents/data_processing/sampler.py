@@ -33,7 +33,7 @@ class Sampler:
         
         if filter_date:
             try:
-                self.filter_date = pd.to_datetime(filter_date).date()
+                self.filter_date = pd.to_datetime(filter_date, utc=True)
             except (ValueError, TypeError):
                 logger.warning(f"Invalid filter date format: {filter_date}, setting to None")
                 self.filter_date = None
@@ -47,10 +47,7 @@ class Sampler:
             
         # Standardize datetime column first
         df = df.copy()
-        df[self.time_column] = pd.to_datetime(
-            df[self.time_column].str.replace(r'\+00:00', '', regex=True), 
-            errors='coerce'
-        )
+        df[self.time_column] = pd.to_datetime(df[self.time_column], utc=True, errors='coerce')
         
         # Then apply date filtering
         return self.filter_by_date(df)
@@ -60,10 +57,9 @@ class Sampler:
         if not self.filter_date or not self.time_column or self.time_column not in df.columns:
             return df
             
-        # Convert to datetime.date for comparison
-        df['date'] = df[self.time_column].dt.date
-        filtered_df = df[df['date'] > self.filter_date]
-        filtered_df = filtered_df.drop(columns=['date'])
+        # Convert filter_date to UTC datetime for comparison
+        filter_datetime = pd.to_datetime(self.filter_date, utc=True)
+        filtered_df = df[df[self.time_column] >= filter_datetime]
         return filtered_df
         
     def stratified_sample(self, data):
@@ -84,7 +80,7 @@ class Sampler:
         if self.time_column is None or self.strata_column is None or self.strata_column == "None":
             raise ValueError("Both time_column and strata_column must be provided for this method.")
             
-        data.loc[:, 'temp_time_column'] = pd.to_datetime(data[self.time_column], errors='coerce')
+        data.loc[:, 'temp_time_column'] = pd.to_datetime(data[self.time_column], utc=True, errors='coerce')
         time_samples = data.groupby(pd.Grouper(key='temp_time_column', freq=self.freq))
         samples = []
 
@@ -104,7 +100,7 @@ class Sampler:
     def sample_by_time(self, data):
         """Sample data by time only."""
         data = data.copy()
-        data.loc[:, 'temp_time_column'] = pd.to_datetime(data[self.time_column], errors='coerce')
+        data.loc[:, 'temp_time_column'] = pd.to_datetime(data[self.time_column], utc=True, errors='coerce')
         sampled_data = data.groupby(pd.Grouper(key='temp_time_column', freq=self.freq)).apply(
             lambda x: x.sample(frac=min(1, int(self.initial_sample_size) / len(data))) if len(x) > 0 else x
         )

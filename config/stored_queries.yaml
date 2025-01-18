@@ -1,0 +1,75 @@
+query_template: >
+  Analyze recent discussions from the past 3 hours focusing on:
+  - Real-time events and developments
+  - Emerging patterns and trends
+  - Breaking news and immediate impacts
+  
+  Requirements:
+  1. Extract time-series data points (tx, vx)
+  2. Identify cyclical patterns and correlations
+  3. Map narrative networks and information flow
+  4. Generate confidence intervals and projections
+  
+  Focus areas to analyze:
+  - Technology & Innovation: Recent breakthroughs and launches
+  - Economic & Market: Market movements and volatility
+  - Social & Cultural: Public discourse and sentiment
+  - Policy & Governance: Regulatory changes and impacts
+  - Breaking News: Emerging trends and real-time events
+
+analysis_requirements:
+  temporal_analysis:
+    - "Extract time-series data points (tx, vx)"
+    - "Document temporal dependencies"
+    - "Map causal chains"
+
+  pattern_recognition:
+    - "Identify cyclical patterns"
+    - "Document correlation strengths"
+    - "Flag regime changes"
+
+  contextual_integration:
+    - "Map narrative networks"
+    - "Track information propagation"
+    - "Measure cross-domain effects"
+
+  forecast_requirements:
+    - "Generate confidence intervals"
+    - "Project trend trajectories"
+    - "Identify stability thresholds"
+
+focus_areas:
+  technology_innovation:
+    - "Recent breakthrough announcements and validation metrics"
+    - "New product launches with market reception data"
+    - "Emerging research developments with citation patterns"
+    - "Industry shifts with quantifiable impacts"
+
+  economic_market:
+    - "Market movements with volatility indicators"
+    - "Economic indicators with historical comparisons"
+    - "Policy impacts with measured outcomes"
+    - "Industry transformations with adoption rates"
+
+  social_cultural:
+    - "Public discourse with sentiment metrics"
+    - "Social movements with participation trends"
+    - "Cultural phenomena with diffusion patterns"
+    - "Community responses with engagement data"
+
+  policy_governance:
+    - "Regulatory changes with compliance metrics"
+    - "Political developments with stability indicators"
+    - "International relations with diplomatic indices"
+    - "Policy implementations with effectiveness measures"
+
+  narrative_analysis:
+    - "Information flow patterns"
+    - "Discourse evolution metrics"
+    - "Cross-domain influence measures"
+    - "Stability indicators"
+
+  breaking_news:
+    - "Emerging trends and patterns"
+    - "Real-time event tracking"
+    - "News sentiment analysis"

@@ -47,7 +47,7 @@ class DateProcessor:
 
     def _to_datetime(self, df, columns):
         for col in columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce')
+            df[col] = pd.to_datetime(df[col], utc=True, errors='coerce')
         return df
 
     def _localize_and_convert_to_utc(self, df, columns):
@@ -84,31 +84,31 @@ class DateProcessor:
         """
         Add a specified number of days to a datetime column.
         """
-        df[date_column] = pd.to_datetime(df[date_column], errors='coerce') + pd.Timedelta(days=days)
+        df[date_column] = pd.to_datetime(df[date_column], utc=True, errors='coerce') + pd.Timedelta(days=days)
         return df
 
     def subtract_days(self, df: pd.DataFrame, date_column: str, days: int) -> pd.DataFrame:
         """
         Subtract a specified number of days from a datetime column.
         """
-        df[date_column] = pd.to_datetime(df[date_column], errors='coerce') - pd.Timedelta(days=days)
+        df[date_column] = pd.to_datetime(df[date_column], utc=True, errors='coerce') - pd.Timedelta(days=days)
         return df
 
     def filter_date_range(self, df: pd.DataFrame, date_column: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
         Filter rows based on a date range.
         """
-        df[date_column] = pd.to_datetime(df[date_column], errors='coerce')
-        start_date = pd.to_datetime(start_date)
-        end_date = pd.to_datetime(end_date)
+        df[date_column] = pd.to_datetime(df[date_column], utc=True, errors='coerce')
+        start_date = pd.to_datetime(start_date, utc=True)
+        end_date = pd.to_datetime(end_date, utc=True)
         return df[(df[date_column] >= start_date) & (df[date_column] <= end_date)]
         
     def format_timestamp(self, df: pd.DataFrame) -> pd.DataFrame:
         if 'date_hour' in df.columns:
-            df['date_hour'] = pd.to_datetime(df['date_hour'], errors='coerce')
+            df['date_hour'] = pd.to_datetime(df['date_hour'], utc=True, errors='coerce')
             df['date_hour'] = df['date_hour'].dt.floor('H').dt.strftime('%Y-%m-%d %H')
         elif 'Timestamp' in df.columns:
-            df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+            df['Timestamp'] = pd.to_datetime(df['Timestamp'], utc=True, errors='coerce')
             df['Timestamp'] = df['Timestamp'].dt.floor('H')
             df['date_hour'] = df['Timestamp'].dt.strftime('%Y-%m-%d %H')
         else:

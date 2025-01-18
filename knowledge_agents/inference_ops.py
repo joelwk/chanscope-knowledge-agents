@@ -11,6 +11,13 @@ import numpy as np
 
 # Initialize logging
 logger = logging.getLogger(__name__)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+# Prevent propagation to root logger to avoid duplicate logs
+logger.propagate = False
 
 async def strings_ranked_by_relatedness(
     query: str,
@@ -268,7 +275,7 @@ async def process_multiple_queries(
                 })
                 continue
 
-            dates = pd.to_datetime([r["posted_date_time"] for r in chunk_results])
+            dates = pd.to_datetime([r["posted_date_time"] for r in chunk_results], utc=True)
             temporal_contexts.append({
                 "start_date": dates.min().strftime("%Y-%m-%d"),
                 "end_date": dates.max().strftime("%Y-%m-%d")
