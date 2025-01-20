@@ -6,7 +6,7 @@ It is designed to be configuration-agnostic and receive its settings from the ap
 
 from typing import Dict, Optional, Any
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import logging
 from config.settings import Config
 
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class KnowledgeAgentConfig:
     """Configuration for knowledge agent operations.
-    
+
     This class handles two types of batching:
     1. Sample-based batching: Controls the number of items processed (sample_size)
     2. Token-based batching: Controls the batch sizes for API calls based on token limits
@@ -39,7 +39,7 @@ class KnowledgeAgentConfig:
         providers: Optional[Dict[ModelOperation, ModelProvider]] = None
     ):
         """Initialize knowledge agent configuration.
-        
+
         Args:
             root_path: Root path for data storage
             all_data_path: Path to all data
@@ -132,7 +132,7 @@ class KnowledgeAgentConfig:
 
     def get_batch_config(self) -> Dict[str, int]:
         """Get the current batch configuration.
-        
+
         Returns:
             Dict containing all batch-related settings
         """

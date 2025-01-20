@@ -7,10 +7,8 @@ packages = [{include = "knowledge_agents"}]
 
 [tool.poetry.dependencies]
 python = ">=3.9,<3.12"
-flask = {version = "2.3.3", extras = ["async"]}
 boto3 = "1.35.81"
 pandas = "2.1.0"
-gunicorn = "^21.2.0"
 python-dotenv = "1.0.0"
 werkzeug = "2.3.7"
 numpy = "^1.24.3"
@@ -29,10 +27,10 @@ asgiref = "^3.7.2"
 chainlit = "0.7.604"
 pydantic = "1.10.13"
 aiohttp = "^3.9.1"
-flask-cors = "^5.0.0"
 quart = "<0.20.0"
 quart-cors = "^0.8.0"
 aioboto3 = "13.3.0"
+hypercorn = "^0.15.0"
 
 [[tool.poetry.source]]
 name = "pytorch-cpu"

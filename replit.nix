@@ -1,5 +1,7 @@
 { pkgs }: {
   deps = [
+    pkgs.python311Packages.fastjsonschema
+    pkgs.python311Packages.python-dotenv
     pkgs.rustc
     pkgs.libiconv
     pkgs.cargo

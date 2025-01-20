@@ -20,8 +20,8 @@ services:
       - HOST=0.0.0.0
       
       # Production Settings
-      - FLASK_APP=api.app
-      - FLASK_ENV=production
+      - QUART_APP=api.app
+      - QUART_ENV=production
       - PYTHONPATH=/app
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
@@ -46,11 +46,15 @@ services:
       # Application Settings
       - BATCH_SIZE=${BATCH_SIZE:-100}
       - SAMPLE_SIZE=${SAMPLE_SIZE:-2500}
+      - MAX_WORKERS=${MAX_WORKERS:-4}
       - FILTER_DATE=${FILTER_DATE}
       - MAX_TOKENS=${MAX_TOKENS:-4096}
       - CHUNK_SIZE=${CHUNK_SIZE:-1000}
       - CACHE_ENABLED=${CACHE_ENABLED:-true}
       - SELECT_BOARD=${SELECT_BOARD}
+      - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-500}
+      - CHUNK_BATCH_SIZE=${CHUNK_BATCH_SIZE:-100}
+      - SUMMARY_BATCH_SIZE=${SUMMARY_BATCH_SIZE:-100}
       
       # Data Paths (Fixed in container)
       - ROOT_PATH=/app/data

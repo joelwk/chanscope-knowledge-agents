@@ -7,7 +7,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
-    git \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Poetry using pip (more reliable than installer script)
@@ -49,7 +49,7 @@ echo "Starting service: $SERVICE_TYPE in development mode"\n\
 \n\
 if [ "$SERVICE_TYPE" = "api" ]; then\n\
     echo "Starting API server..."\n\
-    PYTHONUNBUFFERED=1 exec poetry run python -m flask --app api.app run --host 0.0.0.0 --port 5000 --debug --no-reload\n\
+    PYTHONUNBUFFERED=1 exec poetry run hypercorn api.app:app --bind 0.0.0.0:5000 --reload\n\
 elif [ "$SERVICE_TYPE" = "ui" ]; then\n\
     echo "Starting Chainlit UI..."\n\
     cd /app && exec poetry run python -m chainlit run chainlit_frontend/app.py --host 0.0.0.0 --port 8000\n\
@@ -58,7 +58,7 @@ else\n\
     exit 1\n\
 fi' > /app/start.sh && chmod +x /app/start.sh
 
-# Expose ports for both Flask API and Chainlit UI
+# Expose ports for both Quart API and Chainlit UI
 EXPOSE 5000 8000
 
 # Set the startup script as the entrypoint
@@ -90,18 +90,12 @@ set -e\n\
 echo "Starting service: $SERVICE_TYPE in production mode"\n\
 \n\
 if [ "$SERVICE_TYPE" = "api" ]; then\n\
-    echo "Starting API server with gunicorn..."\n\
-    exec poetry run gunicorn \
+    echo "Starting API server with hypercorn..."\n\
+    exec poetry run hypercorn \
         --bind 0.0.0.0:5000 \
-        --timeout 1200 \
-        --graceful-timeout 300 \
-        --keep-alive 300 \
         --workers 1 \
-        --threads 4 \
-        --worker-class gthread \
-        --worker-tmp-dir /dev/shm \
-        --max-requests 1000 \
-        --max-requests-jitter 50 \
+        --access-logfile - \
+        --error-logfile - \
         --log-level ${LOG_LEVEL:-info} \
         api.app:app\n\
 elif [ "$SERVICE_TYPE" = "ui" ]; then\n\
@@ -112,7 +106,7 @@ else\n\
     exit 1\n\
 fi' > /app/start.sh && chmod +x /app/start.sh
 
-# Expose ports for both Flask API and Chainlit UI
+# Expose ports for both Quart API and Chainlit UI
 EXPOSE 5000 8000
 
 # Set the startup script as the entrypoint

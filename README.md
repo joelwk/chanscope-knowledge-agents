@@ -1,9 +1,19 @@
 # Chanscope Knowledge Agent
 
 ## Overview
-An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice) for intelligent text analysis. The system employs a multi-stage pipeline focusing on temporal analysis, event mapping, and forecasting.
+An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice) for comprehensive 4chan data analysis to extract actionable insights and patterns. The system employs intelligent sampling techniques and a multi-stage analysis pipeline to process large volumes of 4chan data, enabling temporal analysis, cross-source verification, and predictive analytics.
 
-## Key Features
+### Platform Integration
+- **Traditional Deployment**: Docker-based local or server deployment for controlled environments
+- **[Replit Cloud](https://replit.com/@jwkonitzer/chanscope-knowledge-agents)**: Zero-setup cloud deployment with optimized performance
+- **[Virtuals Protocol](https://app.virtuals.io/prototypes/0x2cc92Fc77180815834FfdAa72C58f72d457C4308)**: Integration with autonomous AI agents that can:
+  - Process and interact with X & 4chan data through their own autonomous decision-making
+  - Maintain synchronized memory across multiple data analysis sessions
+  - Execute onchain transactions and data validations
+  - Leverage the G.A.M.E. framework for dynamic analysis patterns
+  - Enable co-owned and tokenized analysis capabilities
+
+### Core Architecture
 - **Multi-Provider Architecture**
   - OpenAI (Primary): GPT-4, text-embedding-3-large
   - Grok (Optional): grok-2-1212, grok-v1-embedding
@@ -13,14 +23,15 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
   - Time-based and category-based stratified sampling
   - Efficient large dataset handling with reservoir sampling
   - Automated data chunking and embedding generation
+  - Cloud-optimized processing for Replit environment
 
 - **Advanced Analysis Pipeline**
   - Context-aware temporal analysis
   - Parallel processing with automatic fallback
   - Event mapping and relationship extraction
+  - Cross-platform data synchronization
 
-
-The system is designed to process text data through specialized models, each optimized for their specific task. This modular approach allows for flexible model selection while maintaining robust operation through automatic fallback mechanisms.
+The system specializes in processing 4chan data through a sophisticated pipeline that combines intelligent sampling, multi-model analysis, and cross-source verification. Through integration with Virtuals Protocol's autonomous agents, the system gains enhanced capabilities for persistent memory across analysis sessions, autonomous decision-making in data processing, and tokenized ownership of analysis models. These agents can independently interact with data sources, maintain context across multiple analyses, and execute blockchain transactions for data validation and verification.
 
 For more detailed information on the system's technical features and example notebook, please refer to the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
 
@@ -77,7 +88,6 @@ cp .env.template .env  # Configure your API keys
 - `VENICE_API_KEY`: Additional provider (Optional)
 
 3. **AWS Credentials**:
-
 - `AWS_ACCESS_KEY_ID`: AWS access key ID (Required)
 - `AWS_SECRET_ACCESS_KEY`: AWS secret access key (Required)
 
@@ -93,39 +103,166 @@ API: http://localhost:5000
 Frontend: http://localhost:8000
 ```
 
-## API Usage
+## Replit Configuration
 
-### Basic Query Structure
+The project is configured to run seamlessly on Replit with optimized settings for the platform's environment.
+
+### Replit Setup Files
+- `.replit`: Configures the Replit environment
+  - Defines run commands and entry points
+  - Sets up port forwarding (5000 for API, 8000 for UI)
+  - Configures Python environment and dependencies
+  - Integrates with Replit's object storage
+
+- `replit.nix`: Manages system-level dependencies
+  - Specifies required system packages
+  - Sets up Python 3.11
+  - Configures environment variables
+  - Sets up Poetry for dependency management
+
+### Replit-Specific Features
+- **Automatic Environment Detection**: The application detects Replit environment and adjusts settings
+- **Optimized Defaults**: 
+  - Reduced batch sizes for better performance
+  - Adjusted memory usage for Replit constraints
+  - Streamlined data processing pipeline
+- **Integrated Storage**: Uses Replit's object storage for data persistence
+- **URL Generation**: Automatically generates correct URLs for Replit environment
+
+### Running on Replit
+1. Fork the repository to your Replit account
+2. Set up environment variables in Replit Secrets
+3. Click the Run button or use the shell:
+```bash
+./scripts/replit/start.sh
+```
+
+## Docker Configuration
+
+The project uses Docker Compose for containerized deployment with separate configurations for development and production.
+
+### Development Setup
+```bash
+# Build and start development environment
+docker-compose -f deployment/docker-compose.dev.yml up --build -d
+
+# View logs
+docker-compose -f deployment/docker-compose.dev.yml logs -f
+
+# Rebuild specific service
+docker-compose -f deployment/docker-compose.dev.yml up -d --build api
+
+# Stop services
+docker-compose -f deployment/docker-compose.dev.yml down
+```
+
+### Docker Environment Features
+- **Multi-Service Architecture**:
+  - API service (Python/Quart)
+  - UI service (Chainlit)
+  - Shared networking and volumes
+- **Development Optimizations**:
+  - Hot-reload for code changes
+  - Volume mounting for local development
+  - Debug mode enabled
+  - Health checks configured
+- **Environment Variables**:
+  - Flexible configuration through .env file
+  - Service-specific overrides
+  - Secure secrets management
+
+## API and Frontend Integration
+
+### API Endpoints
+
+#### 1. Query Processing
+- `/process_query` (POST): Process a single query
 ```python
 {
     "query": "Your analysis query",
     "force_refresh": false,
-    "batch_size": 100,
+    "sample_size": 1500,
+    "embedding_batch_size": 2000,
+    "chunk_batch_size": 100,
+    "summary_batch_size": 100,
     "embedding_provider": "openai",
-    "summary_provider": "venice"
+    "chunk_provider": "openai",
+    "summary_provider": "openai"
 }
 ```
 
-### PowerShell Example
+- `/batch_process` (POST): Process multiple queries in batch
+```python
+{
+    "queries": [
+        "What are the latest developments in AI?",
+        "How is AI impacting healthcare?"
+    ],
+    "force_refresh": false,
+    "sample_size": 1500,
+    "embedding_batch_size": 2000,
+    "chunk_batch_size": 100,
+    "summary_batch_size": 100
+}
+```
+
+- `/process_recent_query` (GET): Process data from the last 3 hours
+```
+GET /process_recent_query?force_refresh=true
+```
+
+#### 2. Health Check Endpoints
+- `/health`: Basic health check
+- `/health_replit`: Replit-specific health status
+- `/health/connections`: Check all service connections
+- `/health/s3`: Check S3 connection and bucket access
+- `/health/provider/{provider}`: Check specific provider status
+
+### Frontend Interface
+
+The project uses Chainlit for an interactive frontend interface with the following features:
+
+#### 1. Interactive Settings
+- Model provider selection (OpenAI, Grok, Venice)
+- Batch size configuration
+- Data processing options
+- Force refresh toggle
+
+#### 2. Query Interface
+- Real-time query processing
+- Progress indicators
+- Error handling and feedback
+- Results display with related chunks
+
+#### 3. Environment-Specific Features
+- Automatic Replit URL detection
+- Optimized settings for different environments
+- Responsive UI with theme support
+
+### Example Usage
+
+#### 1. Using PowerShell
 ```powershell
 # Create request body
 $body = @{
     query = "What are the latest developments in AI?"
     force_refresh = $false
-    batch_size = 100
+    sample_size = 1500
+    embedding_batch_size = 2000
+    chunk_batch_size = 100
+    summary_batch_size = 100
     embedding_provider = "openai"
     summary_provider = "openai"
 } | ConvertTo-Json
 
-# Make request and get summary
+# Make request
 $response = Invoke-RestMethod -Uri "http://localhost:5000/process_query" -Method Post -Body $body -ContentType "application/json"
-$response.results.summary
 
-# Optional: View full response
-$response | ConvertTo-Json -Depth 10
+# View results
+$response.results.summary
 ```
 
-### Bash Example
+#### 2. Using Bash
 ```bash
 # Single query
 curl -X POST "http://localhost:5000/process_query" \
@@ -133,54 +270,147 @@ curl -X POST "http://localhost:5000/process_query" \
   -d '{
     "query": "What are the latest developments in AI?",
     "force_refresh": false,
-    "batch_size": 100,
+    "sample_size": 1500,
+    "embedding_batch_size": 2000,
+    "chunk_batch_size": 100,
+    "summary_batch_size": 100,
     "embedding_provider": "openai",
     "summary_provider": "openai"
   }'
 
-# Batch processing
-curl -X POST "http://localhost:5000/batch_process" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "queries": [
-      "What are the latest developments in AI?",
-      "How is AI impacting healthcare?"
-    ],
-    "force_refresh": false,
-    "sample_size": 100,
-    "embedding_batch_size": 2048,
-    "chunk_batch_size": 20,
-    "summary_batch_size": 20,
-    "embedding_provider": "openai",
-    "summary_provider": "openai"
-  }'
+# Recent data query
+curl "http://localhost:5000/process_recent_query?force_refresh=true"
 ```
 
-### Output Format
-Results include:
-- Temporal context and time range
-- Thread metrics and patterns
-- Content analysis and key claims
-- Signal detection and forecasts
-- Confidence scores and reliability metrics
+#### 3. Using the Frontend
+1. Access the UI at `http://localhost:8000`
+2. Configure settings using the ⚙️ button:
+   - Select model providers
+   - Set batch sizes
+   - Configure processing options
+3. Enter your query in the chat interface
+4. View results with related chunks in the sidebar
 
-## Core Components
+### Response Format
+```python
+{
+    "success": true,
+    "results": {
+        "query": "Your original query",
+        "chunks": [
+            {
+                "content": "Relevant text chunk",
+                "score": 0.85
+            }
+        ],
+        "summary": "Comprehensive analysis and response"
+    }
+}
+```
 
-### Data Processing Pipeline
-- **Sampler**: Advanced filtering and stratification
-- **Embeddings**: Multi-provider semantic analysis
-- **Inference**: Parallel processing and chunking
-- **Analysis**: Context-aware summarization
+## Project Structure
 
-### Project Structure
 ```
 knowledge_agents/
-├── knowledge_agents/     # Core processing modules
-├── api/                 # REST API service
-├── chainlit_frontend/   # Interactive UI
-├── config/             # Configuration files
-└── deployment/         # Docker configurations
+├── api/                    # REST API service
+│   ├── __init__.py        # API initialization and configuration
+│   ├── app.py             # Main API application
+│   └── routes.py          # API endpoint definitions
+│
+├── chainlit_frontend/      # Interactive UI
+│   ├── app.py             # Chainlit application
+│   ├── styles/            # Custom UI styles
+│   └── .chainlit/         # Chainlit configuration
+│
+├── config/                 # Configuration files
+│   ├── base.py            # Base configuration
+│   ├── settings.py        # Main settings
+│   ├── env_loader.py      # Environment variable loader
+│   ├── logging.conf       # Logging configuration
+│   └── stored_queries.yaml # Predefined queries
+│
+├── knowledge_agents/       # Core processing modules
+│   ├── data_processing/   # Data processing components
+│   │   ├── cloud_handler.py    # Cloud storage operations
+│   │   ├── processing.py       # Data processing utilities
+│   │   └── sampler.py          # Data sampling logic
+│   ├── model_ops.py       # Model operations
+│   ├── inference_ops.py   # Inference pipeline
+│   ├── embedding_ops.py   # Embedding operations
+│   ├── data_ops.py        # Data operations
+│   ├── stratified_ops.py  # Stratified sampling
+│   ├── utils.py           # Utility functions
+│   └── prompt.yaml        # Model prompts
+│
+├── deployment/            # Deployment configurations
+│   ├── Dockerfile        # Main Dockerfile
+│   ├── docker-compose.yml      # Production compose
+│   └── docker-compose.dev.yml  # Development compose
+│
+├── scripts/              # Utility scripts
+│   └── replit/          # Replit-specific scripts
+│       ├── api.sh       # API startup script
+│       └── ui.sh        # UI startup script
+│
+├── tests/               # Test suite
+│   ├── test_endpoints.py     # API endpoint tests
+│   └── debug_client.py       # Debug utilities
+│
+├── examples/            # Example notebooks and scripts
+├── data/               # Data directory
+├── logs/               # Log files
+├── temp_files/         # Temporary processing files
+│
+├── .env.template       # Environment template
+├── .replit            # Replit configuration
+├── replit.nix         # Replit Nix configuration
+├── pyproject.toml     # Poetry dependencies
+├── poetry.lock        # Poetry lock file
+└── README.md          # Project documentation
 ```
+
+### Key Components
+
+#### 1. Core Processing (`knowledge_agents/`)
+- Data processing pipeline and utilities
+- Model operations and inference
+- Embedding and stratification logic
+- Utility functions and configurations
+
+#### 2. API Service (`api/`)
+- REST API implementation
+- Route definitions
+- Request handling
+- Health checks and monitoring
+
+#### 3. Frontend (`chainlit_frontend/`)
+- Interactive UI implementation
+- Custom styling
+- User session management
+- Real-time updates
+
+#### 4. Configuration (`config/`)
+- Environment management
+- Application settings
+- Logging configuration
+- Query templates
+
+#### 5. Deployment (`deployment/`)
+- Docker configurations
+- Environment-specific setups
+- Service orchestration
+
+#### 6. Development Tools
+- Testing framework
+- Debug utilities
+- Example implementations
+- Documentation
+
+#### 7. Replit Integration
+- Replit-specific configurations
+- Startup scripts
+- Environment optimizations
+- Cloud storage integration
 
 ## Development
 

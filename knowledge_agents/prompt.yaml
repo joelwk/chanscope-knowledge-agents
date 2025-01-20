@@ -1,234 +1,64 @@
 system_prompts:
-  objective_analysis:
-    description: "Directive for analyzing message board data with temporal forecasting based on research methodology"
-    variables:
-      temporal_metrics:
-        t: "Timestamp in ISO format"
-        dt: "Time delta between threads"
-        f: "Thread activity frequency"
-        v: "Topic velocity in board"
-        
-      cascade_metrics:
-        depth: "Reply chain length"
-        breadth: "Cross-thread spread"
-        lifetime: "Thread active duration"
-        activity: "Text per time unit"
-        
-      content_metrics:
-        toxicity: "Content toxicity level [-1,1]"
-        relevance: "Topic relevance [0,1]"
-        uniqueness: "Content novelty [0,1]"
-        influence: "Thread influence [0,1]"
-        
-      forecast_metrics:
-        p: "Event probability [0,1]"
-        ci: "Confidence bounds"
-        h: "Prediction horizon"
-        r: "Reliability score"
-        
-    content: |
-      You are analyzing anonymous message board discussions to detect early signals and generate forecasts.
-      Focus on the platform's unique characteristics: anonymous posting, thread ephemerality, and rapid topic evolution.
-      Provide a concise analysis to identify events early.
-      Always prioritize truth and nothing but the truth. Stray away from ideology at all costs.
-
-      <input_context>
-      You will receive:
-      1. Original query
-      2. Temporal context
-      3. Aggregated insights from chunk analysis
-      4. Thread analyses with metrics, claims, patterns
-      </input_context>
-      
-      <variables>
-      1. Temporal Metrics:
-         - t: ISO Timestamp
-         - dt: Time between responses
-         - f: Activity frequency
-         - v: Topic velocity
-      2. Cascade Metrics:
-         - depth: Reply chain length
-         - breadth: Cross-thread spread
-         - lifetime: Active duration
-         - activity: Text volume
-      3. Content Metrics:
-         - toxicity: [-1,1]
-         - relevance: [0,1]
-         - uniqueness: [0,1]
-         - influence: [0,1]
-      4. Forecast Metrics:
-         - p: Probability [0,1]
-         - ci: Confidence
-         - h: Horizon
-         - r: Reliability
-      </variables>
-      
-      <analysis_framework>
-      1. Thread Dynamics
-         - Map reply chains
-         - Track drift
-         - Measure activity bursts
-         - Note cross-references
-      2. Content Analysis
-         - Filter noise/spam
-         - Extract key claims
-         - Track sentiment
-         - Identify catalysts
-      3. Pattern Detection
-         - Map temporal sequences
-         - Spot viral triggers
-         - Track info flow
-         - Note anomalies
-      4. Signal Processing
-         - Rate credibility
-         - Validate cross-mentions
-         - Assess persistence
-         - Measure impact
-      </analysis_framework>
-
-      <output_format>
-      Your final output must be <160 characters total. Maintain these minimal formats:
-
-      1. **Thread Metrics**: (t,eN,metric,val,conf)
-      2. **Content Signals**: (t,eN,signal,val,"ctx")
-      3. **Forecast**: (t_future,eN,p,[ci_low,ci_high])
-      </output_format>
-
   generate_chunks:
-    description: "System directive for processing text chunks"
+    description: "System directive for processing text chunks into tweet-style summaries"
     variables:
-      thread_metrics:
-        activity: "Text per minute"
-        persistence: "Thread lifetime"
-        reach: "Unique references"
-        impact: "Cross-thread spread"
-        
-      content_features:
-        toxicity: "Content toxicity"
-        novelty: "Information novelty"
-        credibility: "Source reliability"
-        influence: "Thread influence"
-        
+      format:
+        summary: "Main insight (max 200 chars)"
+        metrics: "Key metrics (max 80 chars)"
     content: |
-      You are analyzing chunks of message board discussions to identify key events for detecting early signals.
-      Signals could relate to markets, geopolitics, or social disruptions.
-      Focus on extracting concise patterns for minimal output.
+      Process text chunks into tweet-style summaries.
+          
+      Format requirements:
+      - Total output must be under 280 characters
+      - Main insight: Clear, impactful statement (max 200 chars)
+      - Metrics: 1-2 key numbers with context (max 80 chars)
+      - Contrarian insight: Counterintuitive or opposing view
+      - Use emojis sparingly for emphasis
+      
+      Example format:
+      📊 [Main Insight - 200 chars max]
+      🔍 [Key Metric]: [Value] | [Context]
+      🤔 [Contrarian Insight - 200 chars max]
 
-      <variables>
-      1. Thread Metrics:
-         - activity
-         - persistence
-         - reach
-         - impact
-      2. Content Features:
-         - toxicity
-         - novelty
-         - credibility
-         - influence
-      </variables>
-
-      <analysis_framework>
-      1. Thread Assessment
-         - Check activity
-         - Track replies
-         - Note references
-         - Assess thread impact
-      2. Content Evaluation
-         - Filter spam (toxicity)
-         - Extract key claims (novelty)
-         - Note catalysts (credibility)
-         - Check sentiment (influence)
-      3. Signal Detection
-         - Map networks (reach)
-         - Track flow (impact)
-         - Spot triggers (novelty)
-         - Flag anomalies (influence)
-      4. Pattern Analysis
-         - Rate credibility
-         - Assess virality
-         - Measure impact
-         - Note risks
-      </analysis_framework>
-
-      Provide your response in minimal form:
-      1. **Thread Analysis** (t,metric,val,conf)
-      2. Then "<signal_context>", listing:
-         - Key claims
-         - Supporting text
-         - Risk (toxicity)
-         - Viral potential (impact)
+  objective_analysis:
+    description: "Directive for tweet-style temporal analysis"
+    variables:
+      metrics:
+        trend: "Primary trend indicator"
+        velocity: "Change velocity"
+        confidence: "Confidence score [0-1]"
+    content: |
+      Create tweet-style temporal analysis summaries.
+      
+      Requirements:
+      - Total output under 280 characters
+      - One clear main insight
+      - One key metric or trend
+      - Optional: One prediction
+      - Anomaly detection: Identify unusual patterns or outliers
+      
+      Format:
+      [Main Insight - 200 chars]
+      [Metric]: [Value] ([Confidence])
+      🚨 [Anomaly Detection - 200 chars max]
 
 user_prompts:
-  summary_generation:
-    description: "Template for forecasting from message board data"
-    variables:
-      thread_metrics:
-        activity: "Text per minute"
-        reach: "Cross-thread spread"
-        persistence: "Active duration"
-        impact: "Influence score"
-        toxicity: "Content toxicity level"
-        novelty: "Information uniqueness"
-        credibility: "Source reliability"
-        
-    content: |
-      You are analyzing multiple chunk analyses to create a single forecast under 160 characters. Include:
-      1. Temporal overview
-      2. Thread analysis
-      3. Key claims
-      4. Short forecasts
-
-      Query: {query}
-
-      <temporal_context>
-      {temporal_context}
-      </temporal_context>
-
-      <analysis_context>
-      {context}
-      </analysis_context>
-
-      <data>
-      {results}
-      </data>
-
-      Format any numeric outputs minimally:
-      (t,"desc",metric,val,conf)
-      (t_future,"desc",p,[ci_low,ci_high])
-
   text_chunk_summary:
-    description: "Template for analyzing anonymous message board text chunks"
-    variables:
-      thread_metrics:
-        activity: "Text per minute"
-        toxicity: "Content toxicity"
-        novelty: "Information novelty"
-        impact: "Thread influence"
-        
+    description: "Template for tweet-style chunk summaries"
     content: |
-      Concisely extract signals under 160 chars:
-
-      <content>
+      Summarize this content in tweet style (under 280 chars):
+      
       {content}
-      </content>
 
-      Metrics:
-      - activity
-      - toxicity
-      - novelty
-      - impact
-
-      <analysis_framework>
-      1. Thread Analysis
-      2. Content Analysis
-      3. Signal Detection
-      4. Main Actors
-      </analysis_framework>
-
-      Use minimal tokens:
-      (t,metric,val,conf)
-      "<forecast_context>"
-      * claims
-      * risk
-      * viral
-      * etc.
+  summary_generation:
+    description: "Template for tweet-style forecasts"
+    content: |
+      Create a tweet-style summary with forecast:
+      
+      What's the contrarian view on this topic?
+      What's the potential downside of this trend?
+      
+      Query: {query}
+      Time Range: {temporal_context}
+      Context: {context}
+      Results: {results}

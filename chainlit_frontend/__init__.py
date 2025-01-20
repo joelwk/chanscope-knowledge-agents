@@ -34,7 +34,6 @@ load_dotenv(env_path)
 # Get API settings from Config
 api_settings = Config.get_api_settings()
 API_BASE_URL = api_settings['base_url']
-is_docker = os.path.exists('/.dockerenv')
 
 # Log configuration
 logger.info("Chainlit frontend configured with environment:")

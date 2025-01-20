@@ -14,27 +14,38 @@ if not logger.handlers:
     # Prevent propagation to root logger to avoid duplicate logs
     logger.propagate = False
 
-if __name__ == '__main__':
-    app = create_app()
-    config = Config()
-    
-    # Set minimal configuration needed
-    app.config['TIMEOUT'] = 1200  # 20 minutes timeout
-    app.config['KNOWLEDGE_CONFIG'] = {
-        'PATHS': Config.get_data_paths(),
-        'ROOT_PATH': Config.ROOT_PATH,
-        'PROVIDERS': Config.get_provider_settings(),
-        'SAMPLE_SIZE': Config.SAMPLE_SIZE,
-        'MAX_WORKERS': Config.MAX_WORKERS,
-        'CACHE_ENABLED': Config.CACHE_ENABLED
-    }
+def is_docker_env():
+    """Check if running in Docker environment."""
+    return os.getenv('DOCKER_ENV') == 'true'
 
-    if is_replit_env():
-        port = 5000
+# Create the app instance at module level
+app = create_app()
+config = Config()
+
+# Set minimal configuration needed
+app.config['TIMEOUT'] = 1200  # 20 minutes timeout
+app.config['KNOWLEDGE_CONFIG'] = {
+    'PATHS': Config.get_data_paths(),
+    'ROOT_PATH': Config.ROOT_PATH,
+    'PROVIDERS': Config.get_provider_settings(),
+    'SAMPLE_SIZE': Config.SAMPLE_SIZE,
+    'MAX_WORKERS': Config.MAX_WORKERS,
+    'CACHE_ENABLED': Config.CACHE_ENABLED
+}
+
+if __name__ == '__main__':
+    if is_docker_env():
+        logger.info("Starting app in Docker environment")
+        app.run(
+            host='0.0.0.0',
+            port=5000,
+            debug=False
+        )
+    elif is_replit_env():
         logger.info(f"Starting app in Replit environment: host=0.0.0.0, port={port}")
         app.run(
             host='0.0.0.0',
-            port=port,
+            port=5000,
             debug=False
         )
     else:

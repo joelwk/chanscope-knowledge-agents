@@ -46,10 +46,10 @@ async def _run_knowledge_agents_async(
     """Async implementation of knowledge agents pipeline with three distinct models."""
     try:
         logger.info("Starting knowledge agents pipeline")
-        
+
         # Create knowledge agent
         agent = KnowledgeAgent()
-        
+
         # Initialize data operations with proper configuration
         data_config = DataConfig(
             root_path=config.root_path,
@@ -62,7 +62,7 @@ async def _run_knowledge_agents_async(
             strata_column=os.getenv('STRATA_COLUMN', None)
         )
         data_ops = DataOperations(data_config)
-        
+
         # Prepare data using new data operations
         try:
             logger.info("Preparing data...")
@@ -70,7 +70,7 @@ async def _run_knowledge_agents_async(
         except Exception as e:
             logger.error(f"Error preparing data: {e}")
             raise
-        
+
         # Step 1: Generate embeddings using embedding model
         logger.info(f"Using {config.providers[ModelOperation.EMBEDDING]} for embeddings")
         try:
@@ -83,7 +83,7 @@ async def _run_knowledge_agents_async(
         except Exception as e:
             logger.error(f"Error getting relevant content: {e}")
             raise
-        
+
         # Step 2 & 3: Generate chunks/context and final summary
         logger.info(f"Using {config.providers[ModelOperation.CHUNK_GENERATION]} for chunk analysis")
         logger.info(f"Using {config.providers[ModelOperation.SUMMARIZATION]} for final summary")
@@ -102,11 +102,11 @@ async def _run_knowledge_agents_async(
             chunks, response = results[0]
             logger.info("Summary generated successfully")
             return chunks, response
-            
+
         except Exception as e:
             logger.error(f"Error generating summary: {e}")
             raise
-            
+
     except Exception as e:
         logger.error(f"Error in knowledge agent pipeline: {e}")
         raise
@@ -117,16 +117,16 @@ def run_knowledge_agents(
     force_refresh: bool = False,
 ) -> Union[Tuple[List[Dict[str, Any]], str], "asyncio.Future"]:
     """Run knowledge agents pipeline in both notebook and script environments.
-    
+
     This function detects the environment and handles the async execution appropriately.
     In a notebook, it will execute the coroutine immediately.
     In a script, it will return the coroutine for the event loop to execute.
-    
+
     Args:
         query: The search query
         config: Configuration instance for the knowledge agents
         force_refresh: Whether to force refresh the data
-    
+
     Returns:
         In notebook: Tuple of (processed chunks, final summary)
         In script: Coroutine object
@@ -136,12 +136,12 @@ def run_knowledge_agents(
         config=config,
         force_refresh=force_refresh,
     )
-    
+
     # If we're in a notebook, execute the coroutine immediately
     if IPython.get_ipython() is not None:
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(coroutine)
-    
+
     # Otherwise, return the coroutine for the script's event loop
     return coroutine
 
@@ -199,7 +199,7 @@ def main():
     for chunk in chunks:
         print(chunk)
         print("-" * 80)
-        
+
     print("\nGenerated Summary:")
     print("-" * 80)
     print(response)

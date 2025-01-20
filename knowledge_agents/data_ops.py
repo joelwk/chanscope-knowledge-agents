@@ -1,9 +1,8 @@
 import pandas as pd
-import os
 import shutil
 import logging
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from dataclasses import dataclass, field
 from .data_processing.sampler import Sampler
 from .data_processing.cloud_handler import load_all_csv_data_from_s3
@@ -20,8 +19,8 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
-# Prevent propagation to root logger to avoid duplicate logs
 logger.propagate = False
+
 
 @dataclass
 class DataConfig:
@@ -30,7 +29,7 @@ class DataConfig:
     all_data_path: Path
     stratified_data_path: Path
     knowledge_base_path: Path
-    
+
     filter_date: str
     sample_size: int = field(default_factory=lambda: Config.SAMPLE_SIZE)
     time_column: str = 'posted_date_time'
@@ -74,7 +73,7 @@ class DataStateManager:
                 required_columns = [self.config.time_column]
                 if self.config.strata_column:
                     required_columns.append(self.config.strata_column)
-                
+
                 valid_rows = 0
                 for chunk in pd.read_csv(self.config.all_data_path, 
                                        chunksize=Config.SAMPLE_SIZE,
@@ -83,15 +82,15 @@ class DataStateManager:
                     # Check required columns
                     if all(col in chunk.columns for col in required_columns):
                         valid_rows += len(chunk)
-                    
+
                     # Clean up
                     del chunk
                     gc.collect()
-                
+
                 integrity['all_data'] = True
                 integrity['data_not_empty'] = valid_rows > 0
                 self._logger.info(f"Data integrity check found {valid_rows} valid rows")
-                
+
             except Exception as e:
                 self._logger.error(f"Data integrity check failed: {e}")
                 integrity['all_data'] = False
@@ -188,30 +187,30 @@ class DataOperations:
         """Main data preparation pipeline."""
         try:
             self._logger.info(f"Starting data preparation (force_refresh={force_refresh})")
-            
+
             # Always perform cleanup if force refresh is True
             if force_refresh:
                 self._cleanup_existing_data()
-            
+
             # Create directory structure first
             await self._ensure_directory_structure()
-            
+
             # Check if we need to load/refresh data
             structure_valid = self.state_manager.validate_file_structure()
             if force_refresh or not all(structure_valid.values()):
                 await self._load_fresh_data()
-            
+
             # Validate data integrity
             integrity_valid = self.state_manager.validate_data_integrity()
             if not all(integrity_valid.values()):
                 raise ValueError("Data integrity check failed")
-            
+
             # Process existing data
             await self._process_existing_data()
-            
+
             self._logger.info("Data preparation completed successfully")
             return "Data preparation completed successfully"
-            
+
         except Exception as e:
             self._logger.error(f"Data preparation failed: {e}")
             raise
@@ -243,7 +242,7 @@ class DataOperations:
             if self.config.all_data_path.exists():
                 self.config.all_data_path.unlink()
                 self._logger.info(f"Removed file: {self.config.all_data_path}")
-            
+
             # Clean up stratified data directory contents
             if self.config.stratified_data_path.exists():
                 for item in self.config.stratified_data_path.glob("*"):
@@ -254,31 +253,31 @@ class DataOperations:
                         shutil.rmtree(item)
                         self._logger.info(f"Removed directory: {item}")
                 self._logger.info(f"Cleaned stratified data directory: {self.config.stratified_data_path}")
-            
+
             # Clean up knowledge base file if it exists
             if self.config.knowledge_base_path.exists():
                 self.config.knowledge_base_path.unlink()
                 self._logger.info(f"Removed file: {self.config.knowledge_base_path}")
-            
+
             self._logger.info("Data cleanup complete")
         except Exception as e:
             self._logger.error(f"Cleanup failed: {e}")
             raise
-        
+
     async def _fetch_and_save_data(self):
         """Fetch and save new data in chunks."""
         self._logger.info(f"Fetching new data with filter date: {self.config.filter_date}")
         try:
             # Ensure parent directory exists before saving
             self.config.all_data_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Initialize CSV file with headers
             pd.DataFrame(columns=['thread_id', 'posted_date_time', 'text_clean']).to_csv(
                 self.config.all_data_path, index=False, mode='w')
-            
+
             # Stream data directly from S3 to disk
             total_rows = 0
-            
+
             # Iterate through chunks yielded by load_all_csv_data_from_s3
             for chunk_df in load_all_csv_data_from_s3(latest_date_processed=self.config.filter_date):
                 # Append chunk directly to file
@@ -290,16 +289,16 @@ class DataOperations:
                 )
                 total_rows += len(chunk_df)
                 self._logger.info(f"Saved chunk with {len(chunk_df)} rows. Total rows: {total_rows}")
-                
+
                 # Clean up
                 del chunk_df
                 gc.collect()
-            
+
             if total_rows == 0:
                 self._logger.warning("No new data was saved")
             else:
                 self._logger.info(f"New data saved successfully: {total_rows} rows")
-            
+
         except Exception as e:
             self._logger.error(f"Data fetch failed: {e}")
             raise
@@ -310,40 +309,40 @@ class DataOperations:
         try:
             chunk_size = 50000  # Process 50k rows at a time
             all_data = []  # Store all chunks
-            
+
             # Read and process data in chunks
             for chunk in pd.read_csv(self.config.all_data_path, chunksize=chunk_size):
                 # Stratify chunk
                 stratified_chunk = await self.processor.stratify_data(chunk)
                 if not stratified_chunk.empty:
                     all_data.append(stratified_chunk)
-                
+
                 # Clean up
                 del chunk
                 gc.collect()
-            
+
             # Combine all processed chunks
             if all_data:
                 stratified_data = pd.concat(all_data, ignore_index=True)
                 self._logger.info(f"Combined stratified data size: {len(stratified_data)}")
-                
+
                 # Save stratified sample with clear naming
                 stratified_file = self.config.stratified_data_path / "stratified_sample.csv"
                 stratified_data.to_csv(stratified_file, index=False)
                 self._logger.info(f"Saved stratified sample to {stratified_file}")
-                
+
                 # Create knowledge base from stratified data
                 self._logger.info("Creating knowledge base")
                 stratified_data.to_csv(self.config.knowledge_base_path, index=False)
                 self._logger.info(f"Knowledge base created with {len(stratified_data)} rows")
-                
+
                 # Clean up
                 del stratified_data
                 del all_data
                 gc.collect()
-                
+
             self._logger.info("Data processing complete")
-            
+
         except Exception as e:
             self._logger.error(f"Data processing failed: {e}")
             raise

@@ -1,7 +1,7 @@
 import os
 from enum import Enum
 from typing import Dict, Any, Optional, Tuple, List, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from openai import AsyncOpenAI
 import logging
 import yaml
@@ -18,7 +18,6 @@ formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
-# Prevent propagation to root logger to avoid duplicate logs
 logger.propagate = False
 
 class ModelProvider(Enum):
@@ -35,12 +34,12 @@ class ModelProvider(Enum):
             return cls(value.lower() if isinstance(value, str) else value)
         except ValueError:
             raise ValueError(f"Unknown model provider: {value}")
-            
+
 class ModelOperation(str, Enum):
     EMBEDDING = "embedding"
     CHUNK_GENERATION = "chunk_generation"
     SUMMARIZATION = "summarization"
-    
+
 class AppConfig(BaseModel):
     max_tokens: int 
     chunk_size: int
@@ -67,7 +66,6 @@ class ModelConfig:
         openai_embedding_model: Optional[str] = None,
         openai_completion_model: Optional[str] = None,
         grok_api_key: Optional[str] = None,
-        grok_embedding_model: Optional[str] = None,
         grok_completion_model: Optional[str] = None,
         venice_api_key: Optional[str] = None,
         venice_summary_model: Optional[str] = None,
@@ -85,7 +83,6 @@ class ModelConfig:
 
         # Grok settings
         self.grok_api_key = grok_api_key or Config.GROK_API_KEY
-        self.grok_embedding_model = grok_embedding_model or Config.GROK_EMBEDDING_MODEL
         self.grok_completion_model = grok_completion_model or Config.GROK_MODEL
 
         # Venice settings
@@ -141,7 +138,6 @@ def load_config() -> Tuple[ModelConfig, AppConfig]:
         openai_embedding_model=Config.OPENAI_EMBEDDING_MODEL,
         openai_completion_model=Config.OPENAI_MODEL,
         grok_api_key=Config.GROK_API_KEY,
-        grok_embedding_model=Config.GROK_EMBEDDING_MODEL,
         grok_completion_model=Config.GROK_MODEL,
         venice_api_key=Config.VENICE_API_KEY,
         venice_summary_model=Config.VENICE_MODEL,
@@ -222,8 +218,6 @@ class KnowledgeAgent:
         if operation == ModelOperation.EMBEDDING:
             if provider == ModelProvider.OPENAI:
                 return Config.OPENAI_EMBEDDING_MODEL
-            elif provider == ModelProvider.GROK:
-                return Config.GROK_EMBEDDING_MODEL
             else:
                 raise ValueError(f"Unsupported embedding provider: {provider}")
         elif operation == ModelOperation.CHUNK_GENERATION:
@@ -746,7 +740,7 @@ class KnowledgeAgent:
         batch_size: Optional[int] = None
     ) -> EmbeddingResponse:
         """Get embeddings for text using specified provider.
-        
+
         This implementation follows OpenAI's best practices for batching:
         - Respects the passed batch_size parameter for number of items per batch
         - Counts tokens to ensure we don't exceed OpenAI's limits (max 8191 tokens per text)
@@ -780,7 +774,7 @@ class KnowledgeAgent:
             # Get token counts for validation
             encoding = tiktoken.get_encoding("cl100k_base")
             token_counts = [len(encoding.encode(t)) for t in texts_to_process]
-            
+
             # Validate token counts (OpenAI limit is 8191 per text)
             MAX_TOKENS_PER_TEXT = 8191
             for text_item, token_count in zip(texts_to_process, token_counts):
@@ -789,9 +783,9 @@ class KnowledgeAgent:
                     # Truncate text to fit within limits
                     truncated_text = encoding.decode(encoding.encode(text_item)[:MAX_TOKENS_PER_TEXT])
                     texts_to_process[texts_to_process.index(text_item)] = truncated_text
-            
+
             all_embeddings = []
-            
+
             if batch_size:
                 # Use the specified batch_size for batching
                 for i in range(0, len(texts_to_process), batch_size):
@@ -807,7 +801,7 @@ class KnowledgeAgent:
                 tokens_per_batch = 2048
                 current_batch = []
                 current_tokens = 0
-                
+
                 for text_item, token_count in zip(texts_to_process, token_counts):
                     if current_tokens + token_count > tokens_per_batch and current_batch:
                         response = await client.embeddings.create(
@@ -818,10 +812,10 @@ class KnowledgeAgent:
                         all_embeddings.extend([data.embedding for data in response.data])
                         current_batch = []
                         current_tokens = 0
-                    
+
                     current_batch.append(text_item)
                     current_tokens += token_count
-                
+
                 # Process any remaining items
                 if current_batch:
                     response = await client.embeddings.create(
@@ -849,7 +843,6 @@ class KnowledgeAgent:
         """Retrieve the appropriate client for a provider."""
         if not isinstance(provider, ModelProvider):
             provider = ModelProvider.from_str(provider)
-
         client = self.models.get(provider.value)
         if not client:
             available_providers = list(self.models.keys())

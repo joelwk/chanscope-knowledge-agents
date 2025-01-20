@@ -28,11 +28,15 @@ async def check_service_connection(service_fn):
 async def check_openai() -> bool:
     """Check if OpenAI API is accessible."""
     try:
+        logger.info("Initiating OpenAI health check")
         client = KnowledgeAgent().models['openai']
+        logger.info("OpenAI client initialized, attempting to list models")
         models = await client.models.list()
+        logger.info("Successfully listed OpenAI models")
         return True
     except Exception as e:
         logger.error(f"OpenAI health check failed: {str(e)}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return False
 
 def register_routes(app):
@@ -423,7 +427,7 @@ def register_routes(app):
             
             # Get the query template
             try:
-                query = stored_queries['query_template']
+                query = stored_queries['query']['example'][0]
             except KeyError as e:
                 logger.error(f"Missing required key in stored queries: {str(e)}")
                 return jsonify({
@@ -529,3 +533,15 @@ def register_routes(app):
                     "traceback": traceback.format_exc()
                 } if app.debug else {}
             }), status_code
+
+    @app.errorhandler(Exception)
+    async def handle_exception(e):
+        """Global exception handler for all routes"""
+        logger.error(f"Unhandled exception: {str(e)}")
+        logger.error(f"Exception type: {type(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e),
+            "type": str(type(e).__name__)
+        }), 500

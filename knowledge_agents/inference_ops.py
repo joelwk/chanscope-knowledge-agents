@@ -3,7 +3,6 @@ import json
 import pandas as pd
 from scipy import spatial
 import tiktoken
-from tqdm import tqdm
 from typing import List, Dict, Any, Optional, Tuple
 from .model_ops import KnowledgeAgent, ModelProvider, ModelOperation
 import logging
@@ -16,7 +15,6 @@ formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
-# Prevent propagation to root logger to avoid duplicate logs
 logger.propagate = False
 
 async def strings_ranked_by_relatedness(
@@ -200,7 +198,7 @@ async def process_multiple_queries(
     providers: Optional[Dict[ModelOperation, ModelProvider]] = None
 ) -> List[Tuple[List[Dict[str, Any]], str]]:
     """Process multiple queries in parallel using batch processing.
-    
+
     Args:
         queries: List of queries to process
         agent: KnowledgeAgent instance
