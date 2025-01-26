@@ -1,4 +1,4 @@
-from quart import Quart
+from quart import Quart, jsonify
 from quart_cors import cors
 import logging
 from dotenv import load_dotenv
@@ -91,7 +91,18 @@ def create_app():
     }
     
     # Import routes
-    from .routes import register_routes
-    register_routes(app)
+    from .routes import bp, get_api_docs
+    
+    # In Replit environment, mount all routes under /api
+    if is_replit_env():
+        # Register root route at / that shows the API documentation
+        @app.route('/')
+        async def root():
+            return jsonify(get_api_docs("/api"))
+            
+        # Register blueprint with /api prefix
+        app.register_blueprint(bp, url_prefix='/api')
+    else:
+        app.register_blueprint(bp)
     
     return app 

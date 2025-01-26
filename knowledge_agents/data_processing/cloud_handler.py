@@ -99,13 +99,12 @@ class S3Handler:
             logger.info("Streaming data from S3 bucket: %s", self.bucket_name)
             
             # Convert latest_date_processed to UTC datetime for metadata comparison
+            latest_date = None
             if latest_date_processed:
                 latest_date = pd.to_datetime(latest_date_processed, utc=True)
                 if latest_date.tzinfo is None or latest_date.tzinfo != tz.UTC:
                     latest_date = latest_date.astimezone(tz.UTC)
                 logger.info(f"Latest date processed: {latest_date}")
-            else:
-                latest_date = None
             
             response = self.s3.list_objects_v2(
                 Bucket=self.bucket_name, 
@@ -126,6 +125,7 @@ class S3Handler:
                         logger.debug(f"Found matching file: {item['Key']}")
             
             logger.info(f"Found {len(csv_objects)} CSV files to process")
+            chunk_size = min(50000, Config.SAMPLE_SIZE * 2)  # Align with data processor
             
             for s3_key in csv_objects:
                 try:
@@ -139,7 +139,7 @@ class S3Handler:
                         # Process file in chunks with robust error handling
                         for chunk in pd.read_csv(
                             temp_file,
-                            chunksize=Config.SAMPLE_SIZE,
+                            chunksize=chunk_size,
                             usecols=['thread_id', 'posted_date_time', 'text_clean'],
                             on_bad_lines='skip',
                             encoding='utf-8'

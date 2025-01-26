@@ -156,7 +156,7 @@ async def retrieve_unique_strings(
     query: str,
     library_df: pd.DataFrame,
     agent: KnowledgeAgent,
-    required_count: int = 100,
+    required_count: int = 5,  # Default to 5 chunks for better context
     provider: Optional[ModelProvider] = None
 ) -> List[Dict[str, Any]]:
     """Retrieve unique strings from the library based on query relevance."""
@@ -166,7 +166,7 @@ async def retrieve_unique_strings(
             query=query,
             df=library_df,
             agent=agent,
-            top_n=required_count * 2,  # Get more than needed to account for filtering
+            top_n=required_count * 4,  # Get 4x more than needed to account for filtering
             provider=provider
         )
 
@@ -231,7 +231,7 @@ async def process_multiple_queries(
                 query,
                 library_df,
                 agent,
-                required_count=chunk_batch_size,  # Use chunk batch size for retrieval
+                required_count=min(50, len(library_df)),  # Analyze more chunks, up to 50 or max available
                 provider=embedding_provider
             )
             all_strings.append(strings)

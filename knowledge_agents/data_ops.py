@@ -132,6 +132,7 @@ class DataProcessor:
     def __init__(self, config: DataConfig):
         self.config = config
         self._logger = logging.getLogger(__name__)
+        self.chunk_size = min(50000, config.sample_size * 2)  # Dynamic chunk size based on sample size
         self.sampler = Sampler(
             filter_date=config.filter_date,
             time_column=config.time_column,
@@ -307,8 +308,10 @@ class DataOperations:
         """Process and stratify existing data in chunks."""
         self._logger.info("Processing existing data")
         try:
-            chunk_size = 50000  # Process 50k rows at a time
             all_data = []  # Store all chunks
+            processed_rows = 0
+            target_size = self.config.sample_size
+            chunk_size = min(2500, self.config.sample_size * 2)  # Dynamic chunk size
 
             # Read and process data in chunks
             for chunk in pd.read_csv(self.config.all_data_path, chunksize=chunk_size):
@@ -316,6 +319,11 @@ class DataOperations:
                 stratified_chunk = await self.processor.stratify_data(chunk)
                 if not stratified_chunk.empty:
                     all_data.append(stratified_chunk)
+                    processed_rows += len(stratified_chunk)
+
+                # Break if we've reached target size
+                if processed_rows >= target_size:
+                    break
 
                 # Clean up
                 del chunk
@@ -324,6 +332,8 @@ class DataOperations:
             # Combine all processed chunks
             if all_data:
                 stratified_data = pd.concat(all_data, ignore_index=True)
+                if len(stratified_data) > target_size:
+                    stratified_data = stratified_data.head(target_size)
                 self._logger.info(f"Combined stratified data size: {len(stratified_data)}")
 
                 # Save stratified sample with clear naming
@@ -346,36 +356,6 @@ class DataOperations:
         except Exception as e:
             self._logger.error(f"Data processing failed: {e}")
             raise
-
-    def process_data(self, force_refresh: bool = False) -> bool:
-        """Process data files and prepare for knowledge agent operations."""
-        try:
-            # Create required directories
-            self._create_directory_structure()
-
-            # Check if processing is needed
-            if not force_refresh and self._is_processing_complete():
-                logger.info("Data processing already complete")
-                return True
-
-            # Read and process data in chunks
-            logger.info("Processing data files...")
-            valid_rows = 0
-            for chunk in pd.read_csv(self.config.all_data_path, 
-                                  chunksize=self.config.sample_size,
-                                  on_bad_lines='warn',
-                                  low_memory=False):
-                # Process chunk
-                processed_chunk = self._process_chunk(chunk)
-                if processed_chunk is not None:
-                    valid_rows += len(processed_chunk)
-
-            logger.info(f"Processed {valid_rows} valid rows")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error processing data: {str(e)}")
-            return False
 
 async def prepare_knowledge_base(force_refresh: bool = False) -> str:
     """Main entry point for data preparation."""

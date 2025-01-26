@@ -1,64 +1,92 @@
 system_prompts:
   generate_chunks:
-    description: "System directive for processing text chunks into tweet-style summaries"
+    description: "System directive for objective analysis of individual text chunks"
     variables:
       format:
-        summary: "Main insight (max 200 chars)"
-        metrics: "Key metrics (max 80 chars)"
+        facts: "Key factual statements"
+        metrics: "Quantitative metrics"
+        context: "Supporting context"
     content: |
-      Process text chunks into tweet-style summaries.
-          
-      Format requirements:
-      - Total output must be under 280 characters
-      - Main insight: Clear, impactful statement (max 200 chars)
-      - Metrics: 1-2 key numbers with context (max 80 chars)
-      - Contrarian insight: Counterintuitive or opposing view
-      - Use emojis sparingly for emphasis
-      
-      Example format:
-      📊 [Main Insight - 200 chars max]
-      🔍 [Key Metric]: [Value] | [Context]
-      🤔 [Contrarian Insight - 200 chars max]
-
-  objective_analysis:
-    description: "Directive for tweet-style temporal analysis"
-    variables:
-      metrics:
-        trend: "Primary trend indicator"
-        velocity: "Change velocity"
-        confidence: "Confidence score [0-1]"
-    content: |
-      Create tweet-style temporal analysis summaries.
+      Analyze text chunks with strict objectivity and factual reporting.
       
       Requirements:
-      - Total output under 280 characters
-      - One clear main insight
-      - One key metric or trend
-      - Optional: One prediction
-      - Anomaly detection: Identify unusual patterns or outliers
+      - Focus on facts and evidence present in the chunk only
+      - Report quantitative metrics when available
+      - Avoid speculation or interpretation
+      - Use neutral language
+      - Include source context
+      
+      Output Format:
+      📝 Facts:
+      - [Factual statement 1]
+      - [Factual statement 2]
+      
+      📊 Metrics:
+      - [Metric 1]: [Value] ([Context])
+      - [Metric 2]: [Value] ([Context])
+      
+      🔍 Context:
+      - [Supporting evidence 1]
+      - [Supporting evidence 2]
+
+  objective_analysis:
+    description: "Directive for synthesizing multiple chunk analyses"
+    variables:
+      synthesis:
+        patterns: "Identified patterns"
+        consensus: "Points of agreement"
+        variations: "Notable variations"
+        confidence: "Confidence metrics"
+    content: |
+      Synthesize findings across multiple chunk analyses.
+      
+      Requirements:
+      - Identify consistent patterns across chunks
+      - Note points of consensus and variation
+      - Aggregate quantitative metrics where possible
+      - Assess confidence levels for findings
+      - Maintain objectivity in synthesis
       
       Format:
-      [Main Insight - 200 chars]
-      [Metric]: [Value] ([Confidence])
-      🚨 [Anomaly Detection - 200 chars max]
+      📊 Key Patterns:
+      - [Pattern 1] (Observed in X/Y chunks)
+      - [Pattern 2] (Observed in X/Y chunks)
+      
+      📈 Aggregate Metrics:
+      - [Metric]: [Aggregate Value] ([Confidence Level])
+      
+      🔄 Variations:
+      - [Notable variation 1]
+      - [Notable variation 2]
+      
+      ⚖️ Confidence Assessment:
+      - [Finding 1]: [Confidence Score] ([Evidence Base])
 
 user_prompts:
   text_chunk_summary:
-    description: "Template for tweet-style chunk summaries"
+    description: "Template for objective chunk analysis"
     content: |
-      Summarize this content in tweet style (under 280 chars):
+      Analyze this content objectively, focusing only on facts and evidence present in the text:
       
       {content}
+      
+      Report:
+      1. What factual statements can be extracted?
+      2. What quantitative metrics are present?
+      3. What direct evidence supports these findings?
 
   summary_generation:
-    description: "Template for tweet-style forecasts"
+    description: "Template for evidence-based synthesis"
     content: |
-      Create a tweet-style summary with forecast:
-      
-      What's the contrarian view on this topic?
-      What's the potential downside of this trend?
+      Synthesize findings across multiple analyses to identify patterns and consensus:
       
       Query: {query}
       Time Range: {temporal_context}
       Context: {context}
       Results: {results}
+      
+      Consider:
+      1. What patterns are consistently observed across chunks?
+      2. What quantitative metrics can be aggregated?
+      3. Where do the analyses agree or differ?
+      4. How strong is the evidence for each finding?

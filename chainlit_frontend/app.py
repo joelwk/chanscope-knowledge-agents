@@ -25,19 +25,15 @@ API_TIMEOUT = ClientTimeout(total=1200, connect=120)  # Increase total timeout t
 
 async def process_query(query: str, settings: dict):
     """Process a query using the API endpoint."""
-    last_error = None
     # Get all possible base URLs to try
     api_settings = Config.get_api_settings()
     base_urls = api_settings.get('base_urls', [])
-    # In Replit, ensure we use the correct URL format
+    
+    # In Replit, we only want to use the local URL since both services are running together
     if os.getenv('REPL_SLUG') and os.getenv('REPL_OWNER'):
-        replit_url = f"https://{os.getenv('REPL_SLUG')}.{os.getenv('REPL_OWNER')}.repl.co"
-        if replit_url not in base_urls:
-            base_urls.insert(0, replit_url)  # Add Replit URL as primary
-        # Adjust sample size for Replit environment
-        original_sample_size = settings.get('sample_size')
-        if settings['sample_size'] != original_sample_size:
-            logger.warning(f"Reduced sample size from {original_sample_size} to {settings['sample_size']} for Replit environment")
+        base_urls = ['http://0.0.0.0:5000']  # Only use local URL in Replit
+        logger.info(f"Running in Replit environment, using local API endpoint")
+    
     logger.info("=== API Connection Attempt ===")
     logger.info(f"Available API endpoints: {base_urls}")
     logger.info(f"Using settings: {settings}")
@@ -58,12 +54,14 @@ async def process_query(query: str, settings: dict):
         # Try each base URL in order
         for base_url in base_urls:
             try:
+                # Add /api prefix for Replit environment
+                api_prefix = "/api" if os.getenv('REPL_SLUG') else ""
                 logger.info(f"Attempting to connect to API at {base_url}")
-                logger.info(f"Full request URL: {base_url}/process_query")
+                logger.info(f"Full request URL: {base_url}{api_prefix}/process_query")
                 logger.info(f"Request payload: {{'query': {query}, **{settings}}}")
 
                 async with session.post(
-                    f"{base_url}/process_query",
+                    f"{base_url}{api_prefix}/process_query",
                     json={
                         "query": query,
                         **settings},
@@ -92,18 +90,26 @@ async def process_query(query: str, settings: dict):
 
             except Exception as e:
                 logger.error(f"API connection error for {base_url}: {str(e)}")
-                last_error = e
                 continue
 
     # If we get here, all URLs failed
-    logger.error(f"All API endpoints failed. Last error: {str(last_error)}")
-    logger.error(f"Connection details: host={api_settings['host']}, port={api_settings['port']}")
+    logger.error(f"All API endpoints failed.")
     raise Exception(f"Failed to connect to any API endpoint. Please try again in a moment.")
 
 def format_chunk(chunk):
     """Format a chunk for display."""
     if isinstance(chunk, dict):
-        return f"Score: {chunk.get('score', 'N/A')}\nContent: {chunk.get('content', 'No content available')}"
+        # Extract the thread analysis if it exists
+        analysis = chunk.get('analysis', {}).get('analysis', {}).get('thread_analysis', 'No analysis available')
+        posted_date = chunk.get('posted_date_time', 'No date')
+        thread_id = chunk.get('thread_id', 'No ID')
+        
+        return f"""
+Thread ID: {thread_id}
+Posted: {posted_date}
+Analysis:
+{analysis}
+-------------------"""
     elif isinstance(chunk, str):
         return chunk
     else:
@@ -143,20 +149,17 @@ async def start():
         Select(id="embedding_provider",
                label="Embedding Provider",
                values=["openai", "grok", "venice"],
-               initial_index=["openai", "grok", "venice"
-                              ].index(provider_settings['embedding_provider']),
+               initial_index=["openai", "grok", "venice"].index(provider_settings['embedding_provider']),
                description="Select the provider for embeddings"),
         Select(id="chunk_provider",
                label="Chunk Provider",
                values=["openai", "grok", "venice"],
-               initial_index=["openai", "grok", "venice"
-                              ].index(provider_settings['chunk_provider']),
+               initial_index=["openai", "grok", "venice"].index(provider_settings['chunk_provider']),
                description="Select the provider for text chunking"),
         Select(id="summary_provider",
                label="Summary Provider",
                values=["openai", "grok", "venice"],
-               initial_index=["openai", "grok", "venice"
-                              ].index(provider_settings['summary_provider']),
+               initial_index=["openai", "grok", "venice"].index(provider_settings['summary_provider']),
                description="Select the provider for summarization"),
     ]).send()
 
@@ -242,12 +245,13 @@ async def main(message: cl.Message):
                 # Format chunks properly
                 formatted_chunks = [format_chunk(chunk) for chunk in chunks]
                 elements.append(
-                    cl.Text(name="Related Chunks",
-                            content="\n\n---\n\n".join(formatted_chunks),
+                    cl.Text(name=f"Related Chunks ({len(chunks)} found)",
+                            content="\n\n".join(formatted_chunks),
                             display="side"))
 
-            # Send the response
-            await cl.Message(content=response, elements=elements).send()
+            # Send the response with a header indicating the number of chunks
+            header = f"📊 Analysis based on {len(chunks)} relevant chunks:\n\n"
+            await cl.Message(content=header + response, elements=elements).send()
 
             # Remove the processing message
             if isinstance(processing_msg, cl.Message):
