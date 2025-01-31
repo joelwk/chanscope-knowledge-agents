@@ -240,7 +240,13 @@ async def provider_health(provider):
 
 @bp.route('/process_query', methods=['POST'])
 async def process_query():
-    """Process a query using the knowledge agents pipeline."""
+    """Process a query using the knowledge agents pipeline.
+    
+    Parameters:
+        force_refresh (bool): Whether to force refresh the knowledge base. Defaults to False.
+            - If False: Uses existing knowledge base if available
+            - If True: Rebuilds knowledge base from scratch
+    """
     try:
         logger.info("Received process_query request")
         data = await request.get_json()
@@ -252,6 +258,14 @@ async def process_query():
         if 'query' not in data:
             logger.error("Missing required parameter: query")
             return jsonify({"error": "Missing required parameter: query"}), 400
+
+        # Extract and log force_refresh parameter
+        force_refresh = data.get('force_refresh', False)
+        logger.info(f"Processing query with force_refresh={force_refresh}")
+        if force_refresh:
+            logger.info("Force refresh enabled - will rebuild knowledge base")
+        else:
+            logger.info("Using existing knowledge base if available")
 
         # Get base configuration and validate it exists
         if 'KNOWLEDGE_CONFIG' not in current_app.config:
@@ -306,7 +320,7 @@ async def process_query():
         chunks, response = await run_knowledge_agents(
             query=data['query'],
             config=config,
-            force_refresh=data.get('force_refresh', False)
+            force_refresh=force_refresh
         )
 
         logger.info("Successfully processed query")
@@ -422,12 +436,34 @@ async def process_recent_query():
     """Process a query with preconfigured settings for recent data.
     
     This endpoint automatically processes data from the last 3 hours with a sample size of 1000.
+    Due to its real-time nature, it defaults to force_refresh=True to ensure fresh data.
+    
     Query parameters:
-    - force_refresh (optional): Whether to force refresh the data. Defaults to True
+        force_refresh (bool): Whether to force refresh the data. 
+            Defaults to True for real-time data accuracy.
+            Set to 'false' in query params to use existing data if available.
     """
     try:
         logger.info("Received process_recent_query request")
+
+        # Get query parameters - default to True for force_refresh
+        force_refresh = request.args.get('force_refresh', 'true').lower() != 'false'
+        logger.info(f"Force refresh enabled: {force_refresh}")
         
+        if force_refresh:
+            logger.info("Force refresh enabled - will fetch fresh data from last 3 hours")
+        else:
+            logger.info("Using existing recent data if available (not recommended for real-time monitoring)")
+
+        # Calculate date range for last 3 hours using UTC
+        end_time = datetime.now(pytz.UTC)
+        start_time = end_time - timedelta(hours=3)
+
+        # Set the filter date in environment for data operations with UTC timezone
+        filter_date = start_time.strftime('%Y-%m-%d %H:%M:%S+00:00')
+        os.environ['FILTER_DATE'] = filter_date
+        logger.info(f"Set filter date to: {filter_date} (UTC)")
+
         # Load stored queries
         stored_queries_path = Path(Config.PROJECT_ROOT) / 'config' / 'stored_queries.yaml'
         try:
@@ -439,7 +475,7 @@ async def process_recent_query():
                 "error": "Failed to load stored queries",
                 "message": str(e)
             }), 500
-        
+
         # Get the query template
         try:
             query = stored_queries['query']['example'][0]
@@ -449,20 +485,7 @@ async def process_recent_query():
                 "error": "Invalid stored queries format",
                 "message": f"Missing key: {str(e)}"
             }), 500
-        
-        # Get query parameters - default to True for force_refresh
-        force_refresh = request.args.get('force_refresh', 'true').lower() != 'false'
-        logger.info(f"Force refresh enabled: {force_refresh}")
-        
-        # Calculate date range for last 3 hours using UTC
-        end_time = datetime.now(pytz.UTC)
-        start_time = end_time - timedelta(hours=3)
-        
-        # Set the filter date in environment for data operations with UTC timezone
-        filter_date = start_time.strftime('%Y-%m-%d %H:%M:%S+00:00')
-        os.environ['FILTER_DATE'] = filter_date
-        logger.info(f"Set filter date to: {filter_date} (UTC)")
-        
+
         # Get base configuration and validate it exists
         if 'KNOWLEDGE_CONFIG' not in current_app.config:
             error_msg = "KNOWLEDGE_CONFIG not found in application configuration"
@@ -532,14 +555,14 @@ async def process_recent_query():
     except Exception as e:
         logger.error(f"Error processing recent query: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
-        
+
         # Determine if this is a known error type
         error_type = type(e).__name__
         if error_type in ['ValueError', 'KeyError', 'TypeError']:
             status_code = 400  # Bad request
         else:
             status_code = 500  # Internal server error
-            
+
         return jsonify({
             "error": "Error processing query",
             "message": str(e),
