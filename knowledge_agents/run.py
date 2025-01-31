@@ -4,7 +4,7 @@ import asyncio
 from typing import Tuple, List, Union, Dict, Any
 from . import KnowledgeAgentConfig
 from .model_ops import ModelProvider, ModelOperation, KnowledgeAgent
-from .data_ops import DataConfig, DataOperations
+from .data_ops import DataConfig, DataOperations, prepare_knowledge_base
 from .inference_ops import process_multiple_queries
 from .embedding_ops import get_relevant_content
 from config.settings import Config
@@ -61,14 +61,14 @@ async def _run_knowledge_agents_async(
             time_column=os.getenv('TIME_COLUMN', 'posted_date_time'),
             strata_column=os.getenv('STRATA_COLUMN', None)
         )
-        data_ops = DataOperations(data_config)
 
-        # Prepare data using new data operations
+        # Prepare data and process references using the full pipeline
         try:
-            logger.info("Preparing data...")
-            await data_ops.prepare_data(force_refresh=force_refresh)
+            logger.info("Preparing knowledge base...")
+            result = await prepare_knowledge_base(force_refresh=force_refresh)
+            logger.info(f"Knowledge base preparation result: {result}")
         except Exception as e:
-            logger.error(f"Error preparing data: {e}")
+            logger.error(f"Error preparing knowledge base: {e}")
             raise
 
         # Step 1: Generate embeddings using embedding model

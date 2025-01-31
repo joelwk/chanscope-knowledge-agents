@@ -37,8 +37,7 @@ class Article:
         return cls(
             thread_id=data["thread_id"],
             posted_date_time=data["posted_date_time"],
-            text_clean=data["text_clean"]
-        )
+            text_clean=data["text_clean"])
 
 def load_data_from_csvs(directory: str) -> List[Article]:
     """Load articles from all CSVs in a given directory with improved error handling."""
@@ -103,6 +102,29 @@ async def get_relevant_content(
         logger.warning("No articles found in the library.")
         return
 
+    # Calculate optimal batch size based on total articles
+    def get_optimal_batch_size(count: int) -> int:
+        if count < 1000:
+            return 100
+        elif count < 5000:
+            return 75
+        elif count < 10000:
+            return 50
+        else:
+            return 25
+    
+    # Determine optimal batch size based on number of articles
+    article_count = len(articles)
+    optimal_batch_size = get_optimal_batch_size(article_count)
+    
+    if batch_size != optimal_batch_size:
+        logger.info(f"Adjusting batch size from {batch_size} to {optimal_batch_size} based on article count")
+        batch_size = optimal_batch_size
+
+    logger.info(f"Starting embedding generation for {len(articles)} articles with batch size {batch_size}")
+    total_batches = len(articles) // batch_size + (1 if len(articles) % batch_size else 0)
+    logger.info(f"Will process {total_batches} batches")
+
     try:
         # Process articles in batches
         results = await process_article_batch(
@@ -137,17 +159,21 @@ async def process_article_batch(
     embedding_batch_size: int = 100,
     provider: Optional[ModelProvider] = None
 ) -> List[List]:
-    """Process a batch of articles to get embeddings using the specified provider.
-
-    This function implements proper batching for embedding requests following OpenAI's
-    recommendations. It processes articles in batches and handles rate limits appropriately.
-    The embedding_batch_size parameter controls how many articles are processed in each API call.
-    """
+    """Process a batch of articles to get embeddings using the specified provider."""
     results = []
+    total_batches = len(articles) // embedding_batch_size + (1 if len(articles) % embedding_batch_size else 0)
+    logger.info(f"Processing {len(articles)} articles in {total_batches} batches")
+
+    # Use tqdm for progress tracking
+    progress_bar = tqdm(range(0, len(articles), embedding_batch_size), 
+                       desc="Processing batches",
+                       total=total_batches)
 
     # Process in batches according to the specified embedding_batch_size
-    for i in range(0, len(articles), embedding_batch_size):
+    for i in progress_bar:
         batch = articles[i:i + embedding_batch_size]
+        current_batch = i // embedding_batch_size + 1
+        
         try:
             # Get embeddings for all texts in batch
             texts = [str(article.text_clean).strip() for article in batch]
@@ -160,22 +186,24 @@ async def process_article_batch(
                     valid_articles.append(article)
 
             if not valid_texts:
-                logger.warning(f"No valid texts in batch {i//embedding_batch_size}")
+                logger.warning(f"No valid texts in batch {current_batch}")
                 continue
 
+            logger.info(f"Batch {current_batch}: Processing {len(valid_texts)} valid texts")
+            
             try:
                 # Make a single embedding request for the batch
                 response = await agent.embedding_request(
                     text=valid_texts,
                     provider=provider,
-                    batch_size=embedding_batch_size  # Pass the embedding_batch_size parameter
+                    batch_size=embedding_batch_size
                 )
 
                 if not hasattr(response, 'embedding'):
                     error_msg = f"Invalid response format from provider {provider}"
                     logger.error(error_msg)
                     raise ValueError(error_msg)
-
+                
                 # Create results only for valid texts
                 embeddings = response.embedding if isinstance(response.embedding, list) else [response.embedding]
                 for article, embedding in zip(valid_articles, embeddings):
@@ -185,13 +213,16 @@ async def process_article_batch(
                         article.text_clean,
                         embedding,
                     ])
-
+                
+                # Update progress bar description
+                progress_bar.set_description(f"Processed {len(results)}/{len(articles)} articles")
+                
             except Exception as embed_err:
-                logger.error(f"Embedding request failed: {str(embed_err)}")
+                logger.error(f"Embedding request failed for batch {current_batch}: {str(embed_err)}")
                 raise RuntimeError(f"Embedding request failed: {str(embed_err)}") from embed_err
-
         except Exception as e:
-            logger.error(f"Error processing batch {i//embedding_batch_size}: {type(e).__name__}: {str(e)}")
+            logger.error(f"Error processing batch {current_batch}: {type(e).__name__}: {str(e)}")
             raise
 
+    logger.info(f"Completed processing all batches. Generated {len(results)} embeddings")
     return results

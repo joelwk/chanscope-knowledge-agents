@@ -6,7 +6,8 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
 ### Platform Integration
 - **Traditional Deployment**: Docker-based local or server deployment for controlled environments
 - **[Replit Cloud](https://replit.com/@jwkonitzer/chanscope-knowledge-agents)**: Zero-setup cloud deployment with optimized performance
-- **[Virtuals Protocol](https://app.virtuals.io/prototypes/0x2cc92Fc77180815834FfdAa72C58f72d457C4308)**: Integration with autonomous AI agents that can:
+- **[Virtuals Protocol](https://app.virtuals.io/prototypes/0x2cc92Fc77180815834FfdAa72C58f72d457C4308)/[X](https://x.com/4Chanscope)**: 
+Integration with autonomous AI agents that can:
   - Process and interact with X & 4chan data through their own autonomous decision-making
   - Maintain synchronized memory across multiple data analysis sessions
   - Execute onchain transactions and data validations
@@ -15,25 +16,25 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
 
 ### Core Architecture
 - **Multi-Provider Architecture**
-  - OpenAI (Primary): GPT-4, text-embedding-3-large
+  - OpenAI (Primary): GPT-4o, text-embedding-3-large
   - Grok (Optional): grok-2-1212, grok-v1-embedding
   - Venice (Optional): llama-3.1-405b, dolphin-2.9.2-qwen2-72b
 
 - **Intelligent Data Processing**
   - Time-based and category-based stratified sampling
+  - Board-specific data filtering and validation
   - Efficient large dataset handling with reservoir sampling
   - Automated data chunking and embedding generation
   - Cloud-optimized processing for Replit environment
 
 - **Advanced Analysis Pipeline**
-  - Context-aware temporal analysis
-  - Parallel processing with automatic fallback
+  - Context-aware temporal analysis with validation
+  - Parallel processing with automatic model fallback
   - Event mapping and relationship extraction
   - Cross-platform data synchronization
+  - Enhanced S3 data streaming with board filtering
 
-The system specializes in processing 4chan data through a sophisticated pipeline that combines intelligent sampling, multi-model analysis, and cross-source verification. Through integration with Virtuals Protocol's autonomous agents, the system gains enhanced capabilities for persistent memory across analysis sessions, autonomous decision-making in data processing, and tokenized ownership of analysis models. These agents can independently interact with data sources, maintain context across multiple analyses, and execute blockchain transactions for data validation and verification.
-
-For more detailed information on the system's technical features and example notebook, please refer to the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
+For greater technical details and examples, refer to the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
 
 ## Analysis Capabilities
 
@@ -65,7 +66,7 @@ For more detailed information on the system's technical features and example not
 The project supports multiple AI model providers:
 - **OpenAI** (Required): Default provider for both completions and embeddings
   - Required: `OPENAI_API_KEY`
-  - Models: `gpt-4` (default), `text-embedding-3-large` (embeddings)
+  - Models: `gpt-4o` (default), `text-embedding-3-large` (embeddings)
 - **Grok (X.AI)** (Optional): Alternative provider with its own embedding model
   - Optional: `GROK_API_KEY`
   - Models: `grok-2-1212`, `grok-v1-embedding` (not publicly available)
@@ -170,6 +171,23 @@ docker-compose -f deployment/docker-compose.dev.yml down
   - Flexible configuration through .env file
   - Service-specific overrides
   - Secure secrets management
+  - Enhanced model fallback configuration
+  - Board-specific data filtering
+
+Example docker-compose environment configuration:
+```yaml
+# Model Settings
+- OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+- OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
+- GROK_MODEL=${GROK_MODEL:-grok-2-1212}
+- GROK_EMBEDDING_MODEL=${GROK_EMBEDDING_MODEL:-grok-v1-embedding}
+- VENICE_MODEL=${VENICE_MODEL:-llama-3.1-405b}
+- VENICE_CHUNK_MODEL=${VENICE_CHUNK_MODEL:-dolphin-2.9.2-qwen2-72b}
+
+# Data Processing Settings
+- SELECT_BOARD=${SELECT_BOARD}  # Optional: Filter data by specific board
+- FILTER_DATE=${FILTER_DATE}    # Optional: Filter data by date
+```
 
 ## API and Frontend Integration
 
@@ -257,7 +275,6 @@ $body = @{
 
 # Make request
 $response = Invoke-RestMethod -Uri "http://localhost:5000/process_query" -Method Post -Body $body -ContentType "application/json"
-
 # View results
 $response.results.summary
 ```
@@ -500,7 +517,7 @@ docker-compose -f deployment/docker-compose.dev.yml logs -f
 - `VENICE_API_KEY`: API key for Venice.AI. Optional additional provider.
 
 ### Model Settings (Optional, with defaults)
-- `OPENAI_MODEL`: OpenAI model for completions (Default: 'gpt-4')
+- `OPENAI_MODEL`: OpenAI model for completions (Default: 'gpt-4o')
 - `OPENAI_EMBEDDING_MODEL`: OpenAI model for embeddings (Default: 'text-embedding-3-large')
 - `GROK_MODEL`: Grok model for completions (Default: 'grok-2-1212')
 - `GROK_EMBEDDING_MODEL`: Grok model for embeddings (Default: 'grok-v1-embedding')
@@ -551,3 +568,15 @@ docker-compose -f deployment/docker-compose.dev.yml logs -f
 - Original Chanscope R&D: [Chanscope](https://github.com/joelwk/chanscope)
 - R&D Sandbox Repository: [knowledge-agents](https://github.com/joelwk/knowledge-agents)
 - Inspiration for Prompt Engineering Approach: [Temporal-Aware Language Models for Temporal Knowledge Graph Question Answering](https://arxiv.org/pdf/2410.18959) - Used for designing temporal-aware prompts and multimodal forecasting capabilities
+
+### Default Configuration Settings
+- **Batch Processing**:
+  - Embedding Batch Size: 50
+  - Chunk Batch Size: 50 (Updated)
+  - Summary Batch Size: 20
+- **Data Processing**:
+  - Chunk Size: 500
+  - Sample Size: 2000 (Optimized)
+  - Max Tokens: 4096
+  - Cache Enabled: true
+  - Max Workers: 4

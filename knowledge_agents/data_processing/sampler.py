@@ -3,7 +3,6 @@ from typing import Optional
 from config.settings import Config
 import random
 import logging
-import warnings
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)

@@ -2,11 +2,11 @@ import pandas as pd
 import shutil
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from dataclasses import dataclass, field
 from .data_processing.sampler import Sampler
 from .data_processing.cloud_handler import load_all_csv_data_from_s3
-from .stratified_ops import split_dataframe
+from .data_processing.dialog_processor import process_references
 from config.settings import Config
 from knowledge_agents.data_processing.sampler import Sampler
 import numpy as np
@@ -21,7 +21,6 @@ logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 logger.propagate = False
 
-
 @dataclass
 class DataConfig:
     """Configuration for data operations with validation."""
@@ -34,6 +33,60 @@ class DataConfig:
     sample_size: int = field(default_factory=lambda: Config.SAMPLE_SIZE)
     time_column: str = 'posted_date_time'
     strata_column: Optional[str] = None
+    
+    # Chunk size and memory configurations
+    processing_chunk_size: int = field(init=False)
+    stratification_chunk_size: int = field(init=False)
+    
+    # Constants for optimization
+    MAX_SAMPLE_SIZE: int = 100000  # Cap total sample size
+    MIN_CHUNK_SIZE: int = 1000     # Minimum chunk size for statistical validity
+    MAX_PROCESSING_CHUNK: int = 5000
+    STRATIFICATION_RATIO: float = 0.5
+    
+    # DataFrame optimization configs
+    dtype_optimizations: Dict[str, str] = field(default_factory=lambda: {
+        'thread_id': 'str',
+        'posted_date_time': 'str',
+        'text_clean': 'str',
+        'posted_comment': 'str'
+    })
+    
+    def __post_init__(self):
+        """Initialize and validate configurations."""
+        # Validate and cap sample size
+        if self.sample_size > self.MAX_SAMPLE_SIZE:
+            logger.warning(f"Sample size exceeds limit of {self.MAX_SAMPLE_SIZE}. Capping sample size.")
+            self.sample_size = self.MAX_SAMPLE_SIZE
+            
+        # Calculate optimal chunk sizes based on sample size
+        self.processing_chunk_size = min(
+            self.MAX_PROCESSING_CHUNK,
+            max(self.MIN_CHUNK_SIZE, self.sample_size // 10)
+        )
+        
+        # Stratification chunk size is proportional but never larger than processing
+        self.stratification_chunk_size = min(
+            int(self.processing_chunk_size * self.STRATIFICATION_RATIO),
+            self.processing_chunk_size
+        )
+        
+        # Ensure minimum chunk sizes
+        self.stratification_chunk_size = max(self.MIN_CHUNK_SIZE, self.stratification_chunk_size)
+        
+        # Validate chunk size relationships
+        if self.stratification_chunk_size > self.processing_chunk_size:
+            raise ValueError("Stratification chunk size cannot exceed processing chunk size")
+
+    @property
+    def read_csv_kwargs(self) -> Dict[str, Any]:
+        """Get optimized pandas read_csv parameters."""
+        return {
+            'dtype': self.dtype_optimizations,
+            'usecols': list(self.dtype_optimizations.keys()),
+            'on_bad_lines': 'warn',
+            'low_memory': True
+        }
 
     @classmethod
     def from_env(cls) -> 'DataConfig':
@@ -55,125 +108,108 @@ class DataStateManager:
         self.config = config
         self._logger = logging.getLogger(__name__)
 
+    def _validate_path(self, path: Path, path_type: str) -> bool:
+        """Validate a single path."""
+        try:
+            if not isinstance(path, (str, Path)):
+                self._logger.error(f"Invalid {path_type} path type: {path}")
+                return False
+            return Path(path).exists()
+        except Exception as e:
+            self._logger.error(f"Path validation failed for {path_type}: {e}")
+            return False
+
     def validate_file_structure(self) -> Dict[str, bool]:
         """Validate existence of required files and directories."""
-        return {
-            'root_dir': self.config.root_path.exists(),
-            'all_data': self.config.all_data_path.exists(),
-            'stratified_dir': self.config.stratified_data_path.exists(),
-            'knowledge_base': self.config.knowledge_base_path.exists()
+        paths = {
+            'root_dir': self.config.root_path,
+            'all_data': self.config.all_data_path,
+            'stratified_dir': self.config.stratified_data_path,
+            'knowledge_base': self.config.knowledge_base_path
         }
+        return {name: self._validate_path(path, name) for name, path in paths.items()}
 
     def validate_data_integrity(self) -> Dict[str, bool]:
         """Validate content of data files."""
-        integrity = {}
-        if self.config.all_data_path.exists():
-            try:
-                # Read data in chunks to validate
-                required_columns = [self.config.time_column]
-                if self.config.strata_column:
-                    required_columns.append(self.config.strata_column)
+        integrity = {'all_data': False, 'data_not_empty': False}
+        
+        # Validate sample size configuration
+        if not isinstance(self.config.sample_size, int) or self.config.sample_size <= 0:
+            self._logger.error(f"Invalid sample_size: {self.config.sample_size}")
+            return integrity
 
-                valid_rows = 0
-                for chunk in pd.read_csv(self.config.all_data_path, 
-                                       chunksize=Config.SAMPLE_SIZE,
-                                       on_bad_lines='warn',
-                                       low_memory=False):
-                    # Check required columns
-                    if all(col in chunk.columns for col in required_columns):
-                        valid_rows += len(chunk)
+        if not self.config.all_data_path.exists():
+            return integrity
 
-                    # Clean up
-                    del chunk
-                    gc.collect()
+        try:
+            # Read data in chunks to validate
+            required_columns = [self.config.time_column]
+            if self.config.strata_column:
+                required_columns.append(self.config.strata_column)
 
-                integrity['all_data'] = True
-                integrity['data_not_empty'] = valid_rows > 0
-                self._logger.info(f"Data integrity check found {valid_rows} valid rows")
+            valid_rows = 0
+            for chunk in pd.read_csv(self.config.all_data_path, 
+                                   chunksize=self.config.processing_chunk_size,
+                                   on_bad_lines='warn',
+                                   low_memory=False):
+                # Check required columns
+                if all(col in chunk.columns for col in required_columns):
+                    valid_rows += len(chunk)
 
-            except Exception as e:
-                self._logger.error(f"Data integrity check failed: {e}")
-                integrity['all_data'] = False
-                integrity['data_not_empty'] = False
+                # Clean up
+                del chunk
+                gc.collect()
+
+            integrity['all_data'] = True
+            integrity['data_not_empty'] = valid_rows > 0
+            self._logger.info(f"Data integrity check found {valid_rows} valid rows")
+
+        except Exception as e:
+            self._logger.error(f"Data integrity check failed: {e}")
+        
         return integrity
 
     def check_data_integrity(self) -> bool:
         """Check if data files exist and are valid."""
-        try:
-            # Validate configuration
-            if not isinstance(self.config.sample_size, int) or self.config.sample_size <= 0:
-                logger.error(f"Invalid sample_size: {self.config.sample_size}")
-                return False
-
-            # Check if required paths exist
-            required_paths = [
-                self.config.root_path,
-                self.config.all_data_path,
-                self.config.stratified_data_path,
-                self.config.knowledge_base_path
-            ]
-
-            for path in required_paths:
-                if not isinstance(path, (str, Path)):
-                    logger.error(f"Invalid path type for {path}")
-                    return False
-                if not Path(path).exists():
-                    logger.error(f"Required path does not exist: {path}")
-                    return False
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Data integrity check failed: {str(e)}")
-            return False
+        return all(self.validate_file_structure().values()) and all(self.validate_data_integrity().values())
 
 class DataProcessor:
     """Handles data processing operations."""
     def __init__(self, config: DataConfig):
         self.config = config
         self._logger = logging.getLogger(__name__)
-        self.chunk_size = min(50000, config.sample_size * 2)  # Dynamic chunk size based on sample size
+        # Use centralized chunk size configuration
+        self.chunk_size = config.processing_chunk_size
         self.sampler = Sampler(
             filter_date=config.filter_date,
             time_column=config.time_column,
             strata_column=config.strata_column,
             initial_sample_size=config.sample_size
         )
+        # Define required columns
+        self.required_columns = {
+            'thread_id': str,
+            'posted_date_time': str,
+            'text_clean': str,
+            'posted_comment': str
+        }
 
     async def stratify_data(self, data: pd.DataFrame) -> pd.DataFrame:
         """Stratify data with error handling and validation."""
         try:
             self._logger.info(f"Stratifying data with size {len(data)}")
+            # Verify columns before stratification
+            missing_cols = set(self.required_columns.keys()) - set(data.columns)
+            if missing_cols:
+                self._logger.error(f"Missing required columns: {missing_cols}")
+                self._logger.info(f"Available columns: {data.columns.tolist()}")
+                raise ValueError(f"Missing required columns: {missing_cols}")
+                
             stratified = self.sampler.stratified_sample(data)
             self._logger.info(f"Stratification complete. Result size: {len(stratified)}")
             return stratified
         except Exception as e:
             self._logger.error(f"Stratification failed: {e}")
-            raise
-
-    async def split_data(self, data: pd.DataFrame) -> None:
-        """Split data into train/test sets."""
-        try:
-            self._logger.info("Splitting stratified data")
-            # Ensure required columns are present
-            required_columns = {'thread_id', 'posted_date_time', 'text_clean'}
-            missing_cols = required_columns - set(data.columns)
-            if missing_cols:
-                raise ValueError(f"Missing required columns for stratification: {missing_cols}")
-            # Only keep necessary columns before splitting
-            data_to_split = data[list(required_columns)]
-            # Split the data
-            split_dataframe(
-                data_to_split,
-                fraction=0.1,
-                stratify_column=self.config.time_column,
-                save_directory=str(self.config.stratified_data_path),
-                seed=42,
-                file_format='csv'
-            )
-            self._logger.info("Data splitting complete")
-        except Exception as e:
-            self._logger.error(f"Data splitting failed: {e}")
             raise
 
 class DataOperations:
@@ -183,6 +219,144 @@ class DataOperations:
         self.state_manager = DataStateManager(config)
         self.processor = DataProcessor(config)
         self._logger = logging.getLogger(__name__)
+
+    async def _fetch_and_save_data(self):
+        """Stream and process data ensuring complete temporal coverage."""
+        self._logger.info(f"Fetching data with filter date: {self.config.filter_date}")
+        try:
+            # Track periods and their sizes for proportional sampling
+            period_stats = {}
+            total_rows = 0
+            
+            # First pass: Collect period statistics
+            self._logger.info("First pass: Collecting temporal distribution statistics")
+            for chunk_df in load_all_csv_data_from_s3(latest_date_processed=self.config.filter_date):
+                try:
+                    # Safe type conversion with error handling
+                    try:
+                        chunk_df[self.config.time_column] = pd.to_datetime(chunk_df[self.config.time_column])
+                    except Exception as e:
+                        self._logger.error(f"Failed to convert time column: {e}")
+                        continue
+
+                    # Update period statistics
+                    periods = chunk_df[self.config.time_column].dt.to_period('D')
+                    period_counts = periods.value_counts()
+                    
+                    for period, count in period_counts.items():
+                        if period not in period_stats:
+                            period_stats[period] = 0
+                        period_stats[period] += count
+                        total_rows += count
+                    
+                finally:
+                    del chunk_df
+            
+            if not period_stats:
+                raise ValueError("No valid data found in the specified date range")
+            
+            self._logger.info(f"Found {len(period_stats)} time periods with {total_rows} total rows")
+            
+            # Calculate target samples per period
+            samples_per_period = {
+                period: max(
+                    int(self.config.sample_size * count / total_rows),
+                    self.config.MIN_CHUNK_SIZE
+                )
+                for period, count in period_stats.items()
+            }
+            
+            # Second pass: Collect stratified samples
+            self._logger.info("Second pass: Collecting stratified samples")
+            stratified_samples = []
+            current_period_samples = {}
+            
+            for chunk_df in load_all_csv_data_from_s3(latest_date_processed=self.config.filter_date):
+                try:
+                    # Apply optimizations and conversions
+                    for col, dtype in self.config.dtype_optimizations.items():
+                        if col in chunk_df.columns:
+                            try:
+                                chunk_df[col] = chunk_df[col].astype(dtype)
+                            except Exception as e:
+                                self._logger.warning(f"Failed to convert column {col} to {dtype}: {e}")
+                    
+                    chunk_df[self.config.time_column] = pd.to_datetime(chunk_df[self.config.time_column])
+                    
+                    # Process each period in the chunk
+                    for period, period_data in chunk_df.groupby(chunk_df[self.config.time_column].dt.to_period('D')):
+                        if period not in samples_per_period:
+                            continue
+                            
+                        target_size = samples_per_period[period]
+                        current_size = len(current_period_samples.get(period, []))
+                        
+                        if current_size < target_size:
+                            # Stratify this batch
+                            stratified_batch = await self.processor.stratify_data(period_data)
+                            if not stratified_batch.empty:
+                                if period not in current_period_samples:
+                                    current_period_samples[period] = []
+                                current_period_samples[period].append(stratified_batch)
+                                
+                                # If we have enough samples for this period, finalize it
+                                total_period_samples = sum(len(df) for df in current_period_samples[period])
+                                if total_period_samples >= target_size:
+                                    combined_period = pd.concat(current_period_samples[period], ignore_index=True)
+                                    if len(combined_period) > target_size:
+                                        combined_period = combined_period.sample(n=target_size)
+                                    stratified_samples.append(combined_period)
+                                    del current_period_samples[period]
+                                    self._logger.info(f"Completed sampling for period {period}: {len(combined_period)} rows")
+                
+                finally:
+                    del chunk_df
+            
+            # Finalize any remaining periods
+            for period, period_samples in current_period_samples.items():
+                if period_samples:
+                    combined_period = pd.concat(period_samples, ignore_index=True)
+                    target_size = samples_per_period[period]
+                    if len(combined_period) > target_size:
+                        combined_period = combined_period.sample(n=target_size)
+                    stratified_samples.append(combined_period)
+                    self._logger.info(f"Finalized remaining period {period}: {len(combined_period)} rows")
+            
+            # Combine and save final stratified sample
+            if stratified_samples:
+                final_data = pd.concat(stratified_samples, ignore_index=True)
+                
+                # Apply maximum sample size limit
+                MAX_TOTAL_SAMPLES = 5000  # Limit total samples to keep embedding process manageable
+                if len(final_data) > MAX_TOTAL_SAMPLES:
+                    self._logger.info(f"Reducing final sample size from {len(final_data)} to {MAX_TOTAL_SAMPLES}")
+                    final_data = final_data.sample(n=MAX_TOTAL_SAMPLES, random_state=42)
+                
+                # Verify DataFrame contents before saving
+                self._logger.info(f"Final data columns: {final_data.columns.tolist()}")
+                self._logger.info(f"Final data shape: {final_data.shape}")
+                
+                # Save stratified sample
+                stratified_file = self.config.stratified_data_path / "stratified_sample.csv"
+                self._logger.info(f"Saving stratified sample to: {stratified_file.absolute()}")
+                final_data.to_csv(stratified_file, index=False)
+                self._logger.info(f"Saved stratified sample: {len(final_data)} rows")
+                
+                # Create knowledge base
+                self._logger.info(f"Saving knowledge base to: {self.config.knowledge_base_path.absolute()}")
+                final_data.to_csv(self.config.knowledge_base_path, index=False)
+                self._logger.info(f"Created knowledge base: {len(final_data)} rows")
+                
+                # Clean up
+                del final_data
+            
+            # Clean up
+            del stratified_samples
+            del current_period_samples
+            
+        except Exception as e:
+            self._logger.error(f"Data fetch and processing failed: {e}")
+            raise
 
     async def prepare_data(self, force_refresh: bool = False) -> str:
         """Main data preparation pipeline."""
@@ -199,18 +373,16 @@ class DataOperations:
             # Check if we need to load/refresh data
             structure_valid = self.state_manager.validate_file_structure()
             if force_refresh or not all(structure_valid.values()):
-                await self._load_fresh_data()
+                await self._fetch_and_save_data()
+                return "Data preparation completed successfully"
 
-            # Validate data integrity
+            # Validate data integrity if not forcing refresh
             integrity_valid = self.state_manager.validate_data_integrity()
             if not all(integrity_valid.values()):
                 raise ValueError("Data integrity check failed")
 
-            # Process existing data
-            await self._process_existing_data()
-
-            self._logger.info("Data preparation completed successfully")
-            return "Data preparation completed successfully"
+            self._logger.info("Using existing valid data")
+            return "Using existing valid data"
 
         except Exception as e:
             self._logger.error(f"Data preparation failed: {e}")
@@ -227,13 +399,6 @@ class DataOperations:
         except Exception as e:
             self._logger.error(f"Failed to create directory structure: {e}")
             raise
-
-    async def _load_fresh_data(self):
-        """Load fresh data from source."""
-        self._logger.info("Loading fresh data from source")
-        # Ensure directory structure exists before fetching data
-        await self._ensure_directory_structure()
-        await self._fetch_and_save_data()
 
     def _cleanup_existing_data(self):
         """Clean up existing data files while preserving other directories and files."""
@@ -265,100 +430,39 @@ class DataOperations:
             self._logger.error(f"Cleanup failed: {e}")
             raise
 
-    async def _fetch_and_save_data(self):
-        """Fetch and save new data in chunks."""
-        self._logger.info(f"Fetching new data with filter date: {self.config.filter_date}")
-        try:
-            # Ensure parent directory exists before saving
-            self.config.all_data_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Initialize CSV file with headers
-            pd.DataFrame(columns=['thread_id', 'posted_date_time', 'text_clean']).to_csv(
-                self.config.all_data_path, index=False, mode='w')
-
-            # Stream data directly from S3 to disk
-            total_rows = 0
-
-            # Iterate through chunks yielded by load_all_csv_data_from_s3
-            for chunk_df in load_all_csv_data_from_s3(latest_date_processed=self.config.filter_date):
-                # Append chunk directly to file
-                chunk_df.to_csv(
-                    self.config.all_data_path,
-                    index=False,
-                    mode='a',
-                    header=False
-                )
-                total_rows += len(chunk_df)
-                self._logger.info(f"Saved chunk with {len(chunk_df)} rows. Total rows: {total_rows}")
-
-                # Clean up
-                del chunk_df
-                gc.collect()
-
-            if total_rows == 0:
-                self._logger.warning("No new data was saved")
-            else:
-                self._logger.info(f"New data saved successfully: {total_rows} rows")
-
-        except Exception as e:
-            self._logger.error(f"Data fetch failed: {e}")
-            raise
-
-    async def _process_existing_data(self):
-        """Process and stratify existing data in chunks."""
-        self._logger.info("Processing existing data")
-        try:
-            all_data = []  # Store all chunks
-            processed_rows = 0
-            target_size = self.config.sample_size
-            chunk_size = min(2500, self.config.sample_size * 2)  # Dynamic chunk size
-
-            # Read and process data in chunks
-            for chunk in pd.read_csv(self.config.all_data_path, chunksize=chunk_size):
-                # Stratify chunk
-                stratified_chunk = await self.processor.stratify_data(chunk)
-                if not stratified_chunk.empty:
-                    all_data.append(stratified_chunk)
-                    processed_rows += len(stratified_chunk)
-
-                # Break if we've reached target size
-                if processed_rows >= target_size:
-                    break
-
-                # Clean up
-                del chunk
-                gc.collect()
-
-            # Combine all processed chunks
-            if all_data:
-                stratified_data = pd.concat(all_data, ignore_index=True)
-                if len(stratified_data) > target_size:
-                    stratified_data = stratified_data.head(target_size)
-                self._logger.info(f"Combined stratified data size: {len(stratified_data)}")
-
-                # Save stratified sample with clear naming
-                stratified_file = self.config.stratified_data_path / "stratified_sample.csv"
-                stratified_data.to_csv(stratified_file, index=False)
-                self._logger.info(f"Saved stratified sample to {stratified_file}")
-
-                # Create knowledge base from stratified data
-                self._logger.info("Creating knowledge base")
-                stratified_data.to_csv(self.config.knowledge_base_path, index=False)
-                self._logger.info(f"Knowledge base created with {len(stratified_data)} rows")
-
-                # Clean up
-                del stratified_data
-                del all_data
-                gc.collect()
-
-            self._logger.info("Data processing complete")
-
-        except Exception as e:
-            self._logger.error(f"Data processing failed: {e}")
-            raise
-
 async def prepare_knowledge_base(force_refresh: bool = False) -> str:
     """Main entry point for data preparation."""
-    config = DataConfig.from_env()
-    operations = DataOperations(config)
-    return await operations.prepare_data(force_refresh)
+    try:
+        config = DataConfig.from_env()
+        operations = DataOperations(config)
+        
+        # First run the main data preparation
+        result = await operations.prepare_data(force_refresh)
+        logger.info(f"Data preparation result: {result}")
+        
+        # Then process references
+        logger.info("Starting reference processing...")
+        
+        # Use the stratified data directory where stratified_sample.csv is located
+        data_dir = str(config.stratified_data_path)
+        stratified_file = Path(data_dir) / "stratified_sample.csv"
+        
+        # Verify the file exists and has content
+        if not stratified_file.exists():
+            raise FileNotFoundError(f"Stratified sample file not found at: {stratified_file.absolute()}")
+            
+        file_size = stratified_file.stat().st_size
+        logger.info(f"Found stratified sample file: {stratified_file.absolute()} (size: {file_size} bytes)")
+        
+        if file_size == 0:
+            raise ValueError(f"Stratified sample file is empty: {stratified_file.absolute()}")
+        
+        logger.info(f"Processing references from stratified directory: {data_dir}")
+        output_path = await process_references(output_dir=data_dir)
+        logger.info(f"Reference processing completed. Output saved to: {output_path}")
+        
+        return "Knowledge base preparation completed successfully"
+        
+    except Exception as e:
+        logger.error(f"Knowledge base preparation failed: {e}")
+        raise

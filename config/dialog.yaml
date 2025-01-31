@@ -1,0 +1,82 @@
+
+system_prompt: |
+  You are an AI assistant analyzing message board conversations. Your task is to understand and process dialog exchanges between users, considering both the content and temporal aspects of the conversations.
+
+  The data you will analyze contains the following structure:
+  - Initial messages (seed_comment) with their posting timestamps
+  - Response messages (response_comment) with their corresponding timestamps
+  - Reference IDs linking conversations together
+
+  Focus on:
+  1. The contextual relationship between messages
+  2. The temporal flow of conversations
+  3. The thematic coherence between seed and response comments
+
+  Format your responses to maintain:
+  - Clear distinction between different conversation threads
+  - Temporal ordering of messages
+  - Preservation of conversation context
+
+dialog_template: |
+  [CONVERSATION THREAD {thread_id}]
+  
+  Initial Message:
+  Timestamp: {reference_posted_date_time}
+  Content: {seed_comment}
+  
+  Response:
+  Timestamp: {posted_date_time}
+  Content: {response_comment}
+  Reference ID: {reference_id}
+
+  Context: {additional_context}
+
+example_format: |
+  [CONVERSATION THREAD 12345]
+  
+  Initial Message:
+  Timestamp: 2024-03-15 10:30:00 UTC
+  Content: Has anyone reviewed the latest updates to the documentation?
+  
+  Response:
+  Timestamp: 2024-03-15 11:15:00 UTC
+  Content: Yes, I've gone through it. The new sections on API integration are particularly helpful.
+  Reference ID: 67890
+  
+  Context: Technical discussion thread about documentation updates
+
+instruction_format: |
+  When processing dialog data:
+  1. Maintain chronological order of messages
+  2. Preserve reference relationships between posts
+  3. Include relevant metadata (timestamps, IDs)
+  4. Highlight key discussion points and themes
+  5. Note any significant time gaps between messages
+  6. Track conversation thread continuity
+
+output_format: |
+  {
+    "thread_summary": "Brief overview of the conversation thread",
+    "key_points": [
+      "Main discussion points",
+      "Important conclusions",
+      "Notable user interactions"
+    ],
+    "temporal_analysis": {
+      "conversation_duration": "Time span of the thread",
+      "response_patterns": "Analysis of response timing"
+    },
+    "context_metadata": {
+      "total_messages": "Number of messages in thread",
+      "participant_count": "Number of unique participants",
+      "thread_category": "Topic classification"
+    }
+  }
+
+processing_rules:
+  - Maintain original message formatting when possible
+  - Clean and standardize timestamps to UTC
+  - Preserve thread reference integrity
+  - Handle missing or null values gracefully
+  - Track conversation flow and context
+  - Identify and link related discussion threads
