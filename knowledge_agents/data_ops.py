@@ -85,8 +85,7 @@ class DataConfig:
             'dtype': self.dtype_optimizations,
             'usecols': list(self.dtype_optimizations.keys()),
             'on_bad_lines': 'warn',
-            'low_memory': True
-        }
+            'low_memory': True}
 
     @classmethod
     def from_env(cls) -> 'DataConfig':
@@ -107,6 +106,35 @@ class DataStateManager:
     def __init__(self, config: DataConfig):
         self.config = config
         self._logger = logging.getLogger(__name__)
+        self.state_file = self.config.root_path / '.data_state'
+
+    def _load_state(self) -> Dict[str, Any]:
+        """Load data state from file."""
+        if self.state_file.exists():
+            try:
+                return pd.read_json(self.state_file).to_dict(orient='records')[0]
+            except Exception as e:
+                self._logger.error(f"Failed to load state: {e}")
+        return {'last_update': None, 'total_records': 0}
+
+    def _save_state(self, state: Dict[str, Any]):
+        """Save data state to file."""
+        try:
+            pd.DataFrame([state]).to_json(self.state_file)
+        except Exception as e:
+            self._logger.error(f"Failed to save state: {e}")
+
+    def get_last_update(self) -> Optional[str]:
+        """Get the last update timestamp."""
+        return self._load_state().get('last_update')
+
+    def update_state(self, total_records: int):
+        """Update the data state."""
+        state = {
+            'last_update': pd.Timestamp.now(tz='UTC').isoformat(),
+            'total_records': total_records
+        }
+        self._save_state(state)
 
     def _validate_path(self, path: Path, path_type: str) -> bool:
         """Validate a single path."""
@@ -220,142 +248,164 @@ class DataOperations:
         self.processor = DataProcessor(config)
         self._logger = logging.getLogger(__name__)
 
-    async def _fetch_and_save_data(self):
-        """Stream and process data ensuring complete temporal coverage."""
+    async def _fetch_and_save_data(self, force_refresh: bool = False):
+        """Stream and process data ensuring complete temporal coverage with reservoir sampling."""
         self._logger.info(f"Fetching data with filter date: {self.config.filter_date}")
         try:
-            # Track periods and their sizes for proportional sampling
-            period_stats = {}
-            total_rows = 0
-            
-            # First pass: Collect period statistics
-            self._logger.info("First pass: Collecting temporal distribution statistics")
-            for chunk_df in load_all_csv_data_from_s3(latest_date_processed=self.config.filter_date):
-                try:
-                    # Safe type conversion with error handling
-                    try:
-                        chunk_df[self.config.time_column] = pd.to_datetime(chunk_df[self.config.time_column])
-                    except Exception as e:
-                        self._logger.error(f"Failed to convert time column: {e}")
-                        continue
+            # Get last update time if not forcing refresh
+            last_update = None if force_refresh else self.state_manager.get_last_update()
+            self._logger.info(f"Last update time: {last_update}")
 
-                    # Update period statistics
-                    periods = chunk_df[self.config.time_column].dt.to_period('D')
-                    period_counts = periods.value_counts()
-                    
-                    for period, count in period_counts.items():
-                        if period not in period_stats:
-                            period_stats[period] = 0
-                        period_stats[period] += count
-                        total_rows += count
-                    
-                finally:
-                    del chunk_df
-            
-            if not period_stats:
-                raise ValueError("No valid data found in the specified date range")
-            
-            self._logger.info(f"Found {len(period_stats)} time periods with {total_rows} total rows")
-            
-            # Calculate target samples per period
-            samples_per_period = {
-                period: max(
-                    int(self.config.sample_size * count / total_rows),
-                    self.config.MIN_CHUNK_SIZE
-                )
-                for period, count in period_stats.items()
-            }
-            
-            # Second pass: Collect stratified samples
-            self._logger.info("Second pass: Collecting stratified samples")
-            stratified_samples = []
-            current_period_samples = {}
-            
-            for chunk_df in load_all_csv_data_from_s3(latest_date_processed=self.config.filter_date):
+            # Load existing knowledge base if doing incremental update
+            existing_data = None
+            if not force_refresh and self.config.knowledge_base_path.exists():
                 try:
+                    existing_data = pd.read_csv(self.config.knowledge_base_path)
+                    existing_data[self.config.time_column] = pd.to_datetime(existing_data[self.config.time_column])
+                    self._logger.info(f"Loaded existing knowledge base with {len(existing_data)} rows")
+                except Exception as e:
+                    self._logger.error(f"Failed to load existing knowledge base: {e}")
+                    existing_data = None
+
+            # Calculate target samples
+            remaining_samples = self.config.sample_size - (len(existing_data) if existing_data is not None else 0)
+            if remaining_samples <= 0:
+                self._logger.info("Knowledge base already at target size")
+                return
+
+            self._logger.info(f"Target remaining samples: {remaining_samples}")
+
+            # Initialize reservoir sampling by time period
+            from collections import defaultdict
+            import random
+            reservoirs = defaultdict(list)
+            period_counts = defaultdict(int)
+            total_processed = 0
+            
+            # Single pass collection with reservoir sampling by time period
+            for chunk_df in load_all_csv_data_from_s3(latest_date_processed=last_update):
+                try:
+                    # Create a copy to avoid SettingWithCopyWarning
+                    chunk_df = chunk_df.copy()
+                    
                     # Apply optimizations and conversions
                     for col, dtype in self.config.dtype_optimizations.items():
                         if col in chunk_df.columns:
-                            try:
-                                chunk_df[col] = chunk_df[col].astype(dtype)
-                            except Exception as e:
-                                self._logger.warning(f"Failed to convert column {col} to {dtype}: {e}")
+                            chunk_df[col] = chunk_df[col].astype(dtype)
                     
+                    # Convert time column and group by period
                     chunk_df[self.config.time_column] = pd.to_datetime(chunk_df[self.config.time_column])
                     
-                    # Process each period in the chunk
+                    # Group by day period for stratified sampling
                     for period, period_data in chunk_df.groupby(chunk_df[self.config.time_column].dt.to_period('D')):
-                        if period not in samples_per_period:
-                            continue
-                            
-                        target_size = samples_per_period[period]
-                        current_size = len(current_period_samples.get(period, []))
+                        period_counts[period] += len(period_data)
                         
-                        if current_size < target_size:
-                            # Stratify this batch
-                            stratified_batch = await self.processor.stratify_data(period_data)
-                            if not stratified_batch.empty:
-                                if period not in current_period_samples:
-                                    current_period_samples[period] = []
-                                current_period_samples[period].append(stratified_batch)
-                                
-                                # If we have enough samples for this period, finalize it
-                                total_period_samples = sum(len(df) for df in current_period_samples[period])
-                                if total_period_samples >= target_size:
-                                    combined_period = pd.concat(current_period_samples[period], ignore_index=True)
-                                    if len(combined_period) > target_size:
-                                        combined_period = combined_period.sample(n=target_size)
-                                    stratified_samples.append(combined_period)
-                                    del current_period_samples[period]
-                                    self._logger.info(f"Completed sampling for period {period}: {len(combined_period)} rows")
+                        # Calculate target size for this period based on proportion of data seen
+                        total_seen = sum(period_counts.values())
+                        target_size = max(
+                            int((remaining_samples * period_counts[period]) / total_seen),
+                            min(100, remaining_samples // 10)  # Ensure minimum representation
+                        )
+                        
+                        # Perform reservoir sampling for this period
+                        current_samples = reservoirs[period]
+                        for _, row in period_data.iterrows():
+                            if len(current_samples) < target_size:
+                                current_samples.append(row)
+                            else:
+                                # Randomly replace existing samples with decreasing probability
+                                j = random.randint(0, period_counts[period] - 1)
+                                if j < target_size:
+                                    current_samples[j] = row
+                    
+                    total_processed += len(chunk_df)
+                    if total_processed % 10000 == 0:
+                        current_samples = sum(len(samples) for samples in reservoirs.values())
+                        self._logger.info(f"Processed {total_processed} rows, current samples: {current_samples}")
+                        
+                except Exception as e:
+                    self._logger.error(f"Error processing chunk: {e}")
+                    continue
+
+            # Combine samples from all periods
+            if reservoirs:
+                self._logger.info("Combining stratified samples from all periods...")
+                period_samples = []
+                total_samples = sum(len(samples) for samples in reservoirs.values())
                 
-                finally:
-                    del chunk_df
-            
-            # Finalize any remaining periods
-            for period, period_samples in current_period_samples.items():
-                if period_samples:
-                    combined_period = pd.concat(period_samples, ignore_index=True)
-                    target_size = samples_per_period[period]
-                    if len(combined_period) > target_size:
-                        combined_period = combined_period.sample(n=target_size)
-                    stratified_samples.append(combined_period)
-                    self._logger.info(f"Finalized remaining period {period}: {len(combined_period)} rows")
-            
-            # Combine and save final stratified sample
-            if stratified_samples:
-                final_data = pd.concat(stratified_samples, ignore_index=True)
+                for period, samples in reservoirs.items():
+                    if samples:
+                        # Calculate final size for this period proportionally
+                        period_df = pd.DataFrame(samples)
+                        target_size = min(
+                            int((remaining_samples * len(samples)) / total_samples),
+                            remaining_samples - sum(len(df) for df in period_samples)
+                        )
+                        if len(period_df) > target_size:
+                            period_df = period_df.sample(n=target_size)
+                        period_samples.append(period_df)
+                        self._logger.info(f"Period {period}: {len(period_df)} samples")
+
+                final_data = pd.concat(period_samples, ignore_index=True)
                 
-                # Apply maximum sample size limit
-                MAX_TOTAL_SAMPLES = 5000  # Limit total samples to keep embedding process manageable
-                if len(final_data) > MAX_TOTAL_SAMPLES:
-                    self._logger.info(f"Reducing final sample size from {len(final_data)} to {MAX_TOTAL_SAMPLES}")
-                    final_data = final_data.sample(n=MAX_TOTAL_SAMPLES, random_state=42)
-                
-                # Verify DataFrame contents before saving
-                self._logger.info(f"Final data columns: {final_data.columns.tolist()}")
-                self._logger.info(f"Final data shape: {final_data.shape}")
-                
+                # Combine with existing data if doing incremental update
+                if existing_data is not None and not force_refresh:
+                    final_data = pd.concat([existing_data, final_data], ignore_index=True)
+
+                # Final size check
+                if len(final_data) > self.config.sample_size:
+                    self._logger.info(f"Reducing final sample size from {len(final_data)} to {self.config.sample_size}")
+                    final_data = final_data.sample(n=self.config.sample_size, random_state=42)
+
                 # Save stratified sample
                 stratified_file = self.config.stratified_data_path / "stratified_sample.csv"
                 self._logger.info(f"Saving stratified sample to: {stratified_file.absolute()}")
                 final_data.to_csv(stratified_file, index=False)
                 self._logger.info(f"Saved stratified sample: {len(final_data)} rows")
-                
-                # Create knowledge base
+
+                # Create/update knowledge base
                 self._logger.info(f"Saving knowledge base to: {self.config.knowledge_base_path.absolute()}")
                 final_data.to_csv(self.config.knowledge_base_path, index=False)
-                self._logger.info(f"Created knowledge base: {len(final_data)} rows")
-                
+                self._logger.info(f"Created/updated knowledge base: {len(final_data)} rows")
+
+                # Update state with new timestamp
+                self.state_manager.update_state(len(final_data))
+
                 # Clean up
-                del final_data
-            
-            # Clean up
-            del stratified_samples
-            del current_period_samples
-            
+                del final_data, period_samples, reservoirs
+                gc.collect()
+
         except Exception as e:
             self._logger.error(f"Data fetch and processing failed: {e}")
+            raise
+
+    def _cleanup_existing_data(self):
+        """Clean up existing data files while preserving other directories and files."""
+        self._logger.info("Cleaning up data files")
+        try:
+            # Clean up state file
+            if self.state_manager.state_file.exists():
+                self.state_manager.state_file.unlink()
+                self._logger.info(f"Removed state file: {self.state_manager.state_file}")
+
+            # Clean up knowledge base file if it exists
+            if self.config.knowledge_base_path.exists():
+                self.config.knowledge_base_path.unlink()
+                self._logger.info(f"Removed file: {self.config.knowledge_base_path}")
+
+            # Clean up stratified data directory contents
+            if self.config.stratified_data_path.exists():
+                for item in self.config.stratified_data_path.glob("*"):
+                    if item.is_file():
+                        item.unlink()
+                        self._logger.info(f"Removed file: {item}")
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                        self._logger.info(f"Removed directory: {item}")
+
+            self._logger.info("Data cleanup complete")
+        except Exception as e:
+            self._logger.error(f"Cleanup failed: {e}")
             raise
 
     async def prepare_data(self, force_refresh: bool = False) -> str:
@@ -367,22 +417,28 @@ class DataOperations:
             if force_refresh:
                 self._cleanup_existing_data()
 
-            # Create directory structure first
+            # Create directory structure if needed
             await self._ensure_directory_structure()
 
             # Check if we need to load/refresh data
             structure_valid = self.state_manager.validate_file_structure()
-            if force_refresh or not all(structure_valid.values()):
-                await self._fetch_and_save_data()
-                return "Data preparation completed successfully"
-
-            # Validate data integrity if not forcing refresh
             integrity_valid = self.state_manager.validate_data_integrity()
-            if not all(integrity_valid.values()):
-                raise ValueError("Data integrity check failed")
-
-            self._logger.info("Using existing valid data")
-            return "Using existing valid data"
+            
+            if force_refresh or not all(structure_valid.values()) or not all(integrity_valid.values()):
+                # Initial setup needed
+                await self._fetch_and_save_data(force_refresh=True)
+                return "Initial data preparation completed successfully"
+            
+            # Check if we have new data to process
+            last_update = self.state_manager.get_last_update()
+            if last_update:
+                # Do incremental update
+                await self._fetch_and_save_data(force_refresh=False)
+                return "Incremental update completed successfully"
+            else:
+                # No state found, do full refresh
+                await self._fetch_and_save_data(force_refresh=True)
+                return "Full refresh completed due to missing state"
 
         except Exception as e:
             self._logger.error(f"Data preparation failed: {e}")
@@ -398,36 +454,6 @@ class DataOperations:
             self._logger.info("Directory structure created successfully")
         except Exception as e:
             self._logger.error(f"Failed to create directory structure: {e}")
-            raise
-
-    def _cleanup_existing_data(self):
-        """Clean up existing data files while preserving other directories and files."""
-        self._logger.info("Cleaning up data files")
-        try:
-            # Only clean up specific data files and directories
-            if self.config.all_data_path.exists():
-                self.config.all_data_path.unlink()
-                self._logger.info(f"Removed file: {self.config.all_data_path}")
-
-            # Clean up stratified data directory contents
-            if self.config.stratified_data_path.exists():
-                for item in self.config.stratified_data_path.glob("*"):
-                    if item.is_file():
-                        item.unlink()
-                        self._logger.info(f"Removed file: {item}")
-                    elif item.is_dir():
-                        shutil.rmtree(item)
-                        self._logger.info(f"Removed directory: {item}")
-                self._logger.info(f"Cleaned stratified data directory: {self.config.stratified_data_path}")
-
-            # Clean up knowledge base file if it exists
-            if self.config.knowledge_base_path.exists():
-                self.config.knowledge_base_path.unlink()
-                self._logger.info(f"Removed file: {self.config.knowledge_base_path}")
-
-            self._logger.info("Data cleanup complete")
-        except Exception as e:
-            self._logger.error(f"Cleanup failed: {e}")
             raise
 
 async def prepare_knowledge_base(force_refresh: bool = False) -> str:
@@ -457,11 +483,15 @@ async def prepare_knowledge_base(force_refresh: bool = False) -> str:
         if file_size == 0:
             raise ValueError(f"Stratified sample file is empty: {stratified_file.absolute()}")
         
-        logger.info(f"Processing references from stratified directory: {data_dir}")
-        output_path = await process_references(output_dir=data_dir)
-        logger.info(f"Reference processing completed. Output saved to: {output_path}")
-        
-        return "Knowledge base preparation completed successfully"
+        # Only process references if force_refresh or if knowledge base doesn't exist
+        if force_refresh or not config.knowledge_base_path.exists():
+            logger.info(f"Processing references from stratified directory: {data_dir}")
+            output_path = await process_references(output_dir=data_dir)
+            logger.info(f"Reference processing completed. Output saved to: {output_path}")
+            return "Knowledge base preparation completed successfully"
+        else:
+            logger.info("Using existing knowledge base, skipping reference processing")
+            return "Using existing knowledge base"
         
     except Exception as e:
         logger.error(f"Knowledge base preparation failed: {e}")

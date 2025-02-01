@@ -97,6 +97,7 @@ class S3Handler:
         """
         try:
             logger.info("Streaming data from S3 bucket: %s", self.bucket_name)
+            logger.info(f"Initial filter date: {latest_date_processed}")
 
             # Convert latest_date_processed to UTC datetime for metadata comparison
             latest_date = None
@@ -108,57 +109,24 @@ class S3Handler:
                     )
                     if latest_date.tzinfo is None:
                         latest_date = latest_date.tz_localize('UTC')
-                    logger.info(f"Filtering data after: {latest_date} UTC")
+                    logger.info(f"Using filter date: {latest_date} UTC")
                 except Exception as e:
                     logger.error(f"Error parsing date {latest_date_processed}. Expected format: YYYY-MM-DD")
                     logger.error(f"Error details: {str(e)}")
                     raise ValueError(f"Invalid date format. Please use YYYY-MM-DD format (e.g., 2025-01-30)")
 
-            response = self.s3.list_objects_v2(
-                Bucket=self.bucket_name, 
-                Prefix=self.bucket_prefix)
+            # Use Config.SAMPLE_SIZE to determine chunk size
+            chunk_size = min(5000, Config.SAMPLE_SIZE)  # Reduced chunk size for better control
+            logger.info(f"Using chunk size: {chunk_size} (Sample size: {Config.SAMPLE_SIZE})")
 
-            if 'Contents' not in response:
-                logger.warning(f"No files found in bucket {self.bucket_name}")
-                return
-
-            # Filter files based on board prefix and LastModified date
-            csv_objects = []
-            for item in response.get('Contents', []):
-                if item['Key'].endswith('.csv'):
-                    # Log file details for debugging
-                    logger.debug(f"Found CSV file: {item['Key']}")
-                    logger.debug(f"Last modified: {item['LastModified'].astimezone(tz.UTC)}")
-                    
-                    # Check board filter
-                    board_match = Config.SELECT_BOARD is None or f'chanscope_{Config.SELECT_BOARD}' in item['Key']
-                    if not board_match:
-                        logger.debug(f"Skipping file due to board mismatch: {item['Key']}")
-                        continue
-
-                    # Check date filter
-                    if latest_date is not None:
-                        file_date = item['LastModified'].astimezone(tz.UTC)
-                        if file_date < latest_date:
-                            logger.debug(f"Skipping file due to date: {item['Key']} ({file_date} < {latest_date})")
-                            continue
-                        logger.info(f"Including file: {item['Key']} (modified: {file_date})")
-                    
-                    csv_objects.append(item['Key'])
-
-            logger.info(f"Found {len(csv_objects)} CSV files to process")
-            chunk_size = min(50000, Config.SAMPLE_SIZE * 2)  # Align with data processor
-            
-            for s3_key in csv_objects:
+            total_rows_processed = 0
+            for s3_key in self._get_filtered_csv_files(latest_date):
                 try:
-                    # Create a temporary file
                     temp_file = Path(f"temp_{Path(s3_key).name}")
                     try:
-                        # Download the file
-                        logger.info(f"Downloading {s3_key}")
+                        logger.info(f"Processing file: {s3_key}")
                         self.s3.download_file(self.bucket_name, s3_key, str(temp_file))
 
-                        # Process file in chunks with robust error handling
                         for chunk in pd.read_csv(
                             temp_file,
                             chunksize=chunk_size,
@@ -174,28 +142,34 @@ class S3Handler:
                                 # Apply date filter with detailed logging
                                 if latest_date is not None:
                                     before_filter = len(chunk)
-                                    chunk_dates = chunk['posted_date_time'].dt.tz_convert('UTC')
-                                    
-                                    # Apply filter with strict comparison
-                                    chunk = chunk[chunk_dates > latest_date]  # Filter by UTC date
-                                    
+                                    chunk = chunk[chunk['posted_date_time'] >= latest_date]
                                     after_filter = len(chunk)
                                     if before_filter != after_filter:
-                                        logger.debug(f"Filtered {before_filter - after_filter} rows by date")
-                                        if not chunk.empty:
-                                            logger.debug(f"Remaining data range: {chunk_dates.min()} to {chunk_dates.max()}")
+                                        logger.info(f"Date filter: {before_filter - after_filter} rows filtered out")
+                                        logger.debug(f"Date range in chunk: {chunk['posted_date_time'].min()} to {chunk['posted_date_time'].max()}")
 
                                 if not chunk.empty:
+                                    total_rows_processed += len(chunk)
+                                    if total_rows_processed > Config.SAMPLE_SIZE:
+                                        logger.warning(f"Total processed rows ({total_rows_processed}) exceeds SAMPLE_SIZE ({Config.SAMPLE_SIZE})")
+                                        # Calculate remaining rows needed
+                                        rows_needed = Config.SAMPLE_SIZE - (total_rows_processed - len(chunk))
+                                        if rows_needed > 0:
+                                            logger.info(f"Taking only {rows_needed} rows from current chunk to meet sample size")
+                                            yield chunk.head(rows_needed)
+                                        logger.info("Stopping data stream as sample size limit reached")
+                                        return
                                     yield chunk
 
                             except Exception as e:
                                 logger.error(f"Error processing chunk from {s3_key}: {str(e)}")
                                 continue
 
+                        logger.info(f"Completed processing {s3_key}: {total_rows_processed} total rows processed")
+
                     except Exception as e:
                         logger.error(f"Error processing file {s3_key}: {str(e)}")
                     finally:
-                        # Clean up temporary file
                         if temp_file.exists():
                             temp_file.unlink()
 
@@ -206,6 +180,52 @@ class S3Handler:
         except Exception as e:
             logger.error(f"Critical error in stream_csv_data: {str(e)}")
             raise
+
+    def _get_filtered_csv_files(self, latest_date):
+        """Get filtered list of CSV files from S3."""
+        logger.info(f"Filtering CSV files with date threshold: {latest_date}")
+        response = self.s3.list_objects_v2(
+            Bucket=self.bucket_name, 
+            Prefix=self.bucket_prefix)
+
+        if 'Contents' not in response:
+            logger.warning(f"No files found in bucket {self.bucket_name}")
+            return []
+
+        csv_objects = []
+        total_files = 0
+        filtered_by_date = 0
+        filtered_by_board = 0
+        
+        for item in response.get('Contents', []):
+            if item['Key'].endswith('.csv'):
+                total_files += 1
+                file_date = item['LastModified'].astimezone(tz.UTC)
+                logger.debug(f"Found CSV file: {item['Key']}, modified: {file_date}")
+                
+                # Check board filter
+                board_match = Config.SELECT_BOARD is None or f'chanscope_{Config.SELECT_BOARD}' in item['Key']
+                if not board_match:
+                    filtered_by_board += 1
+                    logger.debug(f"Skipping file due to board mismatch: {item['Key']}")
+                    continue
+
+                # Check date filter with strict comparison
+                if latest_date is not None:
+                    if file_date <= latest_date:
+                        filtered_by_date += 1
+                        logger.debug(f"Skipping file due to date: {item['Key']} ({file_date} <= {latest_date})")
+                        continue
+                    logger.info(f"Including file: {item['Key']} (modified: {file_date})")
+                
+                csv_objects.append(item['Key'])
+
+        logger.info(f"File filtering summary:")
+        logger.info(f"- Total CSV files found: {total_files}")
+        logger.info(f"- Files filtered by date: {filtered_by_date}")
+        logger.info(f"- Files filtered by board: {filtered_by_board}")
+        logger.info(f"- Files selected for processing: {len(csv_objects)}")
+        return csv_objects
 
 def load_all_csv_data_from_s3(latest_date_processed: str = None):
     """Load all CSV data from S3 bucket using streaming and S3 Select.
