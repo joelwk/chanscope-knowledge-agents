@@ -78,7 +78,8 @@ async def _run_knowledge_agents_async(
                 library=str(config.stratified_data_path),
                 knowledge_base=str(config.knowledge_base_path),
                 batch_size=config.embedding_batch_size,
-                provider=config.providers[ModelOperation.EMBEDDING]
+                provider=config.providers[ModelOperation.EMBEDDING],
+                force_refresh=force_refresh
             )
         except Exception as e:
             logger.error(f"Error getting relevant content: {e}")

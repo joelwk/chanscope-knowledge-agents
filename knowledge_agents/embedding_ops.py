@@ -91,10 +91,23 @@ async def get_relevant_content(
     library: str = '.',
     knowledge_base: str = '.',
     batch_size: int = 100,
-    provider: Optional[ModelProvider] = None
+    provider: Optional[ModelProvider] = None,
+    force_refresh: bool = False
 ) -> None:
     """Create knowledge base with embeddings from articles in library."""
     logger.info("Creating knowledge base with embeddings...")
+
+    # Check if knowledge base already exists and is valid
+    kb_path = Path(knowledge_base)
+    if not force_refresh and kb_path.exists():
+        try:
+            # Verify the knowledge base is valid
+            df = pd.read_csv(kb_path)
+            if 'embedding' in df.columns and len(df) > 0:
+                logger.info("Using existing knowledge base with embeddings")
+                return
+        except Exception as e:
+            logger.warning(f"Existing knowledge base invalid, will recreate: {e}")
 
     # Load articles from CSV files
     articles = load_data_from_csvs(library)
