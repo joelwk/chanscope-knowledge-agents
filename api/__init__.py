@@ -57,19 +57,16 @@ def create_app():
         werkzeug_logger.setLevel(logging.ERROR)
 
     # Load configuration
-    config = Config()
+    api_settings = Config.get_api_settings()
     logger.info("=== App Configuration ===")
-    logger.info(f"- QUART_ENV: {os.getenv('QUART_ENV', 'development')}")
-    logger.info(f"- API_HOST: {config.API_HOST}")
-    logger.info(f"- API_PORT: {config.API_PORT}")
+    logger.info(f"- QUART_ENV: {api_settings['quart_env']}")
+    logger.info(f"- API_HOST: {api_settings['host']}")
+    logger.info(f"- API_PORT: {api_settings['port']}")
     logger.info(f"- REPLIT_ENV: {is_replit_env()}")
 
-    # Log all possible base URLs
-    api_settings = config.get_api_settings()
-    base_urls = api_settings.get('base_urls', [])
+    # Log available API endpoints
     logger.info("Available API endpoints:")
-    for url in base_urls:
-        logger.info(f"- {url}")
+    logger.info(f"- http://{api_settings['host']}:{api_settings['port']}")
 
     if is_replit_env():
         logger.info("=== Replit Environment Details ===")
@@ -81,13 +78,22 @@ def create_app():
         )
 
     # Create knowledge agent configuration
+    paths = Config.get_paths()
+    model_settings = Config.get_model_settings()
+    processing_settings = Config.get_processing_settings()
+    sample_settings = Config.get_sample_settings()
+    
     app.config['KNOWLEDGE_CONFIG'] = {
-        'PATHS': Config.get_data_paths(),
-        'ROOT_PATH': Config.ROOT_PATH,
-        'PROVIDERS': Config.get_provider_settings(),
-        'SAMPLE_SIZE': Config.SAMPLE_SIZE,
-        'MAX_WORKERS': Config.MAX_WORKERS,
-        'CACHE_ENABLED': Config.CACHE_ENABLED
+        'PATHS': paths,
+        'ROOT_PATH': paths['root_data_path'],
+        'PROVIDERS': {
+            'embedding_provider': model_settings['default_embedding_provider'],
+            'chunk_provider': model_settings['default_chunk_provider'],
+            'summary_provider': model_settings['default_summary_provider']
+        },
+        'SAMPLE_SIZE': sample_settings['default_sample_size'],
+        'MAX_WORKERS': processing_settings['max_workers'],
+        'CACHE_ENABLED': processing_settings['cache_enabled']
     }
     
     # Import routes

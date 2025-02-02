@@ -3,6 +3,9 @@ import os
 import logging
 from pathlib import Path
 from config.base import ROOT_DIR, get_base_paths, ensure_base_paths
+from typing import Optional, Dict, Any
+from datetime import datetime
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +16,123 @@ class Config:
     base_paths = get_base_paths()
     PROJECT_ROOT = base_paths['root']
 
+    # Environment detection
+    @classmethod
+    def is_docker_env(cls) -> bool:
+        """Detect if running in Docker environment."""
+        # Check for common Docker environment indicators
+        docker_indicators = [
+            Path('/.dockerenv').exists(),  # Standard Docker environment file
+            Path('/run/.containerenv').exists(),  # Podman/container environment file
+            any('docker' in line.lower() for line in Path('/proc/1/cgroup').read_text().splitlines()) if Path('/proc/1/cgroup').exists() else False
+        ]
+        return any(docker_indicators)
+
+    @classmethod
+    def get_environment_base_path(cls) -> str:
+        """Get the base path for the current environment."""
+        if cls.is_docker_env():
+            return '/app'
+        return str(cls.PROJECT_ROOT)
+
+    # Centralized Configuration Constants
+    CHUNK_SIZE_SETTINGS = {
+        'min_chunk_size': int(os.getenv('CHUNK_SIZE')),
+        'max_chunk_size': 5000,  # Safety limit
+        'default_chunk_size': int(os.getenv('CHUNK_SIZE')),
+        'processing_chunk_size': int(os.getenv('CHUNK_BATCH_SIZE')),
+        'stratification_chunk_size': int(os.getenv('SUMMARY_BATCH_SIZE'))
+    }
+
+    COLUMN_DEFINITIONS = {
+        'time_column': os.getenv('TIME_COLUMN', 'posted_date_time'),
+        'strata_column': os.getenv('STRATA_COLUMN', None),
+        'required_columns': [
+            'thread_id',
+            os.getenv('TIME_COLUMN', 'posted_date_time'),
+            'text_clean',
+            'posted_comment'
+        ],
+        'column_types': {
+            'thread_id': 'object',  # Using pandas object type for strings
+            os.getenv('TIME_COLUMN', 'posted_date_time'): 'object',  # Will be converted to datetime separately
+            'text_clean': 'object',
+            'posted_comment': 'object'
+        }
+    }
+
+    SAMPLE_SIZE_SETTINGS = {
+        'max_sample_size': 100000,  # Safety limit
+        'default_sample_size': int(os.getenv('SAMPLE_SIZE')),
+        'min_sample_size': 100  # Minimum for statistical validity
+    }
+
+    # Model Provider Settings
+    MODEL_PROVIDER_SETTINGS = {
+        'default_embedding_provider': os.getenv('DEFAULT_EMBEDDING_PROVIDER', 'openai'),
+        'default_chunk_provider': os.getenv('DEFAULT_CHUNK_PROVIDER', 'openai'),
+        'default_summary_provider': os.getenv('DEFAULT_SUMMARY_PROVIDER', 'openai'),
+        'embedding_batch_size': int(os.getenv('EMBEDDING_BATCH_SIZE')),
+        'chunk_batch_size': int(os.getenv('CHUNK_BATCH_SIZE')),
+        'summary_batch_size': int(os.getenv('SUMMARY_BATCH_SIZE')),
+        'embedding_model': os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large'),
+        'chunk_model': os.getenv('OPENAI_MODEL', 'gpt-4'),
+        'summary_model': os.getenv('OPENAI_MODEL', 'gpt-4'),
+        'grok_model': os.getenv('GROK_MODEL', 'grok-4'),
+        'venice_model': os.getenv('VENICE_MODEL', 'venice-4'),
+        'venice_chunk_model': os.getenv('VENICE_CHUNK_MODEL', 'venice-chunk-4')
+    }
+
+    # Processing Settings
+    PROCESSING_SETTINGS = {
+        'padding_enabled': os.getenv('PADDING_ENABLED', 'false').lower() == 'true',
+        'contraction_mapping_enabled': os.getenv('CONTRACTION_MAPPING_ENABLED', 'false').lower() == 'true',
+        'non_alpha_numeric_enabled': os.getenv('NON_ALPHA_NUMERIC_ENABLED', 'false').lower() == 'true',
+        'max_tokens': int(os.getenv('MAX_TOKENS')),
+        'max_workers': int(os.getenv('MAX_WORKERS')),
+        'cache_enabled': os.getenv('CACHE_ENABLED', 'true').lower() == 'true',
+        'chunk_size': int(os.getenv('CHUNK_SIZE')),
+        'filter_date': os.getenv('FILTER_DATE'),
+        'select_board': os.getenv('SELECT_BOARD')
+    }
+
+    # AWS Settings
+    AWS_SETTINGS = {
+        'aws_access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
+        'aws_secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
+        'aws_default_region': os.getenv('AWS_DEFAULT_REGION', 'us-east-1'),
+        's3_bucket': os.getenv('S3_BUCKET', 'chanscope-data'),
+        's3_bucket_prefix': os.getenv('S3_BUCKET_PREFIX', 'data/'),
+        's3_bucket_processed': os.getenv('S3_BUCKET_PROCESSED', 'processed'),
+        's3_bucket_models': os.getenv('S3_BUCKET_MODELS', 'models')
+    }
+
+    # Path Settings
+    PATH_SETTINGS = {
+        'root_data_path': os.getenv('ROOT_PATH', 'data'),
+        'stratified': os.getenv('STRATIFIED_PATH', 'data/stratified'),
+        'knowledge_base': os.getenv('KNOWLEDGE_BASE', 'data/knowledge_base.csv'),
+        'temp': os.getenv('PATH_TEMP', 'temp_files')
+    }
+
+    # API Settings
+    API_SETTINGS = {
+        'host': os.getenv('API_HOST', '0.0.0.0'),
+        'port': int(os.getenv('API_PORT', 5000)),
+        'quart_env': os.getenv('QUART_ENV', 'development'),
+        'quart_app': 'api.app',
+        'docker_env': os.getenv('DOCKER_ENV', 'false').lower() == 'true',
+        'openai_api_key': os.getenv('OPENAI_API_KEY'),
+        'grok_api_key': os.getenv('GROK_API_KEY'),
+        'venice_api_key': os.getenv('VENICE_API_KEY'),
+        'base_url': os.getenv('API_BASE_URL', 'http://0.0.0.0:5000'),
+        'base_urls': [
+            'http://0.0.0.0:5000',
+            'http://api:5000',
+            'http://localhost:5000'
+        ]
+    }
+
     @staticmethod
     def _clean_api_key(key: str) -> str:
         """Clean API key by removing angle brackets and quotes."""
@@ -21,10 +141,8 @@ class Config:
             return key
             
         key = key.strip()
-        original_key = key  # Store original for comparison
         original_len = len(key)
         
-        # Remove any hidden characters or whitespace
         key = ''.join(c for c in key if c.isprintable()).strip()
         
         if key.startswith("<"):
@@ -35,39 +153,21 @@ class Config:
         
         if len(key) != original_len:
             logger.info(f"API key was cleaned (length changed from {original_len} to {len(key)})")
-            if original_key.startswith("AKIA"):  # AWS Key specific logging
-                logger.info(f"AWS Key cleaning: Original prefix: {original_key[:7]}, New prefix: {key[:7]}")
-                logger.info(f"AWS Key contains hidden characters: {'Yes' if len(original_key.encode()) != len(original_key) else 'No'}")
-            
-        if key.startswith("AKIA"):  # AWS specific validation
-            if len(key) != 20:  # AWS Access Keys are 20 characters
-                logger.warning(f"AWS Access Key has incorrect length: {len(key)}, expected 20")
-            # Ensure only allowed characters
-            if not all(c.isalnum() for c in key):
-                logger.warning("AWS Access Key contains non-alphanumeric characters")
             
         return key
 
     @staticmethod
-    def _parse_none_value(value: str) -> str | None:
+    def _parse_none_value(value: str) -> Optional[str]:
         """Parse a string value that might represent None."""
         if not value or value.lower() == 'none':
             return None
         return value.strip()
 
     @staticmethod
-    def _validate_model_name(model_name: str, provider: str,
-                             model_type: str) -> str:
-        """Validate and clean model name based on provider and type.
-        
-        Args:
-            model_name: The model name to validate
-            provider: The provider (openai, grok, venice)
-            model_type: The type of model (completion, embedding, chunk)
-        """
+    def _validate_model_name(model_name: str, provider: str, model_type: str) -> str:
+        """Validate and clean model name based on provider and type."""
         if not model_name:
-            logger.warning(
-                f"Model name for {provider} {model_type} is empty or None")
+            logger.warning(f"Model name for {provider} {model_type} is empty or None")
             return model_name
 
         model_name = model_name.strip().strip("'\"").strip()
@@ -80,12 +180,8 @@ class Config:
                 'chunk': ['gpt-']
             }
             if model_type in valid_prefixes:
-                if not any(
-                        model_name.startswith(prefix)
-                        for prefix in valid_prefixes[model_type]):
-                    logger.warning(
-                        f"OpenAI {model_type} model '{model_name}' may be invalid - doesn't start with expected prefix"
-                    )
+                if not any(model_name.startswith(prefix) for prefix in valid_prefixes[model_type]):
+                    logger.warning(f"OpenAI {model_type} model '{model_name}' may be invalid - doesn't start with expected prefix")
 
         elif provider == 'grok':
             valid_prefixes = {
@@ -94,221 +190,211 @@ class Config:
                 'chunk': ['grok-']
             }
             if model_type in valid_prefixes:
-                if not any(
-                        model_name.startswith(prefix)
-                        for prefix in valid_prefixes[model_type]):
-                    logger.warning(
-                        f"Grok {model_type} model '{model_name}' may be invalid - doesn't start with expected prefix"
-                    )
+                if not any(model_name.startswith(prefix) for prefix in valid_prefixes[model_type]):
+                    logger.warning(f"Grok {model_type} model '{model_name}' may be invalid - doesn't start with expected prefix")
 
         elif provider == 'venice':
             # Venice models have more varied names, just log the model being used
             logger.info(f"Using Venice {model_type} model: {model_name}")
 
         else:
-            logger.warning(
-                f"Unknown provider '{provider}' for model validation")
+            logger.warning(f"Unknown provider '{provider}' for model validation")
 
         return model_name
 
-    # Data paths - loaded from environment with defaults
-    ROOT_PATH = os.getenv('ROOT_PATH', 'data')
-    DATA_PATH = os.getenv('DATA_PATH', 'data')
-    ALL_DATA = os.getenv('ALL_DATA', 'data/all_data.csv')
-    ALL_DATA_STRATIFIED_PATH = os.getenv('ALL_DATA_STRATIFIED_PATH', 'data/stratified')
-    KNOWLEDGE_BASE = os.getenv('KNOWLEDGE_BASE', 'data/knowledge_base.csv')
-    PATH_TEMP = os.getenv('PATH_TEMP', 'temp_files')
-
-    DOCKER_ENV = os.getenv('DOCKER_ENV')
-    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-    if DOCKER_ENV == 'true':
-        OPENAI_API_KEY = _clean_api_key(OPENAI_API_KEY) 
-        logger.info(
-            f"Cleaned OPENAI_API_KEY: {OPENAI_API_KEY[:5]}...{OPENAI_API_KEY[-5:]}"
-            )
-    else:
-        logger.info("Not running in Docker environment, using API key as-is")
-        
-    if not OPENAI_API_KEY:
-        logger.error("OPENAI_API_KEY is not set or was cleaned to empty")
-
-    # QUART settings
-    QUART_APP = 'api.app'
-    QUART_ENV = os.getenv('QUART_ENV')
-
-    # API settings
-    SAMPLE_SIZE = int(os.getenv('SAMPLE_SIZE'))
-    MAX_WORKERS = int(os.getenv('MAX_WORKERS'))
-    MAX_TOKENS = int(os.getenv('MAX_TOKENS'))
-    CHUNK_SIZE = int(os.getenv('CHUNK_SIZE'))
-    CACHE_ENABLED = os.getenv('CACHE_ENABLED', 'true').lower() == 'true'
-
-    # Model settings
-    EMBEDDING_PROVIDER = os.getenv('EMBEDDING_PROVIDER','openai')
-    CHUNK_PROVIDER = os.getenv('CHUNK_PROVIDER', 'openai')
-    SUMMARY_PROVIDER = os.getenv('SUMMARY_PROVIDER', 'openai')
-    
-    # Default providers (used as fallbacks)
-    DEFAULT_EMBEDDING_PROVIDER = 'openai'
-    DEFAULT_CHUNK_PROVIDER = 'openai'  
-    DEFAULT_SUMMARY_PROVIDER = 'openai'
-
-    # OpenAI settings with model validation
-    OPENAI_MODEL = _validate_model_name(os.getenv('OPENAI_MODEL', 'gpt-4o'),'openai', 'completion')
-    OPENAI_EMBEDDING_MODEL = _validate_model_name(os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large'),'openai', 'embedding')
-
-    # Grok settings with model validation
-    GROK_API_KEY = _clean_api_key(os.getenv('GROK_API_KEY'))
-    GROK_MODEL = _validate_model_name(os.getenv('GROK_MODEL', 'grok-2-1212'), 'grok', 'completion')
-
-    # Venice settings with model validation
-    VENICE_API_KEY = _clean_api_key(os.getenv('VENICE_API_KEY'))
-    VENICE_MODEL = _validate_model_name(os.getenv('VENICE_MODEL', 'llama-3.1-405b'), 'venice', 'completion')
-    VENICE_CHUNK_MODEL = _validate_model_name(os.getenv('VENICE_CHUNK_MODEL', 'dolphin-2.9.2-qwen2-72b'), 'venice','chunk')
-
-    # AWS settings
-    AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
-    AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
-    AWS_DEFAULT_REGION = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
-    S3_BUCKET = os.getenv('S3_BUCKET', 'rolling-data')
-    S3_BUCKET_PREFIX = os.getenv('S3_BUCKET_PREFIX', 'data')
-
-    # Data processing settings
-    TIME_COLUMN = os.getenv('TIME_COLUMN', 'posted_date_time')
-    STRATA_COLUMN = os.getenv('STRATA_COLUMN')
-    FREQ = os.getenv('FREQ', 'H')
-    FILTER_DATE = os.getenv('FILTER_DATE')
-    SELECT_BOARD = _parse_none_value(os.getenv('SELECT_BOARD'))
-    PADDING_ENABLED = os.getenv('PADDING_ENABLED', 'false')
-    CONTRACTION_MAPPING_ENABLED = os.getenv('CONTRACTION_MAPPING_ENABLED','false')
-    NON_ALPHA_NUMERIC_ENABLED = os.getenv('NON_ALPHA_NUMERIC_ENABLED', 'false')
-
-    # API Configuration
-    API_HOST = os.getenv('API_HOST') 
-    # Use Replit's PORT env var if available, otherwise use API_PORT from env or default to 5000
-    API_PORT = os.getenv('API_PORT')
-    API_TIMEOUT = 1500
-
-    # Batch size settings with appropriate defaults
-    EMBEDDING_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE'))
-    CHUNK_BATCH_SIZE = int(os.getenv('CHUNK_BATCH_SIZE'))
-    SUMMARY_BATCH_SIZE = int(os.getenv('SUMMARY_BATCH_SIZE'))
+    @classmethod
+    def _parse_date(cls, date_str: Optional[str]) -> Optional[datetime]:
+        """Parse date with UTC timezone enforcement."""
+        if not date_str:
+            return None
+        try:
+            # Parse with UTC awareness
+            date = pd.to_datetime(date_str, utc=True)
+            if date.tzinfo is None:
+                date = date.tz_localize('UTC')
+            return date
+        except Exception as e:
+            logger.warning(f"Error parsing date {date_str}: {e}")
+            return None
 
     @classmethod
-    def _get_base_urls(cls):
-        """Get the base URLs with proper fallback for different environments."""
-        urls = []
-        
-        # Check environment
-        is_docker = os.getenv('DOCKER_ENV') == 'true'
-        is_replit = bool(os.getenv('REPL_SLUG')) and bool(os.getenv('REPL_OWNER'))
-        
-        if is_docker:
-            # In Docker, use the service name as host
-            docker_host = os.getenv('API_HOST', 'api')
-            docker_port = int(os.getenv('API_PORT', '5000'))
-            urls.append(f"http://{docker_host}:{docker_port}")
-            logger.info(f"Running in Docker environment, using URL: {urls[0]}")
-        elif is_replit:
-            # Add Replit URL
-            repl_slug = os.getenv('REPL_SLUG')
-            repl_owner = os.getenv('REPL_OWNER')
-            urls.append(f"https://{repl_slug}.{repl_owner}.repl.co")
-            logger.info(f"Running in Replit environment, using URL: {urls[0]}")
-        
-        # Always add local URL as fallback
-        local_url = f"http://{cls.API_HOST}:{cls.API_PORT}"
-        if local_url not in urls:
-            urls.append(local_url)
-        
-        logger.info(f"Generated API URLs: {urls}")
-        return urls
+    def get_filter_date(cls) -> Optional[datetime]:
+        """Single source of truth for filter date."""
+        return cls._parse_date(os.getenv('FILTER_DATE'))
 
     @classmethod
-    def get_api_settings(cls):
-        """Get API-related settings."""
-        urls = cls._get_base_urls()
-        return {
-            "host": cls.API_HOST,
-            "port": cls.API_PORT,
-            "base_urls": urls,
-            "base_url": urls[0],  # Primary URL
-            "timeout": cls.API_TIMEOUT,
-        }
-        
-    @classmethod
-    def get_provider_settings(cls):
-        """Get provider settings with defaults."""
-        return {
-            "embedding_provider": cls.EMBEDDING_PROVIDER,
-            "chunk_provider": cls.CHUNK_PROVIDER,
-            "summary_provider": cls.SUMMARY_PROVIDER,
-        }
-    @classmethod
-    def get_data_paths(cls):
-        """Get all data-related paths."""
-        return {
-            "root": cls.ROOT_PATH,
-            "data": cls.DATA_PATH,
-            "all_data": cls.ALL_DATA,
-            "stratified": cls.ALL_DATA_STRATIFIED_PATH,
-            "knowledge_base": cls.KNOWLEDGE_BASE,
-            "temp": cls.PATH_TEMP,
-        }
+    def get_chunk_settings(cls) -> Dict[str, int]:
+        """Get unified chunk size settings."""
+        return cls.CHUNK_SIZE_SETTINGS
 
     @classmethod
-    def get_processing_settings(cls):
-        """Get data processing settings."""
-        return {
-            "sample_size": cls.SAMPLE_SIZE,
-            "max_workers": cls.MAX_WORKERS,
-            "max_tokens": cls.MAX_TOKENS,
-            "chunk_size": cls.CHUNK_SIZE,
-            "cache_enabled": cls.CACHE_ENABLED,
-            "time_column": cls.TIME_COLUMN,
-            "strata_column": cls.STRATA_COLUMN,
-            "freq": cls.FREQ,
-            "filter_date": cls.FILTER_DATE,
-            "padding_enabled": cls.PADDING_ENABLED,
-            "contraction_mapping_enabled": cls.CONTRACTION_MAPPING_ENABLED,
-            "non_alpha_numeric_enabled": cls.NON_ALPHA_NUMERIC_ENABLED,
-        }
+    def get_column_settings(cls) -> Dict[str, Any]:
+        """Get unified column settings."""
+        return cls.COLUMN_DEFINITIONS
+
+    @classmethod
+    def get_sample_settings(cls) -> Dict[str, int]:
+        """Get unified sample size settings."""
+        return cls.SAMPLE_SIZE_SETTINGS
+
+    @classmethod
+    def get_model_settings(cls) -> Dict[str, Any]:
+        """Get unified model provider settings."""
+        return cls.MODEL_PROVIDER_SETTINGS
+
+    @classmethod
+    def get_processing_settings(cls) -> Dict[str, Any]:
+        """Get unified processing settings."""
+        return cls.PROCESSING_SETTINGS
+
+    @classmethod
+    def get_aws_settings(cls) -> Dict[str, Any]:
+        """Get unified AWS settings."""
+        return cls.AWS_SETTINGS
+
+    @classmethod
+    def get_paths(cls) -> Dict[str, str]:
+        """Get unified path settings with proper validation."""
+        if cls.API_SETTINGS['docker_env']:
+            # Docker environment paths with absolute paths
+            paths = {
+                'root_data_path': '/app/data',
+                'stratified': '/app/data/stratified',
+                'knowledge_base': '/app/data/knowledge_base.csv',
+                'temp': '/app/temp_files'
+            }
+        else:
+            # Local environment paths from PATH_SETTINGS
+            paths = cls.PATH_SETTINGS.copy()
+        
+        # Create directories if they don't exist
+        for path_key in ['root_data_path', 'stratified', 'temp']:
+            path = Path(paths[path_key])
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Created directory: {path}")
+            except Exception as e:
+                logger.error(f"Error creating directory {path}: {e}")
+                raise ValueError(f"Failed to create required directory {path_key}: {e}")
+        
+        # Create parent directories for file paths
+        for path_key in ['knowledge_base']:
+            path = Path(paths[path_key])
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Created parent directory: {path.parent}")
+            except Exception as e:
+                logger.error(f"Error creating parent directory for {path}: {e}")
+                raise ValueError(f"Failed to create parent directory for {path_key}: {e}")
+        
+        return paths
+
+    @classmethod
+    def get_api_settings(cls) -> Dict[str, Any]:
+        """Get unified API settings."""
+        api_settings = cls.API_SETTINGS.copy()
+        if api_settings['docker_env']:
+            api_settings['openai_api_key'] = cls._clean_api_key(api_settings['openai_api_key'])
+        return api_settings
 
     @classmethod
     def validate_paths(cls):
-        """Ensure all required paths exist"""
-        # First ensure base paths exist
-        ensure_base_paths()
-
-        # Then ensure application-specific paths exist
-        paths = [
-            Path(cls.PROJECT_ROOT) / cls.ROOT_PATH,
-            Path(cls.PROJECT_ROOT) / cls.DATA_PATH,
-            Path(cls.PROJECT_ROOT) / cls.ALL_DATA_STRATIFIED_PATH,
-            Path(cls.PROJECT_ROOT) / cls.PATH_TEMP
-        ]
-
-        for path in paths:
+        """Validate and create required paths."""
+        paths = cls.get_paths()
+        required_paths = ['root_data_path', 'stratified', 'temp']
+        missing_paths = []
+        
+        # Create parent directories for all paths
+        for key in required_paths:
+            path = Path(paths[key])
             try:
                 path.mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                logger.warning(f"Could not create directory {path}: {e}")
-                # Continue even if directory creation fails
-                pass
+                logger.info(f"Created directory: {path}")
+            except Exception as e:
+                logger.error(f"Error creating directory {path}: {e}")
+                missing_paths.append(key)
+        
+        if missing_paths:
+            error_msg = f"Missing required paths in configuration: {', '.join(missing_paths)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
     @classmethod
-    def initialize_paths(cls):
-        """Initialize paths from environment variables if in Docker."""
-        if os.getenv('DOCKER_ENV') == 'true':
-            cls.ROOT_PATH = '/app/data'
-            cls.DATA_PATH = '/app/data'
-            cls.ALL_DATA = '/app/data/all_data.csv'
-            cls.ALL_DATA_STRATIFIED_PATH = '/app/data/stratified'
-            cls.KNOWLEDGE_BASE = '/app/data/knowledge_base.csv'
-            cls.PATH_TEMP = '/app/temp_files'
-            logger.info("Initialized Docker paths")
-        else:
-            logger.info(f"Using configured paths: ROOT_PATH={cls.ROOT_PATH}")
+    def get_path_settings(cls) -> dict:
+        """Get path settings."""
+        return cls.PATH_SETTINGS
+
+    # API Key getters
+    @classmethod
+    def get_openai_api_key(cls) -> Optional[str]:
+        """Get OpenAI API key."""
+        return cls._clean_api_key(cls.API_SETTINGS.get('openai_api_key'))
+
+    @classmethod
+    def get_grok_api_key(cls) -> Optional[str]:
+        """Get Grok API key."""
+        return cls._clean_api_key(cls.API_SETTINGS.get('grok_api_key'))
+
+    @classmethod
+    def get_venice_api_key(cls) -> Optional[str]:
+        """Get Venice API key."""
+        return cls._clean_api_key(cls.API_SETTINGS.get('venice_api_key'))
+
+    # Model getters
+    @classmethod
+    def get_openai_model(cls) -> str:
+        """Get OpenAI model."""
+        return cls.MODEL_PROVIDER_SETTINGS.get('chunk_model')
+
+    @classmethod
+    def get_openai_embedding_model(cls) -> str:
+        """Get OpenAI embedding model."""
+        return cls.MODEL_PROVIDER_SETTINGS.get('embedding_model')
+
+    @classmethod
+    def get_default_embedding_provider(cls) -> str:
+        """Get default embedding provider."""
+        return cls.MODEL_PROVIDER_SETTINGS.get('default_embedding_provider')
+
+    @classmethod
+    def get_default_chunk_provider(cls) -> str:
+        """Get default chunk provider."""
+        return cls.MODEL_PROVIDER_SETTINGS.get('default_chunk_provider')
+
+    @classmethod
+    def get_default_summary_provider(cls) -> str:
+        """Get default summary provider."""
+        return cls.MODEL_PROVIDER_SETTINGS.get('default_summary_provider')
+
+    @classmethod
+    def get_grok_model(cls) -> str:
+        """Get Grok model."""
+        return cls.MODEL_PROVIDER_SETTINGS.get('grok_model')
+
+    @classmethod
+    def get_venice_model(cls) -> str:
+        """Get Venice model."""
+        return cls.MODEL_PROVIDER_SETTINGS.get('venice_model')
+
+    @classmethod
+    def get_venice_chunk_model(cls) -> str:
+        """Get Venice chunk model."""
+        return cls.MODEL_PROVIDER_SETTINGS.get('venice_chunk_model')
+
+    @classmethod
+    def get_embedding_batch_size(cls) -> int:
+        """Get the embedding batch size from model settings."""
+        return cls.get_model_settings().get('embedding_batch_size')
+
+    @classmethod
+    def get_chunk_batch_size(cls) -> int:
+        """Get the chunk batch size from model settings."""
+        return cls.get_model_settings().get('chunk_batch_size')
+
+    @classmethod
+    def get_summary_batch_size(cls) -> int:
+        """Get the summary batch size from model settings."""
+        return cls.get_model_settings().get('summary_batch_size')
 
 class DevelopmentConfig(Config):
     """Development configuration."""
@@ -328,5 +414,4 @@ config = {
 }
 
 # Initialize paths before validation
-Config.initialize_paths()
 Config.validate_paths()

@@ -3,13 +3,12 @@ import shutil
 import logging
 from pathlib import Path
 from typing import Dict, Optional, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from .data_processing.sampler import Sampler
 from .data_processing.cloud_handler import load_all_csv_data_from_s3
 from .data_processing.dialog_processor import process_references
 from config.settings import Config
 from knowledge_agents.data_processing.sampler import Sampler
-import numpy as np
 import gc
 
 # Configure logging
@@ -23,90 +22,83 @@ logger.propagate = False
 
 @dataclass
 class DataConfig:
-    """Configuration for data operations with validation."""
-    root_path: Path
-    all_data_path: Path
+    """Configuration class for data operations."""
+    root_data_path: Path
     stratified_data_path: Path
     knowledge_base_path: Path
-
-    filter_date: str
-    sample_size: int = field(default_factory=lambda: Config.SAMPLE_SIZE)
+    temp_path: Path
+    filter_date: Optional[str] = None
+    sample_size: int = 1000
     time_column: str = 'posted_date_time'
-    strata_column: Optional[str] = None
-    
-    # Chunk size and memory configurations
-    processing_chunk_size: int = field(init=False)
-    stratification_chunk_size: int = field(init=False)
-    
-    # Constants for optimization
-    MAX_SAMPLE_SIZE: int = 100000  # Cap total sample size
-    MIN_CHUNK_SIZE: int = 1000     # Minimum chunk size for statistical validity
-    MAX_PROCESSING_CHUNK: int = 5000
-    STRATIFICATION_RATIO: float = 0.5
-    
-    # DataFrame optimization configs
-    dtype_optimizations: Dict[str, str] = field(default_factory=lambda: {
-        'thread_id': 'str',
-        'posted_date_time': 'str',
-        'text_clean': 'str',
-        'posted_comment': 'str'
-    })
+    strata_column: str = 'thread_id'
     
     def __post_init__(self):
         """Initialize and validate configurations."""
-        # Validate and cap sample size
-        if self.sample_size > self.MAX_SAMPLE_SIZE:
-            logger.warning(f"Sample size exceeds limit of {self.MAX_SAMPLE_SIZE}. Capping sample size.")
-            self.sample_size = self.MAX_SAMPLE_SIZE
-            
-        # Calculate optimal chunk sizes based on sample size
-        self.processing_chunk_size = min(
-            self.MAX_PROCESSING_CHUNK,
-            max(self.MIN_CHUNK_SIZE, self.sample_size // 10)
-        )
+        # Get centralized settings
+        chunk_settings = Config.get_chunk_settings()
+        sample_settings = Config.get_sample_settings()
+        column_settings = Config.get_column_settings()
         
-        # Stratification chunk size is proportional but never larger than processing
-        self.stratification_chunk_size = min(
-            int(self.processing_chunk_size * self.STRATIFICATION_RATIO),
-            self.processing_chunk_size
-        )
+        # Initialize from settings
+        self.dtype_optimizations = column_settings['column_types']
         
-        # Ensure minimum chunk sizes
-        self.stratification_chunk_size = max(self.MIN_CHUNK_SIZE, self.stratification_chunk_size)
+        # Set chunk sizes from centralized settings
+        self.processing_chunk_size = chunk_settings['processing_chunk_size']
+        self.stratification_chunk_size = chunk_settings['stratification_chunk_size']
         
-        # Validate chunk size relationships
-        if self.stratification_chunk_size > self.processing_chunk_size:
-            raise ValueError("Stratification chunk size cannot exceed processing chunk size")
+        # Set sample size with validation
+        self.sample_size = sample_settings['default_sample_size']
+        if self.sample_size > sample_settings['max_sample_size']:
+            logger.warning(f"Sample size exceeds limit of {sample_settings['max_sample_size']}. Capping sample size.")
+            self.sample_size = sample_settings['max_sample_size']
+        elif self.sample_size < sample_settings['min_sample_size']:
+            logger.warning(f"Sample size below minimum of {sample_settings['min_sample_size']}. Setting to minimum.")
+            self.sample_size = sample_settings['min_sample_size']
+        
+        # Ensure all paths are Path objects
+        self.root_data_path = Path(self.root_data_path)
+        self.stratified_data_path = Path(self.stratified_data_path)
+        self.knowledge_base_path = Path(self.knowledge_base_path)
+        self.temp_path = Path(self.temp_path)
 
     @property
     def read_csv_kwargs(self) -> Dict[str, Any]:
         """Get optimized pandas read_csv parameters."""
         return {
             'dtype': self.dtype_optimizations,
-            'usecols': list(self.dtype_optimizations.keys()),
             'on_bad_lines': 'warn',
-            'low_memory': True}
+            'low_memory': True
+        }
 
     @classmethod
-    def from_env(cls) -> 'DataConfig':
-        """Create configuration from environment variables with validation."""
-        root_path = Path(Config.ROOT_PATH)
+    def from_config(cls) -> 'DataConfig':
+        """Create DataConfig instance from Config settings."""
+        paths = Config.get_paths()
+        column_settings = Config.get_column_settings()
+        processing_settings = Config.get_processing_settings()
+        sample_settings = Config.get_sample_settings()
+        
+        # Create base data directory if it doesn't exist
+        data_path = Path(paths['root_data_path']) / 'data'
+        data_path.mkdir(parents=True, exist_ok=True)
+        
         return cls(
-            root_path=root_path,
-            all_data_path=Path(Config.ALL_DATA),
-            stratified_data_path=Path(Config.ALL_DATA_STRATIFIED_PATH),
-            knowledge_base_path=Path(Config.KNOWLEDGE_BASE),
-            sample_size=Config.SAMPLE_SIZE,
-            filter_date=Config.FILTER_DATE if hasattr(Config, 'FILTER_DATE') else None,
-            time_column=Config.TIME_COLUMN,
-            strata_column=Config.STRATA_COLUMN)
+            root_data_path=Path(paths['root_data_path']),
+            stratified_data_path=Path(paths['stratified']),
+            knowledge_base_path=Path(paths['knowledge_base']),
+            temp_path=Path(paths['temp']),
+            filter_date=Config.get_filter_date(),
+            sample_size=sample_settings['default_sample_size'],
+            time_column=column_settings['time_column'],
+            strata_column=column_settings['strata_column']
+        )
 
 class DataStateManager:
     """Manages data state and validation."""
     def __init__(self, config: DataConfig):
         self.config = config
         self._logger = logging.getLogger(__name__)
-        self.state_file = self.config.root_path / '.data_state'
+        self.state_file = self.config.root_data_path / '.data_state'
 
     def _load_state(self) -> Dict[str, Any]:
         """Load data state from file."""
@@ -149,53 +141,70 @@ class DataStateManager:
 
     def validate_file_structure(self) -> Dict[str, bool]:
         """Validate existence of required files and directories."""
+        # Map config paths to their validation requirements
         paths = {
-            'root_dir': self.config.root_path,
-            'all_data': self.config.all_data_path,
-            'stratified_dir': self.config.stratified_data_path,
-            'knowledge_base': self.config.knowledge_base_path
+            'root_data_path': self.config.root_data_path,
+            'stratified': self.config.stratified_data_path,
+            'knowledge_base': self.config.knowledge_base_path,
+            'temp': self.config.temp_path
         }
-        return {name: self._validate_path(path, name) for name, path in paths.items()}
+        
+        # Ensure directories exist for file paths
+        for path_key in ['knowledge_base']:
+            if path_key in paths and paths[path_key].parent:
+                paths[path_key].parent.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure directory paths exist
+        for path_key in ['root_data_path', 'stratified', 'temp']:
+            if path_key in paths:
+                paths[path_key].mkdir(parents=True, exist_ok=True)
+        
+        # Validate all paths
+        validation_results = {}
+        for name, path in paths.items():
+            try:
+                # For directories, check if they exist and are directories
+                if name in ['root_data_path', 'stratified', 'temp']:
+                    validation_results[name] = path.exists() and path.is_dir()
+                # For files, just check if parent directory exists
+                else:
+                    validation_results[name] = path.parent.exists()
+                
+                if not validation_results[name]:
+                    self._logger.error(f"Path validation failed for {name}: {path} does not exist")
+            except Exception as e:
+                self._logger.error(f"Path validation failed for {name}: {str(e)}")
+                validation_results[name] = False
+        
+        return validation_results
 
     def validate_data_integrity(self) -> Dict[str, bool]:
         """Validate content of data files."""
-        integrity = {'all_data': False, 'data_not_empty': False}
+        integrity = {'data_not_empty': False}
         
         # Validate sample size configuration
         if not isinstance(self.config.sample_size, int) or self.config.sample_size <= 0:
             self._logger.error(f"Invalid sample_size: {self.config.sample_size}")
             return integrity
 
-        if not self.config.all_data_path.exists():
+        if not self.config.root_data_path.exists():
             return integrity
 
         try:
-            # Read data in chunks to validate
-            required_columns = [self.config.time_column]
-            if self.config.strata_column:
-                required_columns.append(self.config.strata_column)
-
-            valid_rows = 0
-            for chunk in pd.read_csv(self.config.all_data_path, 
-                                   chunksize=self.config.processing_chunk_size,
-                                   on_bad_lines='warn',
-                                   low_memory=False):
-                # Check required columns
-                if all(col in chunk.columns for col in required_columns):
-                    valid_rows += len(chunk)
-
-                # Clean up
-                del chunk
-                gc.collect()
-
-            integrity['all_data'] = True
-            integrity['data_not_empty'] = valid_rows > 0
-            self._logger.info(f"Data integrity check found {valid_rows} valid rows")
+            # Check if knowledge base exists and has valid content
+            if self.config.knowledge_base_path.exists():
+                try:
+                    df = pd.read_csv(self.config.knowledge_base_path)
+                    integrity['data_not_empty'] = len(df) > 0
+                    self._logger.info(f"Knowledge base validation: {len(df)} rows found")
+                except Exception as e:
+                    self._logger.error(f"Failed to validate knowledge base: {e}")
+            
+            return integrity
 
         except Exception as e:
             self._logger.error(f"Data integrity check failed: {e}")
-        
-        return integrity
+            return integrity
 
     def check_data_integrity(self) -> bool:
         """Check if data files exist and are valid."""
@@ -253,8 +262,9 @@ class DataOperations:
         self._logger.info(f"Fetching data with filter date: {self.config.filter_date}")
         try:
             # Get last update time if not forcing refresh
-            last_update = None if force_refresh else self.state_manager.get_last_update()
+            last_update = self.config.filter_date if force_refresh else self.state_manager.get_last_update()
             self._logger.info(f"Last update time: {last_update}")
+            self._logger.info(f"Using filter date: {self.config.filter_date}")
 
             # Load existing knowledge base if doing incremental update
             existing_data = None
@@ -263,6 +273,12 @@ class DataOperations:
                     existing_data = pd.read_csv(self.config.knowledge_base_path)
                     existing_data[self.config.time_column] = pd.to_datetime(existing_data[self.config.time_column])
                     self._logger.info(f"Loaded existing knowledge base with {len(existing_data)} rows")
+                    
+                    # If we have enough samples and not forcing refresh, return early
+                    if len(existing_data) >= self.config.sample_size:
+                        self._logger.info("Existing knowledge base already at target size and force_refresh=False")
+                        return
+                        
                 except Exception as e:
                     self._logger.error(f"Failed to load existing knowledge base: {e}")
                     existing_data = None
@@ -274,6 +290,19 @@ class DataOperations:
                 return
 
             self._logger.info(f"Target remaining samples: {remaining_samples}")
+            
+            # Check if we need to process new data
+            if not force_refresh and existing_data is not None and len(existing_data) > 0:
+                self._logger.info("Checking for new data since last update...")
+                last_processed_date = existing_data[self.config.time_column].max()
+                self._logger.info(f"Last processed date: {last_processed_date}")
+                
+                if last_processed_date >= pd.Timestamp(self.config.filter_date):
+                    self._logger.info("No new data to process - existing data is up to date")
+                    return
+                else:
+                    self._logger.info(f"Processing new data from {last_processed_date} to {self.config.filter_date}")
+                    last_update = last_processed_date
 
             # Initialize reservoir sampling by time period
             from collections import defaultdict
@@ -285,68 +314,124 @@ class DataOperations:
             # Single pass collection with reservoir sampling by time period
             for chunk_df in load_all_csv_data_from_s3(latest_date_processed=last_update):
                 try:
-                    # Create a copy to avoid SettingWithCopyWarning
-                    chunk_df = chunk_df.copy()
+                    # Create a deep copy and reset index to avoid RangeIndex issues
+                    chunk_df = chunk_df.copy(deep=True)
+                    chunk_df.index = pd.RangeIndex(len(chunk_df))  # Explicitly set a new RangeIndex
+                    chunk_df.reset_index(drop=True, inplace=True)
                     
-                    # Apply optimizations and conversions
+                    # Convert columns using dtype_optimizations from config
                     for col, dtype in self.config.dtype_optimizations.items():
                         if col in chunk_df.columns:
-                            chunk_df[col] = chunk_df[col].astype(dtype)
+                            try:
+                                self._logger.info(f"Converting column '{col}' to dtype '{dtype}'")
+                                chunk_df[col] = chunk_df[col].astype(dtype)
+                            except (TypeError, ValueError) as e:
+                                self._logger.warning(
+                                    f"Failed to convert column '{col}' to dtype '{dtype}': {str(e)}. "
+                                    "Skipping conversion for this column. Please review column type settings in configuration."
+                                )
+                                continue
+                            except Exception as e:
+                                self._logger.error(f"Unexpected error converting column '{col}' to dtype '{dtype}': {str(e)}")
+                                continue
                     
-                    # Convert time column and group by period
-                    chunk_df[self.config.time_column] = pd.to_datetime(chunk_df[self.config.time_column])
-                    
-                    # Group by day period for stratified sampling
-                    for period, period_data in chunk_df.groupby(chunk_df[self.config.time_column].dt.to_period('D')):
-                        period_counts[period] += len(period_data)
+                    # Convert time column to UTC and group by period
+                    try:
+                        # Log the state of the DataFrame before time conversion
+                        self._logger.info(f"Processing chunk with {len(chunk_df)} rows")
+                        self._logger.debug(f"Chunk columns before time conversion: {chunk_df.columns.tolist()}")
                         
-                        # Calculate target size for this period based on proportion of data seen
-                        total_seen = sum(period_counts.values())
-                        target_size = max(
-                            int((remaining_samples * period_counts[period]) / total_seen),
-                            min(100, remaining_samples // 10)  # Ensure minimum representation
+                        # Convert time column to UTC
+                        chunk_df[self.config.time_column] = pd.to_datetime(
+                            chunk_df[self.config.time_column], 
+                            utc=True,
+                            errors='coerce'
                         )
                         
-                        # Perform reservoir sampling for this period
-                        current_samples = reservoirs[period]
-                        for _, row in period_data.iterrows():
-                            if len(current_samples) < target_size:
-                                current_samples.append(row)
-                            else:
-                                # Randomly replace existing samples with decreasing probability
-                                j = random.randint(0, period_counts[period] - 1)
-                                if j < target_size:
-                                    current_samples[j] = row
-                    
-                    total_processed += len(chunk_df)
-                    if total_processed % 10000 == 0:
-                        current_samples = sum(len(samples) for samples in reservoirs.values())
-                        self._logger.info(f"Processed {total_processed} rows, current samples: {current_samples}")
+                        # Filter out invalid dates and reset index
+                        chunk_df = chunk_df.dropna(subset=[self.config.time_column])
+                        chunk_df = chunk_df.reset_index(drop=True)
+                        
+                        # Create a copy before groupby to avoid RangeIndex issues
+                        chunk_df = chunk_df.copy()
+                        
+                        # Convert time column to period before groupby
+                        period_series = chunk_df[self.config.time_column].dt.tz_localize(None).dt.to_period('D')
+                        
+                        # Group by date period
+                        for period, group_indices in period_series.groupby(period_series).groups.items():
+                            # Get period data using integer location to avoid index issues
+                            period_data = chunk_df.iloc[group_indices].copy()
+                            period_data.reset_index(drop=True, inplace=True)
+                            
+                            period_counts[period] += len(period_data)
+                            
+                            # Calculate target size for this period based on proportion of data seen
+                            total_seen = sum(period_counts.values())
+                            target_size = max(
+                                int((remaining_samples * period_counts[period]) / total_seen),
+                                min(100, remaining_samples // 10)  # Ensure minimum representation
+                            )
+                            
+                            # Perform reservoir sampling for this period
+                            current_samples = reservoirs[period]
+                            for idx, row in period_data.iterrows():
+                                if len(current_samples) < target_size:
+                                    current_samples.append(row.to_dict())
+                                else:
+                                    j = random.randint(0, period_counts[period] - 1)
+                                    if j < target_size:
+                                        current_samples[j] = row.to_dict()
+                        
+                        total_processed += len(chunk_df)
+                        if total_processed % 10000 == 0:
+                            current_samples = sum(len(samples) for samples in reservoirs.values())
+                            self._logger.info(f"Processed {total_processed} rows, current samples: {current_samples}")
+                            
+                    except Exception as e:
+                        self._logger.error(f"Error processing time data in chunk: {str(e)}")
+                        self._logger.error(f"Chunk info - shape: {chunk_df.shape}, dtypes: {chunk_df.dtypes}")
+                        continue
                         
                 except Exception as e:
-                    self._logger.error(f"Error processing chunk: {e}")
+                    self._logger.error(f"Error processing chunk: {str(e)}")
                     continue
 
             # Combine samples from all periods
             if reservoirs:
-                self._logger.info("Combining stratified samples from all periods...")
+                self._logger.info(f"Combining stratified samples from {len(reservoirs)} periods...")
+                self._logger.info(f"Total samples before combining: {sum(len(samples) for samples in reservoirs.values())}")
                 period_samples = []
                 total_samples = sum(len(samples) for samples in reservoirs.values())
                 
+                if total_samples == 0:
+                    self._logger.error("No samples collected during processing")
+                    raise ValueError("No samples collected during processing")
+                
                 for period, samples in reservoirs.items():
                     if samples:
-                        # Calculate final size for this period proportionally
-                        period_df = pd.DataFrame(samples)
-                        target_size = min(
-                            int((remaining_samples * len(samples)) / total_samples),
-                            remaining_samples - sum(len(df) for df in period_samples)
-                        )
-                        if len(period_df) > target_size:
-                            period_df = period_df.sample(n=target_size)
-                        period_samples.append(period_df)
-                        self._logger.info(f"Period {period}: {len(period_df)} samples")
+                        try:
+                            # Convert list of dicts to DataFrame
+                            period_df = pd.DataFrame.from_records(samples)
+                            # Calculate final size for this period proportionally
+                            target_size = min(
+                                int((remaining_samples * len(samples)) / total_samples),
+                                remaining_samples - sum(len(df) for df in period_samples)
+                            )
+                            if len(period_df) > target_size:
+                                period_df = period_df.sample(n=target_size)
+                            period_samples.append(period_df)
+                            self._logger.info(f"Period {period}: {len(period_df)} samples")
+                        except Exception as e:
+                            self._logger.error(f"Error processing period {period}: {str(e)}")
+                            continue
+
+                if not period_samples:
+                    self._logger.error("No valid period samples after processing")
+                    raise ValueError("No valid period samples after processing")
 
                 final_data = pd.concat(period_samples, ignore_index=True)
+                self._logger.info(f"Combined data shape: {final_data.shape}")
                 
                 # Combine with existing data if doing incremental update
                 if existing_data is not None and not force_refresh:
@@ -417,14 +502,20 @@ class DataOperations:
             if force_refresh:
                 self._cleanup_existing_data()
 
-            # Create directory structure if needed
+            # Create directory structure first
             await self._ensure_directory_structure()
 
-            # Check if we need to load/refresh data
+            # Now validate the structure after we've created the directories
             structure_valid = self.state_manager.validate_file_structure()
+            if not all(structure_valid.values()):
+                missing = [k for k, v in structure_valid.items() if not v]
+                self._logger.error(f"Missing required paths in configuration: {', '.join(missing)}")
+                raise ValueError(f"Missing required paths in configuration: {', '.join(missing)}")
+
+            # Check data integrity
             integrity_valid = self.state_manager.validate_data_integrity()
             
-            if force_refresh or not all(structure_valid.values()) or not all(integrity_valid.values()):
+            if force_refresh or not all(integrity_valid.values()):
                 # Initial setup needed
                 await self._fetch_and_save_data(force_refresh=True)
                 return "Initial data preparation completed successfully"
@@ -448,9 +539,12 @@ class DataOperations:
         """Create necessary directories after cleanup."""
         self._logger.info("Creating directory structure")
         try:
-            self.config.root_path.mkdir(parents=True, exist_ok=True)
+            # Create all required directories
+            self.config.root_data_path.mkdir(parents=True, exist_ok=True)
             self.config.stratified_data_path.mkdir(parents=True, exist_ok=True)
             self.config.knowledge_base_path.parent.mkdir(parents=True, exist_ok=True)
+            self.config.temp_path.mkdir(parents=True, exist_ok=True)
+            
             self._logger.info("Directory structure created successfully")
         except Exception as e:
             self._logger.error(f"Failed to create directory structure: {e}")
@@ -459,7 +553,7 @@ class DataOperations:
 async def prepare_knowledge_base(force_refresh: bool = False) -> str:
     """Main entry point for data preparation."""
     try:
-        config = DataConfig.from_env()
+        config = DataConfig.from_config()
         operations = DataOperations(config)
         
         # First run the main data preparation

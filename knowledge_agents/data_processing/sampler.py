@@ -21,34 +21,41 @@ class Sampler:
         filter_date: Optional[str] = None):
         
         """Initialize sampler with configuration."""
-        self.time_column = time_column or Config.TIME_COLUMN
-        self.strata_column = strata_column or Config.STRATA_COLUMN
-        self.freq = Config.FREQ if hasattr(Config, 'FREQ') else 'H'
-        self.initial_sample_size = initial_sample_size or Config.DEFAULT_SAMPLE_SIZE
+        # Get configuration settings
+        column_settings = Config.get_column_settings()
+        sample_settings = Config.get_sample_settings()
+        processing_settings = Config.get_processing_settings()
         
-        # Handle filter date - convert to datetime once during initialization
-        config_filter_date = Config.FILTER_DATE if hasattr(Config, 'FILTER_DATE') else None
-        filter_date = filter_date or config_filter_date
+        self.time_column = time_column or column_settings['time_column']
+        self.strata_column = strata_column or column_settings['strata_column']
+        self.freq = processing_settings.get('freq', 'H')  # Default to hourly if not specified
+        self.initial_sample_size = initial_sample_size or sample_settings['default_sample_size']
         
-        if filter_date:
-            try:
-                self.filter_date = pd.to_datetime(filter_date, utc=True)
-            except (ValueError, TypeError):
-                logger.warning(f"Invalid filter date format: {filter_date}, setting to None")
-                self.filter_date = None
-        else:
-            self.filter_date = None
+        # Handle filter date using Config's date parser
+        filter_date = filter_date or processing_settings.get('filter_date')
+        self.filter_date = Config._parse_date(filter_date) if filter_date else None
+        if self.filter_date:
+            logger.info(f"Using filter date: {self.filter_date} UTC")
 
     def filter_and_standardize(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Filter data by date and standardize time column if provided."""
-        if not self.time_column or self.time_column not in df.columns:
+        """Standardize datetime column and apply filtering."""
+        if self.time_column not in df.columns:
+            logger.warning(f"Time column {self.time_column} missing from data")
             return df
             
-        # Standardize datetime column first
-        df = df.copy()
-        df[self.time_column] = pd.to_datetime(df[self.time_column], utc=True, errors='coerce')
+        # Convert to UTC and coerce errors
+        df[self.time_column] = pd.to_datetime(
+            df[self.time_column], 
+            utc=True,
+            errors='coerce'
+        )
         
-        # Then apply date filtering
+        # Drop rows with invalid dates
+        initial_count = len(df)
+        df = df.dropna(subset=[self.time_column])
+        if len(df) < initial_count:
+            logger.warning(f"Removed {initial_count - len(df)} rows with invalid dates")
+
         return self.filter_by_date(df)
 
     def filter_by_date(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -116,14 +123,21 @@ class Sampler:
         if self.strata_column is None or self.strata_column not in data.columns:
             raise ValueError(f"Strata column '{self.strata_column}' is not provided or not found in data.")
 
+        # Reset index to avoid RangeIndex issues
+        data = data.reset_index(drop=True)
+        
         strata_values = data[self.strata_column].unique()
         strata_sample_size = self.initial_sample_size // len(strata_values)
-        samples = [
-            data[data[self.strata_column] == value].sample(
-                min(len(data[data[self.strata_column] == value]), strata_sample_size)
-            ) for value in strata_values
-        ]
-        sampled_data = pd.concat(samples)
+        samples = []
+        
+        for value in strata_values:
+            stratum_data = data[data[self.strata_column] == value]
+            if len(stratum_data) > 0:
+                sample_size = min(len(stratum_data), strata_sample_size)
+                stratum_sample = stratum_data.sample(n=sample_size)
+                samples.append(stratum_sample)
+        
+        sampled_data = pd.concat(samples, ignore_index=True)
 
         if use_reservoir and len(sampled_data) > int(self.initial_sample_size):
             sampled_data = self.reservoir_sampling(sampled_data, int(self.initial_sample_size))
@@ -132,12 +146,18 @@ class Sampler:
 
     def reservoir_sampling(self, data, k):
         """Perform reservoir sampling on the data."""
+        # Reset index to avoid RangeIndex issues
+        data = data.reset_index(drop=True)
         reservoir = []
-        for i, row in enumerate(data.iterrows()):
+        for i, row in enumerate(data.itertuples()):
             if i < k:
-                reservoir.append(row[1])
+                reservoir.append(row._asdict())
             else:
                 j = random.randint(0, i)
                 if j < k:
-                    reservoir[j] = row[1]
-        return pd.DataFrame(reservoir)
+                    reservoir[j] = row._asdict()
+        result = pd.DataFrame(reservoir)
+        # Remove the Index column if it was added by _asdict()
+        if 'Index' in result.columns:
+            result = result.drop('Index', axis=1)
+        return result

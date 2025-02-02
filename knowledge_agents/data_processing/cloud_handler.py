@@ -2,12 +2,10 @@ import boto3
 import os
 import pandas as pd
 import logging
-import gc
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Generator
 from dateutil import tz
 from config.settings import Config
-from io import StringIO
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -17,12 +15,18 @@ class S3Handler:
 
     def __init__(self, local_data_path: str = '.'):
         """Initialize S3 handler with configuration."""
-        self.bucket_name = Config.S3_BUCKET
-        self.bucket_prefix = Config.S3_BUCKET_PREFIX
-        self.local_path = Path(local_data_path).resolve()
-        self.region_name = Config.AWS_DEFAULT_REGION
-        self.aws_access_key_id = Config.AWS_ACCESS_KEY_ID
-        self.aws_secret_access_key = Config.AWS_SECRET_ACCESS_KEY
+        # Get AWS settings from Config
+        aws_settings = Config.get_aws_settings()
+        processing_settings = Config.get_processing_settings()
+        paths = Config.get_paths()
+        
+        self.bucket_name = aws_settings['s3_bucket']
+        self.bucket_prefix = aws_settings['s3_bucket_prefix']
+        self.local_path = Path(paths['root_data_path']).resolve()
+        self.region_name = aws_settings['aws_default_region']
+        self.aws_access_key_id = aws_settings['aws_access_key_id']
+        self.aws_secret_access_key = aws_settings['aws_secret_access_key']
+        self.select_board = processing_settings.get('select_board')
         self.s3 = self._create_s3_client()
 
     def _create_s3_client(self):
@@ -86,38 +90,23 @@ class S3Handler:
         self.s3.upload_file(local_file, self.bucket_name, key)
         logger.info(f"Uploaded file {local_file} to {self.bucket_name}/{key}")
 
-    def stream_csv_data(self, latest_date_processed: str = None):
-        """Stream CSV data from S3, filtering by LastModified date.
-
-        Args:
-            latest_date_processed: Date string in YYYY-MM-DD format to filter data
-
-        Yields:
-            pd.DataFrame: Chunks of filtered data
-        """
+    def stream_csv_data(self, filter_date: Optional[str] = None) -> Generator[pd.DataFrame, None, None]:
+        """Stream CSV data from S3 in chunks."""
         try:
-            logger.info("Streaming data from S3 bucket: %s", self.bucket_name)
-            logger.info(f"Initial filter date: {latest_date_processed}")
+            # Get centralized settings
+            chunk_settings = Config.get_chunk_settings()
+            sample_settings = Config.get_sample_settings()
+            column_settings = Config.get_column_settings()
+            
+            # Use sample size from centralized settings
+            sample_size = sample_settings['default_sample_size']
+            chunk_size = min(chunk_settings['default_chunk_size'], sample_size)
+            logger.info(f"Using chunk size: {chunk_size} (Sample size: {sample_size})")
 
-            # Convert latest_date_processed to UTC datetime for metadata comparison
-            latest_date = None
-            if latest_date_processed:
-                try:
-                    # Parse the date in YYYY-MM-DD format and set to start of day in UTC
-                    latest_date = pd.to_datetime(latest_date_processed).replace(
-                        hour=0, minute=0, second=0, microsecond=0
-                    )
-                    if latest_date.tzinfo is None:
-                        latest_date = latest_date.tz_localize('UTC')
-                    logger.info(f"Using filter date: {latest_date} UTC")
-                except Exception as e:
-                    logger.error(f"Error parsing date {latest_date_processed}. Expected format: YYYY-MM-DD")
-                    logger.error(f"Error details: {str(e)}")
-                    raise ValueError(f"Invalid date format. Please use YYYY-MM-DD format (e.g., 2025-01-30)")
-
-            # Use Config.SAMPLE_SIZE to determine chunk size
-            chunk_size = min(5000, Config.SAMPLE_SIZE)  # Reduced chunk size for better control
-            logger.info(f"Using chunk size: {chunk_size} (Sample size: {Config.SAMPLE_SIZE})")
+            # Parse filter date using centralized method
+            latest_date = Config._parse_date(filter_date) if filter_date else None
+            if latest_date:
+                logger.info(f"Using filter date: {latest_date} UTC")
 
             total_rows_processed = 0
             for s3_key in self._get_filtered_csv_files(latest_date):
@@ -130,30 +119,33 @@ class S3Handler:
                         for chunk in pd.read_csv(
                             temp_file,
                             chunksize=chunk_size,
-                            usecols=['thread_id', 'posted_date_time', 'text_clean', 'posted_comment'],
+                            usecols=column_settings['required_columns'],
                             on_bad_lines='skip',
                             encoding='utf-8'
                         ):
                             try:
                                 # Convert posted_date_time to datetime with explicit UTC handling
-                                chunk['posted_date_time'] = pd.to_datetime(chunk['posted_date_time'], utc=True, errors='coerce')
-                                chunk = chunk.dropna(subset=['posted_date_time'])
+                                chunk[column_settings['time_column']] = pd.to_datetime(
+                                    chunk[column_settings['time_column']], 
+                                    utc=True, 
+                                    errors='coerce'
+                                )
+                                chunk = chunk.dropna(subset=[column_settings['time_column']])
 
                                 # Apply date filter with detailed logging
                                 if latest_date is not None:
                                     before_filter = len(chunk)
-                                    chunk = chunk[chunk['posted_date_time'] >= latest_date]
+                                    chunk = chunk[chunk[column_settings['time_column']] >= latest_date]
                                     after_filter = len(chunk)
                                     if before_filter != after_filter:
                                         logger.info(f"Date filter: {before_filter - after_filter} rows filtered out")
-                                        logger.debug(f"Date range in chunk: {chunk['posted_date_time'].min()} to {chunk['posted_date_time'].max()}")
+                                        logger.debug(f"Date range in chunk: {chunk[column_settings['time_column']].min()} to {chunk[column_settings['time_column']].max()}")
 
                                 if not chunk.empty:
                                     total_rows_processed += len(chunk)
-                                    if total_rows_processed > Config.SAMPLE_SIZE:
-                                        logger.warning(f"Total processed rows ({total_rows_processed}) exceeds SAMPLE_SIZE ({Config.SAMPLE_SIZE})")
-                                        # Calculate remaining rows needed
-                                        rows_needed = Config.SAMPLE_SIZE - (total_rows_processed - len(chunk))
+                                    if total_rows_processed > sample_size:
+                                        logger.warning(f"Total processed rows ({total_rows_processed}) exceeds sample size ({sample_size})")
+                                        rows_needed = sample_size - (total_rows_processed - len(chunk))
                                         if rows_needed > 0:
                                             logger.info(f"Taking only {rows_needed} rows from current chunk to meet sample size")
                                             yield chunk.head(rows_needed)
@@ -181,12 +173,12 @@ class S3Handler:
             logger.error(f"Critical error in stream_csv_data: {str(e)}")
             raise
 
-    def _get_filtered_csv_files(self, latest_date):
-        """Get filtered list of CSV files from S3."""
-        logger.info(f"Filtering CSV files with date threshold: {latest_date}")
+    def _get_filtered_csv_files(self, latest_date: Optional[str] = None) -> list:
+        """Get filtered list of CSV files from S3 bucket."""
         response = self.s3.list_objects_v2(
-            Bucket=self.bucket_name, 
-            Prefix=self.bucket_prefix)
+            Bucket=self.bucket_name,
+            Prefix=self.bucket_prefix
+        )
 
         if 'Contents' not in response:
             logger.warning(f"No files found in bucket {self.bucket_name}")
@@ -203,8 +195,8 @@ class S3Handler:
                 file_date = item['LastModified'].astimezone(tz.UTC)
                 logger.debug(f"Found CSV file: {item['Key']}, modified: {file_date}")
                 
-                # Check board filter
-                board_match = Config.SELECT_BOARD is None or f'chanscope_{Config.SELECT_BOARD}' in item['Key']
+                # Check board filter using configuration
+                board_match = self.select_board is None or f'chanscope_{self.select_board}' in item['Key']
                 if not board_match:
                     filtered_by_board += 1
                     logger.debug(f"Skipping file due to board mismatch: {item['Key']}")
@@ -212,6 +204,7 @@ class S3Handler:
 
                 # Check date filter with strict comparison
                 if latest_date is not None:
+                    # Compare as timezone-aware datetimes
                     if file_date <= latest_date:
                         filtered_by_date += 1
                         logger.debug(f"Skipping file due to date: {item['Key']} ({file_date} <= {latest_date})")

@@ -1,5 +1,4 @@
 import numpy as np
-import os
 import logging
 from pathlib import Path
 from typing import Iterator, Optional

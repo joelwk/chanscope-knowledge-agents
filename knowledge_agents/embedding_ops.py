@@ -7,6 +7,7 @@ import pandas as pd
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 import json
 import numpy as np
+from config.settings import Config
 
 # Initialize logging
 logger = logging.getLogger(__name__)
@@ -97,6 +98,10 @@ async def get_relevant_content(
     """Create knowledge base with embeddings from articles in library."""
     logger.info("Creating knowledge base with embeddings...")
 
+    # Get configuration settings
+    model_settings = Config.get_model_settings()
+    sample_settings = Config.get_sample_settings()
+    
     # Check if knowledge base already exists and is valid
     kb_path = Path(knowledge_base)
     if not force_refresh and kb_path.exists():
@@ -118,13 +123,13 @@ async def get_relevant_content(
     # Calculate optimal batch size based on total articles
     def get_optimal_batch_size(count: int) -> int:
         if count < 1000:
-            return 100
+            return min(100, model_settings['embedding_batch_size'])
         elif count < 5000:
-            return 75
+            return min(75, model_settings['embedding_batch_size'])
         elif count < 10000:
-            return 50
+            return min(50, model_settings['embedding_batch_size'])
         else:
-            return 25
+            return min(25, model_settings['embedding_batch_size'])
     
     # Determine optimal batch size based on number of articles
     article_count = len(articles)

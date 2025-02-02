@@ -41,8 +41,8 @@ logger.info(f"- API endpoint: {API_BASE_URL}")
 logger.info(f"- DOCKER_ENV: {os.getenv('DOCKER_ENV')}")
 logger.info(f"- SERVICE_TYPE: {os.getenv('SERVICE_TYPE')}")
 
-# Get provider settings
-provider_settings = Config.get_provider_settings()
-logger.info(f"- DEFAULT_EMBEDDING_PROVIDER: {provider_settings['embedding_provider']}")
-logger.info(f"- DEFAULT_CHUNK_PROVIDER: {provider_settings['chunk_provider']}")
-logger.info(f"- DEFAULT_SUMMARY_PROVIDER: {provider_settings['summary_provider']}") 
+# Get model provider settings
+model_settings = Config.get_model_settings()
+logger.info(f"- DEFAULT_EMBEDDING_PROVIDER: {model_settings['default_embedding_provider']}")
+logger.info(f"- DEFAULT_CHUNK_PROVIDER: {model_settings['default_chunk_provider']}")
+logger.info(f"- DEFAULT_SUMMARY_PROVIDER: {model_settings['default_summary_provider']}") 

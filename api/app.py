@@ -16,33 +16,33 @@ if not logger.handlers:
 
 def is_docker_env():
     """Check if running in Docker environment."""
-    return os.getenv('DOCKER_ENV') == 'true'
+    api_settings = Config.get_api_settings()
+    return api_settings['docker_env']
 
 # Create the app instance at module level
 app = create_app()
 
 if __name__ == '__main__':
-    config = Config()
-    port = os.getenv('PORT', 5000)  # Get port from environment or default to 5000
+    api_settings = Config.get_api_settings()
     
     if is_docker_env():
         logger.info("Starting app in Docker environment")
         app.run(
-            host='0.0.0.0',
-            port=port,
+            host=api_settings['host'],
+            port=api_settings['port'],
             debug=False
         )
     elif is_replit_env():
-        logger.info(f"Starting app in Replit environment: host=0.0.0.0, port={port}")
+        logger.info(f"Starting app in Replit environment: host=0.0.0.0, port={api_settings['port']}")
         app.run(
             host='0.0.0.0',
-            port=port,
+            port=api_settings['port'],
             debug=False
         )
     else:
-        logger.info(f"Starting app locally: host={config.API_HOST}, port={config.API_PORT}")
+        logger.info(f"Starting app locally: host={api_settings['host']}, port={api_settings['port']}")
         app.run(
-            host=config.API_HOST,
-            port=config.API_PORT,
+            host=api_settings['host'],
+            port=api_settings['port'],
             debug=True
         )

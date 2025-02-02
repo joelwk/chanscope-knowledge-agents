@@ -4,7 +4,6 @@ from knowledge_agents.model_ops import ModelOperation, ModelProvider, KnowledgeA
 from knowledge_agents import KnowledgeAgentConfig
 from knowledge_agents.data_processing.cloud_handler import S3Handler
 import aioboto3, openai, logging, traceback, time, os
-from typing import Dict, Any
 from pathlib import Path
 from datetime import datetime, timedelta
 import yaml
@@ -240,13 +239,7 @@ async def provider_health(provider):
 
 @bp.route('/process_query', methods=['POST'])
 async def process_query():
-    """Process a query using the knowledge agents pipeline.
-    
-    Parameters:
-        force_refresh (bool): Whether to force refresh the knowledge base. Defaults to False.
-            - If False: Uses existing knowledge base if available
-            - If True: Rebuilds knowledge base from scratch
-    """
+    """Process a query using the knowledge agents pipeline."""
     try:
         logger.info("Received process_query request")
         data = await request.get_json()
@@ -276,7 +269,7 @@ async def process_query():
         knowledge_config = current_app.config['KNOWLEDGE_CONFIG']
 
         # Validate required configuration fields
-        required_fields = ['PATHS', 'ROOT_PATH', 'PROVIDERS']
+        required_fields = ['PATHS', 'PROVIDERS']
         missing_fields = [field for field in required_fields if field not in knowledge_config]
         if missing_fields:
             error_msg = f"Missing required configuration fields: {', '.join(missing_fields)}"
@@ -286,29 +279,33 @@ async def process_query():
         paths = knowledge_config['PATHS']
 
         # Validate required paths
-        required_paths = ['knowledge_base', 'all_data', 'stratified', 'temp']
+        required_paths = ['knowledge_base', 'stratified', 'temp', 'root_data_path']
         missing_paths = [path for path in required_paths if path not in paths]
         if missing_paths:
             error_msg = f"Missing required paths in configuration: {', '.join(missing_paths)}"
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 500
 
+        # Get settings from Config
+        processing_settings = Config.get_processing_settings()
+        model_settings = Config.get_model_settings()
+        sample_settings = Config.get_sample_settings()
+
         # Extract batch sizes with appropriate defaults
-        embedding_batch_size = int(data.get('embedding_batch_size', Config.EMBEDDING_BATCH_SIZE))
-        chunk_batch_size = int(data.get('chunk_batch_size', Config.CHUNK_BATCH_SIZE))
-        summary_batch_size = int(data.get('summary_batch_size', Config.SUMMARY_BATCH_SIZE))
+        embedding_batch_size = int(data.get('embedding_batch_size', model_settings['embedding_batch_size']))
+        chunk_batch_size = int(data.get('chunk_batch_size', model_settings['chunk_batch_size']))
+        summary_batch_size = int(data.get('summary_batch_size', model_settings['summary_batch_size']))
 
         # Create configuration
         config = KnowledgeAgentConfig(
-            root_path=Path(knowledge_config['ROOT_PATH']),
+            root_data_path=Path(paths['root_data_path']),
             knowledge_base_path=Path(paths['knowledge_base']),
-            all_data_path=Path(paths['all_data']),
             stratified_data_path=Path(paths['stratified']),
-            sample_size=int(data.get('sample_size', Config.SAMPLE_SIZE)),
+            sample_size=int(data.get('sample_size', sample_settings['default_sample_size'])),
             embedding_batch_size=embedding_batch_size,
             chunk_batch_size=chunk_batch_size,
             summary_batch_size=summary_batch_size,
-            max_workers=int(data.get('max_workers', Config.MAX_WORKERS)),
+            max_workers=int(data.get('max_workers', processing_settings['max_workers'])),
             providers={
                 ModelOperation.EMBEDDING: ModelProvider(data.get('embedding_provider', 'openai')),
                 ModelOperation.CHUNK_GENERATION: ModelProvider(data.get('chunk_provider', 'openai')),
@@ -366,7 +363,7 @@ async def batch_process():
         knowledge_config = current_app.config['KNOWLEDGE_CONFIG']
 
         # Validate required configuration fields
-        required_fields = ['PATHS', 'ROOT_PATH', 'PROVIDERS']
+        required_fields = ['PATHS', 'PROVIDERS']
         missing_fields = [field for field in required_fields if field not in knowledge_config]
         if missing_fields:
             error_msg = f"Missing required configuration fields: {', '.join(missing_fields)}"
@@ -376,7 +373,7 @@ async def batch_process():
         paths = knowledge_config['PATHS']
 
         # Validate required paths
-        required_paths = ['knowledge_base', 'all_data', 'stratified', 'temp']
+        required_paths = ['knowledge_base', 'stratified', 'temp', 'root_data_path']
         missing_paths = [path for path in required_paths if path not in paths]
         if missing_paths:
             error_msg = f"Missing required paths in configuration: {', '.join(missing_paths)}"
@@ -384,15 +381,14 @@ async def batch_process():
             return jsonify({"error": error_msg}), 500
 
         config = KnowledgeAgentConfig(
-            root_path=Path(knowledge_config['ROOT_PATH']),
+            root_data_path=Path(paths['root_data_path']),
             knowledge_base_path=Path(paths['knowledge_base']),
-            all_data_path=Path(paths['all_data']),
             stratified_data_path=Path(paths['stratified']),
-            sample_size=int(data.get('sample_size', Config.SAMPLE_SIZE)),
-            embedding_batch_size=int(data.get('embedding_batch_size', Config.EMBEDDING_BATCH_SIZE)),
-            chunk_batch_size=int(data.get('chunk_batch_size', Config.CHUNK_BATCH_SIZE)),
-            summary_batch_size=int(data.get('summary_batch_size', Config.SUMMARY_BATCH_SIZE)),
-            max_workers=int(data.get('max_workers', Config.MAX_WORKERS)),
+            sample_size=int(data.get('sample_size', Config.get_sample_settings()['default_sample_size'])),
+            embedding_batch_size=int(data.get('embedding_batch_size', Config.get_embedding_batch_size())),
+            chunk_batch_size=int(data.get('chunk_batch_size', Config.get_chunk_batch_size())),
+            summary_batch_size=int(data.get('summary_batch_size', Config.get_summary_batch_size())),
+            max_workers=int(data.get('max_workers', Config.get_processing_settings()['max_workers'])),
             providers=knowledge_config['PROVIDERS'].copy()
         )
 
@@ -495,7 +491,7 @@ async def process_recent_query():
         knowledge_config = current_app.config['KNOWLEDGE_CONFIG']
 
         # Validate required configuration fields
-        required_fields = ['PATHS', 'ROOT_PATH', 'PROVIDERS']
+        required_fields = ['PATHS', 'PROVIDERS']
         missing_fields = [field for field in required_fields if field not in knowledge_config]
         if missing_fields:
             error_msg = f"Missing required configuration fields: {', '.join(missing_fields)}"
@@ -505,7 +501,7 @@ async def process_recent_query():
         paths = knowledge_config['PATHS']
 
         # Validate required paths
-        required_paths = ['knowledge_base', 'all_data', 'stratified', 'temp']
+        required_paths = ['knowledge_base', 'stratified', 'temp', 'root_data_path']
         missing_paths = [path for path in required_paths if path not in paths]
         if missing_paths:
             error_msg = f"Missing required paths in configuration: {', '.join(missing_paths)}"
@@ -514,15 +510,14 @@ async def process_recent_query():
 
         # Create configuration with preconfigured settings
         config = KnowledgeAgentConfig(
-            root_path=Path(knowledge_config['ROOT_PATH']),
+            root_data_path=Path(paths['root_data_path']),
             knowledge_base_path=Path(paths['knowledge_base']),
-            all_data_path=Path(paths['all_data']),
             stratified_data_path=Path(paths['stratified']),
             sample_size=1000,  # Fixed sample size for recent data
-            embedding_batch_size=Config.EMBEDDING_BATCH_SIZE,
-            chunk_batch_size=Config.CHUNK_BATCH_SIZE,
-            summary_batch_size=Config.SUMMARY_BATCH_SIZE,
-            max_workers=Config.MAX_WORKERS,
+            embedding_batch_size=Config.get_embedding_batch_size(),
+            chunk_batch_size=Config.get_chunk_batch_size(),
+            summary_batch_size=Config.get_summary_batch_size(),
+            max_workers=Config.get_processing_settings()['max_workers'],
             providers={
                 ModelOperation.EMBEDDING: ModelProvider.OPENAI,
                 ModelOperation.CHUNK_GENERATION: ModelProvider.OPENAI,

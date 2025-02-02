@@ -117,12 +117,21 @@ class TestDebugClient:
     @pytest.mark.asyncio
     async def test_single_query(self, debug_client):
         """Test single query processing."""
+        # Get settings from Config
+        processing_settings = Config.get_processing_settings()
+        model_settings = Config.get_model_settings()
+        sample_settings = Config.get_sample_settings()
+        
         query_data = {
             "query": "Short test query",
-            "batch_size": 2,  # Minimal batch size
-            "max_workers": 1,  # Single worker
+            "batch_size": processing_settings['batch_size'],
+            "max_workers": processing_settings['max_workers'],
             "force_refresh": False,
-            "sample_size": 10  # Minimal sample size
+            "sample_size": sample_settings['min_sample_size'],  # Use minimum for tests
+            "embedding_provider": model_settings['default_embedding_provider'],
+            "chunk_provider": model_settings['default_chunk_provider'],
+            "summary_provider": model_settings['default_summary_provider'],
+            "cache_enabled": processing_settings['cache_enabled']
         }
         response = await debug_client.run_single_query(query_data)
         assert response is not None
@@ -133,15 +142,24 @@ class TestDebugClient:
     @pytest.mark.asyncio
     async def test_batch_query(self, debug_client):
         """Test batch query processing."""
+        # Get settings from Config
+        processing_settings = Config.get_processing_settings()
+        model_settings = Config.get_model_settings()
+        sample_settings = Config.get_sample_settings()
+        
         batch_data = {
             "queries": [
                 "First test query",
                 "Second test query"
             ],
-            "batch_size": 2,  # Minimal batch size
-            "max_workers": 1,  # Single worker
+            "batch_size": processing_settings['batch_size'],
+            "max_workers": processing_settings['max_workers'],
             "force_refresh": False,
-            "sample_size": 10  # Minimal sample size
+            "sample_size": sample_settings['min_sample_size'],  # Use minimum for tests
+            "embedding_provider": model_settings['default_embedding_provider'],
+            "chunk_provider": model_settings['default_chunk_provider'],
+            "summary_provider": model_settings['default_summary_provider'],
+            "cache_enabled": processing_settings['cache_enabled']
         }
         response = await debug_client.run_batch_query(batch_data)
         assert response is not None

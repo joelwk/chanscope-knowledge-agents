@@ -45,9 +45,8 @@ class AppConfig(BaseModel):
     chunk_size: int
     cache_enabled: bool
     sample_size: int
-    root_path: str
-    all_data: str
-    all_data_stratified_path: str
+    root_data_path: str
+    stratified_path: str
     knowledge_base: str
     filter_date: Optional[str]
 
@@ -58,55 +57,29 @@ class EmbeddingResponse(BaseModel):
     usage: Dict[str, int]
 
 class ModelConfig:
-    """Configuration for model operations."""
-
+    """Configuration class for model operations."""
     def __init__(
         self,
-        openai_api_key: Optional[str] = None,
-        openai_embedding_model: Optional[str] = None,
-        openai_completion_model: Optional[str] = None,
-        grok_api_key: Optional[str] = None,
-        grok_completion_model: Optional[str] = None,
-        venice_api_key: Optional[str] = None,
-        venice_summary_model: Optional[str] = None,
-        venice_chunk_model: Optional[str] = None,
-        default_embedding_provider: Optional[str] = None
+        path_settings: Dict[str, str],
+        model_settings: Dict[str, Any],
+        api_settings: Dict[str, Any]
     ):
-        """Initialize with API keys and model configurations."""
-        # OpenAI settings - ensure we have a valid API key
-        self.openai_api_key = openai_api_key or Config.OPENAI_API_KEY
-        if not self.openai_api_key:
-            raise ValueError("OpenAI API key is required but not provided")
-
-        self.openai_embedding_model = openai_embedding_model or Config.OPENAI_EMBEDDING_MODEL
-        self.openai_completion_model = openai_completion_model or Config.OPENAI_MODEL
-
-        # Grok settings
-        self.grok_api_key = grok_api_key or Config.GROK_API_KEY
-        self.grok_completion_model = grok_completion_model or Config.GROK_MODEL
-
-        # Venice settings
-        self.venice_api_key = venice_api_key or Config.VENICE_API_KEY
-        self.venice_summary_model = venice_summary_model or Config.VENICE_MODEL
-        self.venice_chunk_model = venice_chunk_model or Config.VENICE_CHUNK_MODEL
-
-        # Default provider
-        self.default_embedding_provider = ModelProvider.from_str(
-            default_embedding_provider or Config.DEFAULT_EMBEDDING_PROVIDER
-        )
-
-        # General settings
-        self.max_tokens = Config.MAX_TOKENS
-        self.chunk_size = Config.CHUNK_SIZE
-        self.cache_enabled = Config.CACHE_ENABLED
-
-        # Paths
-        self.root_path = Config.ROOT_PATH
-        self.all_data = Config.ALL_DATA
-        self.all_data_stratified_path = Config.ALL_DATA_STRATIFIED_PATH
-        self.knowledge_base = Config.KNOWLEDGE_BASE
-        self.sample_size = Config.SAMPLE_SIZE
-        self.filter_date = Config.FILTER_DATE
+        """Initialize model configuration."""
+        # Path settings
+        self.root_data_path = path_settings['root_data_path']
+        self.stratified = path_settings['stratified']
+        self.knowledge_base = path_settings['knowledge_base']
+        self.temp = path_settings['temp']
+        
+        # Model settings
+        self.embedding_model = model_settings['embedding_model']
+        self.chunk_model = model_settings['chunk_model']
+        self.summary_model = model_settings['summary_model']
+        
+        # API settings
+        self.openai_api_key = api_settings.get('openai_api_key')
+        self.grok_api_key = api_settings.get('grok_api_key')
+        self.venice_api_key = api_settings.get('venice_api_key')
 
 def load_prompts(prompt_path: str = None) -> Dict[str, Any]:
     """Load prompts from YAML file."""
@@ -134,28 +107,27 @@ def load_config() -> Tuple[ModelConfig, AppConfig]:
     """Load configuration using Config class from settings."""
     # Create model config using Config class values
     model_config = ModelConfig(
-        openai_api_key=Config.OPENAI_API_KEY,
-        openai_embedding_model=Config.OPENAI_EMBEDDING_MODEL,
-        openai_completion_model=Config.OPENAI_MODEL,
-        grok_api_key=Config.GROK_API_KEY,
-        grok_completion_model=Config.GROK_MODEL,
-        venice_api_key=Config.VENICE_API_KEY,
-        venice_summary_model=Config.VENICE_MODEL,
-        venice_chunk_model=Config.VENICE_CHUNK_MODEL,
-        default_embedding_provider=Config.EMBEDDING_PROVIDER
+        path_settings=Config.get_paths(),
+        model_settings=Config.get_model_settings(),
+        api_settings=Config.get_api_settings()
     )
 
+    # Get settings from Config
+    processing_settings = Config.get_processing_settings()
+    path_settings = Config.get_paths()
+    sample_settings = Config.get_sample_settings()
+
     app_config = AppConfig(
-        max_tokens=Config.MAX_TOKENS,
-        chunk_size=Config.CHUNK_SIZE,
-        cache_enabled=Config.CACHE_ENABLED,
-        sample_size=Config.SAMPLE_SIZE,
-        root_path=Config.ROOT_PATH,
-        all_data=Config.ALL_DATA,
-        all_data_stratified_path=Config.ALL_DATA_STRATIFIED_PATH,
-        knowledge_base=Config.KNOWLEDGE_BASE,
-        filter_date=Config.FILTER_DATE
+        max_tokens=processing_settings['max_tokens'],
+        chunk_size=processing_settings['chunk_size'],
+        cache_enabled=processing_settings['cache_enabled'],
+        sample_size=sample_settings['default_sample_size'],
+        root_data_path=path_settings['root_data_path'],
+        stratified_path=path_settings['stratified'],
+        knowledge_base=path_settings['knowledge_base'],
+        filter_date=processing_settings['filter_date']
     )
+
     return model_config, app_config
 
 class KnowledgeAgent:
@@ -172,10 +144,14 @@ class KnowledgeAgent:
         # Load prompts
         self.prompts = load_prompts()
 
+        # Get settings
+        sample_settings = Config.get_sample_settings()
+        processing_settings = Config.get_processing_settings()
+
         # Set default values
-        self.sample_size = Config.SAMPLE_SIZE
-        self.max_workers = Config.MAX_WORKERS
-        self.cache_enabled = Config.CACHE_ENABLED
+        self.sample_size = sample_settings['default_sample_size']
+        self.max_workers = processing_settings['max_workers']
+        self.cache_enabled = processing_settings['cache_enabled']
 
     def _initialize_clients(self):
         """Initialize API clients based on available credentials."""
@@ -215,27 +191,29 @@ class KnowledgeAgent:
 
     def _get_model_name(self, provider: ModelProvider, operation: ModelOperation) -> str:
         """Get the appropriate model name for a provider and operation type."""
+        model_settings = Config.get_model_settings()
+        
         if operation == ModelOperation.EMBEDDING:
             if provider == ModelProvider.OPENAI:
-                return Config.OPENAI_EMBEDDING_MODEL
+                return model_settings['embedding_model']
             else:
                 raise ValueError(f"Unsupported embedding provider: {provider}")
         elif operation == ModelOperation.CHUNK_GENERATION:
             if provider == ModelProvider.OPENAI:
-                return Config.OPENAI_MODEL
+                return model_settings['chunk_model']
             elif provider == ModelProvider.GROK:
-                return Config.GROK_MODEL
+                return model_settings['grok_model']
             elif provider == ModelProvider.VENICE:
-                return Config.VENICE_CHUNK_MODEL
+                return model_settings['venice_chunk_model']
             else:
                 raise ValueError(f"Unsupported chunk generation provider: {provider}")
         elif operation == ModelOperation.SUMMARIZATION:
             if provider == ModelProvider.OPENAI:
-                return Config.OPENAI_MODEL
+                return model_settings['chunk_model']  # Use same model for summarization
             elif provider == ModelProvider.GROK:
-                return Config.GROK_MODEL
+                return model_settings['grok_model']
             elif provider == ModelProvider.VENICE:
-                return Config.VENICE_MODEL
+                return model_settings['venice_model']
             else:
                 raise ValueError(f"Unsupported summarization provider: {provider}")
         else:
@@ -855,16 +833,17 @@ class KnowledgeAgent:
 
     def _get_default_provider(self, operation: ModelOperation) -> ModelProvider:
         """Get the default provider for a specific operation."""
-        provider = None
+        model_settings = Config.get_model_settings()
+        
         if operation == ModelOperation.EMBEDDING:
-            provider = ModelProvider.from_str(Config.DEFAULT_EMBEDDING_PROVIDER)
+            provider = ModelProvider.from_str(model_settings['default_embedding_provider'])
             # Only OpenAI and Grok support embeddings
             if provider not in [ModelProvider.OPENAI, ModelProvider.GROK]:
                 provider = ModelProvider.OPENAI
         elif operation == ModelOperation.CHUNK_GENERATION:
-            provider = ModelProvider.from_str(Config.DEFAULT_CHUNK_PROVIDER)
+            provider = ModelProvider.from_str(model_settings['default_chunk_provider'])
         elif operation == ModelOperation.SUMMARIZATION:
-            provider = ModelProvider.from_str(Config.DEFAULT_SUMMARY_PROVIDER)
+            provider = ModelProvider.from_str(model_settings['default_summary_provider'])
         else:
             raise ValueError(f"Unknown operation: {operation}")
 

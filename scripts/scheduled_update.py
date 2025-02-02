@@ -1,16 +1,12 @@
-import os
 from dotenv import load_dotenv
 import asyncio
 import logging
-from datetime import datetime, timedelta
-import pytz
 from pathlib import Path
 
 # Load environment variables first
 load_dotenv()
 
 from config.settings import Config
-from knowledge_agents.data_processing.scheduler import DataScheduler
 from knowledge_agents.data_ops import DataConfig, DataOperations
 
 logging.basicConfig(
@@ -22,22 +18,27 @@ logger = logging.getLogger(__name__)
 
 async def main():
     try:
-        config = Config()
+        # Get settings from Config
+        paths = Config.get_paths()
+        processing_settings = Config.get_processing_settings()
+        sample_settings = Config.get_sample_settings()
+        column_settings = Config.get_column_settings()
+        
         data_config = DataConfig(
-            root_path=Path(config.ROOT_PATH),
-            all_data_path=Path(config.ALL_DATA),
-            stratified_data_path=Path(config.ALL_DATA_STRATIFIED_PATH),
-            knowledge_base_path=Path(config.KNOWLEDGE_BASE),
-            filter_date=None,  # Will be determined by DataStateManager
-            sample_size=config.SAMPLE_SIZE,
-            time_column=config.TIME_COLUMN,
-            strata_column=config.STRATA_COLUMN if hasattr(config, 'STRATA_COLUMN') else None
+            root_data_path=Path(paths['root_data_path']),
+            stratified_data_path=Path(paths['stratified']),
+            knowledge_base_path=Path(paths['knowledge_base']),
+            temp_path=Path(paths['temp']),
+            filter_date=processing_settings['filter_date'],
+            sample_size=sample_settings['default_sample_size'],
+            time_column=column_settings['time_column'],
+            strata_column=column_settings['strata_column']
         )
         
         operations = DataOperations(data_config)
         
         # Check if this is initial startup
-        if not Path(config.ALL_DATA).exists():
+        if not Path(paths['root_data_path']).exists():
             logger.info("Initial startup detected. Loading last week's data...")
             # For initial setup, we want a full refresh
             await operations.prepare_data(force_refresh=True)

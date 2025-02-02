@@ -4,13 +4,14 @@ import asyncio
 from typing import Tuple, List, Union, Dict, Any
 from . import KnowledgeAgentConfig
 from .model_ops import ModelProvider, ModelOperation, KnowledgeAgent
-from .data_ops import DataConfig, DataOperations, prepare_knowledge_base
+from .data_ops import DataConfig, prepare_knowledge_base
 from .inference_ops import process_multiple_queries
 from .embedding_ops import get_relevant_content
 from config.settings import Config
 import nest_asyncio
 import IPython
 import os
+from pathlib import Path
 
 # Enable nested asyncio for Jupyter notebooks
 try:
@@ -52,14 +53,11 @@ async def _run_knowledge_agents_async(
 
         # Initialize data operations with proper configuration
         data_config = DataConfig(
-            root_path=config.root_path,
-            all_data_path=config.all_data_path,
+            root_data_path=config.root_data_path,
             stratified_data_path=config.stratified_data_path,
             knowledge_base_path=config.knowledge_base_path,
-            sample_size=config.sample_size,
-            filter_date=os.getenv('FILTER_DATE'),
-            time_column=os.getenv('TIME_COLUMN', 'posted_date_time'),
-            strata_column=os.getenv('STRATA_COLUMN', None)
+            temp_path=Path(Config.get_paths()['temp']),
+            filter_date=os.getenv('FILTER_DATE')
         )
 
         # Prepare data and process references using the full pipeline
@@ -149,39 +147,44 @@ def run_knowledge_agents(
 def main():
     """Main entry point with support for three-model pipeline selection."""
     import argparse
-    """Main entry point for the script."""
     parser = argparse.ArgumentParser(description='Run knowledge agents pipeline')
     parser.add_argument('--query', type=str, required=True,
                       help='Query to process')
     parser.add_argument('--force-refresh', action='store_true',
                       help='Force refresh of cached results')
-    parser.add_argument('--sample-size', type=int, default=Config.SAMPLE_SIZE,
+    
+    # Get settings from Config
+    sample_settings = Config.get_sample_settings()
+    model_settings = Config.get_model_settings()
+    processing_settings = Config.get_processing_settings()
+    paths = Config.get_paths()
+    
+    parser.add_argument('--sample-size', type=int, default=sample_settings['default_sample_size'],
                       help='Number of samples to process')
-    parser.add_argument('--embedding-batch-size', type=int, default=Config.EMBEDDING_BATCH_SIZE,
+    parser.add_argument('--embedding-batch-size', type=int, default=model_settings['embedding_batch_size'],
                       help='Batch size for embedding operations')
-    parser.add_argument('--chunk-batch-size', type=int, default=Config.CHUNK_BATCH_SIZE,
+    parser.add_argument('--chunk-batch-size', type=int, default=model_settings['chunk_batch_size'],
                       help='Batch size for chunk generation')
-    parser.add_argument('--summary-batch-size', type=int, default=Config.SUMMARY_BATCH_SIZE,
+    parser.add_argument('--summary-batch-size', type=int, default=model_settings['summary_batch_size'],
                       help='Batch size for summary generation')
-    parser.add_argument('--max-workers', type=int, default=Config.MAX_WORKERS,
+    parser.add_argument('--max-workers', type=int, default=processing_settings['max_workers'],
                       help='Maximum number of workers for parallel processing')
     args = parser.parse_args()
 
     # Create configuration
     config = KnowledgeAgentConfig(
-        root_path=Config.ROOT_PATH,
-        all_data_path=Config.ALL_DATA,
-        stratified_data_path=Config.ALL_DATA_STRATIFIED_PATH,
-        knowledge_base_path=Config.KNOWLEDGE_BASE,
+        root_data_path=paths['root_data_path'],
+        stratified_data_path=paths['stratified'],
+        knowledge_base_path=paths['knowledge_base'],
         sample_size=args.sample_size,
         embedding_batch_size=args.embedding_batch_size,
         chunk_batch_size=args.chunk_batch_size,
         summary_batch_size=args.summary_batch_size,
         max_workers=args.max_workers,
         providers={
-            ModelOperation.EMBEDDING: ModelProvider.OPENAI,
-            ModelOperation.CHUNK_GENERATION: ModelProvider.OPENAI,
-            ModelOperation.SUMMARIZATION: ModelProvider.OPENAI
+            ModelOperation.EMBEDDING: ModelProvider(model_settings['default_embedding_provider']),
+            ModelOperation.CHUNK_GENERATION: ModelProvider(model_settings['default_chunk_provider']),
+            ModelOperation.SUMMARIZATION: ModelProvider(model_settings['default_summary_provider'])
         }
     )
 

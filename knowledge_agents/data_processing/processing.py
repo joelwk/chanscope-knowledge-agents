@@ -42,7 +42,8 @@ def string_to_bool(string_value: str) -> bool:
 
 def pad_punctuation(s: str) -> str:
     """Add padding around punctuation if enabled."""
-    if string_to_bool(Config.PADDING_ENABLED if hasattr(Config, 'PADDING_ENABLED') else "false"):
+    processing_settings = Config.get_processing_settings()
+    if processing_settings.get('padding_enabled', False):
         if not isinstance(s, str):
             return ""
         s = punctuation_regex.sub(r" \1 ", s)
@@ -53,6 +54,8 @@ def normalize_text(text: str) -> str:
     """Normalize text with configurable steps."""
     if isinstance(text, str):
         try:
+            processing_settings = Config.get_processing_settings()
+            
             # URL normalization
             text = url_regex.sub(lambda m: urlparse(m.group(0)).netloc.replace('www.', ''), text)
             text = normalize('NFKD', text).encode('ascii', 'ignore').decode('utf-8', 'ignore')
@@ -70,11 +73,11 @@ def normalize_text(text: str) -> str:
             text = re.sub(r'^\s*>+', '', text, flags=re.MULTILINE)
             
             # Apply contraction mapping if enabled
-            if string_to_bool(Config.CONTRACTION_MAPPING_ENABLED if hasattr(Config, 'CONTRACTION_MAPPING_ENABLED') else "false"):
+            if processing_settings.get('contraction_mapping_enabled', False):
                 text = ' '.join(contraction_mapping.get(t, t) for t in text.split())
                 
             # Remove non-alphanumeric if enabled
-            if string_to_bool(Config.NON_ALPHA_NUMERIC_ENABLED if hasattr(Config, 'NON_ALPHA_NUMERIC_ENABLED') else "false"):
+            if processing_settings.get('non_alpha_numeric_enabled', False):
                 text = non_alphanumeric_regex.sub(' ', text)
                 
             return whitespace_regex.sub(' ', text).strip()
