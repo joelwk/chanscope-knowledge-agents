@@ -5,7 +5,11 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
 
 ### Platform Integration
 - **Traditional Deployment**: Docker-based local or server deployment for controlled environments
-- **[Replit Cloud](https://replit.com/@jwkonitzer/chanscope-knowledge-agents)**: Zero-setup cloud deployment with optimized performance
+- **[Replit Cloud](https://replit.com/@jwkonitzer/chanscope-knowledge-agents)**: 
+  - Zero-setup cloud deployment with optimized performance
+  - Automated hourly data updates
+  - Environment-specific path handling
+  - Optimized memory management
 - **[Virtuals Protocol](https://app.virtuals.io/prototypes/0x2cc92Fc77180815834FfdAa72C58f72d457C4308)/[X](https://x.com/4Chanscope)**: 
 Integration with autonomous AI agents that can:
   - Process and interact with X & 4chan data through their own autonomous decision-making
@@ -21,6 +25,7 @@ Integration with autonomous AI agents that can:
   - Venice (Optional): llama-3.1-405b, dolphin-2.9.2-qwen2-72b
 
 - **Intelligent Data Processing**
+  - Automated hourly data updates with incremental processing
   - Time-based and category-based stratified sampling
   - Board-specific data filtering and validation
   - Efficient large dataset handling with reservoir sampling
@@ -28,6 +33,7 @@ Integration with autonomous AI agents that can:
   - Cloud-optimized processing for Replit environment
 
 - **Advanced Analysis Pipeline**
+  - Real-time monitoring with 3-hour rolling window
   - Context-aware temporal analysis with validation
   - Parallel processing with automatic model fallback
   - Event mapping and relationship extraction
@@ -227,6 +233,20 @@ Example docker-compose environment configuration:
 - `/process_recent_query` (GET): Process data from the last 3 hours
 ```
 GET /process_recent_query?force_refresh=true
+
+Response:
+{
+    "success": true,
+    "results": {
+        "query": "Your query",
+        "time_range": {
+            "start": "2024-03-20T10:00:00Z",
+            "end": "2024-03-20T13:00:00Z"
+        },
+        "chunks": [...],
+        "summary": "Analysis summary"
+    }
+}
 ```
 
 #### 2. Health Check Endpoints
@@ -274,7 +294,7 @@ $body = @{
 } | ConvertTo-Json
 
 # Make request
-$response = Invoke-RestMethod -Uri "http://localhost:5000/process_query" -Method Post -Body $body -ContentType "application/json"
+$response = Invoke-RestMethod -Uri "http://localhost:5000/api/process_query" -Method Post -Body $body -ContentType "application/json"
 # View results
 $response.results.summary
 ```
@@ -282,7 +302,7 @@ $response.results.summary
 #### 2. Using Bash
 ```bash
 # Single query
-curl -X POST "http://localhost:5000/process_query" \
+curl -X POST "http://localhost:5000/api/process_query" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "What are the latest developments in AI?",
@@ -296,8 +316,9 @@ curl -X POST "http://localhost:5000/process_query" \
   }'
 
 # Recent data query
-curl "http://localhost:5000/process_recent_query?force_refresh=true"
+curl "http://localhost:5000/api/process_recent_query?force_refresh=true"
 ```
+
 
 #### 3. Using the Frontend
 1. Access the UI at `http://localhost:8000`
@@ -447,6 +468,9 @@ python -m api.app --debug
 
 # Start Chainlit frontend in development mode
 python -m chainlit_frontend.app --debug
+
+# Start scheduled updates (optional)
+python scripts/scheduled_update.py
 ```
 
 #### 2. Docker Development
@@ -462,6 +486,23 @@ docker-compose -f deployment/docker-compose.dev.yml up -d --build api
 
 # Stop services
 docker-compose -f deployment/docker-compose.dev.yml down
+```
+
+#### 3. Scheduled Updates
+The system includes an automated data update mechanism:
+- Hourly data refresh from S3
+- Incremental updates to minimize processing
+- Automatic state management
+- Configurable time windows
+- Error handling and retry logic
+
+To run the scheduled update service:
+```bash
+# Using the provided script (runs continuously)
+./scripts/replit/scheduled_update.sh
+
+# Or manually trigger an update
+python scripts/scheduled_update.py
 ```
 
 ### Testing Workflow
@@ -495,7 +536,7 @@ docker-compose -f deployment/docker-compose.dev.yml logs test
 #### Health Checks and Monitoring
 ```bash
 # Check API health
-curl http://localhost:5000/health
+curl http://localhost:5000/api/health
 
 # Check Chainlit frontend
 Open http://localhost:8000 in your browser
@@ -572,7 +613,7 @@ docker-compose -f deployment/docker-compose.dev.yml logs -f
 ### Default Configuration Settings
 - **Batch Processing**:
   - Embedding Batch Size: 50
-  - Chunk Batch Size: 50 (Updated)
+  - Chunk Batch Size: 50
   - Summary Batch Size: 20
 - **Data Processing**:
   - Chunk Size: 500
@@ -580,3 +621,7 @@ docker-compose -f deployment/docker-compose.dev.yml logs -f
   - Max Tokens: 4096
   - Cache Enabled: true
   - Max Workers: 4
+- **Update Schedule**:
+  - Hourly data refresh
+  - 3-hour rolling window for real-time queries
+  - 7-day data retention window

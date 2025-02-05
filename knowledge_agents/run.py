@@ -2,8 +2,7 @@
 import logging
 import asyncio
 from typing import Tuple, List, Union, Dict, Any
-from . import KnowledgeAgentConfig
-from .model_ops import ModelProvider, ModelOperation, KnowledgeAgent
+from .model_ops import ModelProvider, ModelOperation, KnowledgeAgent, ModelConfig
 from .data_ops import DataConfig, prepare_knowledge_base
 from .inference_ops import process_multiple_queries
 from .embedding_ops import get_relevant_content
@@ -41,7 +40,7 @@ logger.setLevel(logging.INFO)
 
 async def _run_knowledge_agents_async(
     query: str,
-    config: KnowledgeAgentConfig,
+    config: ModelConfig,
     force_refresh: bool = False
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Async implementation of knowledge agents pipeline with three distinct models."""
@@ -54,10 +53,10 @@ async def _run_knowledge_agents_async(
         # Initialize data operations with proper configuration
         data_config = DataConfig(
             root_data_path=config.root_data_path,
-            stratified_data_path=config.stratified_data_path,
+            stratified_data_path=config.stratified_path,
             knowledge_base_path=config.knowledge_base_path,
-            temp_path=Path(Config.get_paths()['temp']),
-            filter_date=os.getenv('FILTER_DATE')
+            temp_path=Path(config.temp_path),
+            filter_date=config.filter_date
         )
 
         # Prepare data and process references using the full pipeline
@@ -73,7 +72,7 @@ async def _run_knowledge_agents_async(
         logger.info(f"Using {config.providers[ModelOperation.EMBEDDING]} for embeddings")
         try:
             await get_relevant_content(
-                library=str(config.stratified_data_path),
+                library=str(config.stratified_path),
                 knowledge_base=str(config.knowledge_base_path),
                 batch_size=config.embedding_batch_size,
                 provider=config.providers[ModelOperation.EMBEDDING],
@@ -112,7 +111,7 @@ async def _run_knowledge_agents_async(
 
 def run_knowledge_agents(
     query: str,
-    config: KnowledgeAgentConfig,
+    config: ModelConfig,
     force_refresh: bool = False,
 ) -> Union[Tuple[List[Dict[str, Any]], str], "asyncio.Future"]:
     """Run knowledge agents pipeline in both notebook and script environments.
@@ -145,22 +144,22 @@ def run_knowledge_agents(
     return coroutine
 
 def main():
-    """Main entry point with support for three-model pipeline selection."""
+    """Main entry point for command line execution."""
     import argparse
-    parser = argparse.ArgumentParser(description='Run knowledge agents pipeline')
-    parser.add_argument('--query', type=str, required=True,
-                      help='Query to process')
-    parser.add_argument('--force-refresh', action='store_true',
-                      help='Force refresh of cached results')
-    
-    # Get settings from Config
-    sample_settings = Config.get_sample_settings()
-    model_settings = Config.get_model_settings()
-    processing_settings = Config.get_processing_settings()
+
+    # Get settings
     paths = Config.get_paths()
-    
+    model_settings = Config.get_model_settings()
+    sample_settings = Config.get_sample_settings()
+    processing_settings = Config.get_processing_settings()
+
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Run knowledge agents pipeline')
+    parser.add_argument('query', type=str, help='Search query')
+    parser.add_argument('--force-refresh', action='store_true',
+                      help='Force refresh of data')
     parser.add_argument('--sample-size', type=int, default=sample_settings['default_sample_size'],
-                      help='Number of samples to process')
+                      help='Sample size for processing')
     parser.add_argument('--embedding-batch-size', type=int, default=model_settings['embedding_batch_size'],
                       help='Batch size for embedding operations')
     parser.add_argument('--chunk-batch-size', type=int, default=model_settings['chunk_batch_size'],
@@ -172,19 +171,21 @@ def main():
     args = parser.parse_args()
 
     # Create configuration
-    config = KnowledgeAgentConfig(
-        root_data_path=paths['root_data_path'],
-        stratified_data_path=paths['stratified'],
-        knowledge_base_path=paths['knowledge_base'],
-        sample_size=args.sample_size,
-        embedding_batch_size=args.embedding_batch_size,
-        chunk_batch_size=args.chunk_batch_size,
-        summary_batch_size=args.summary_batch_size,
-        max_workers=args.max_workers,
-        providers={
-            ModelOperation.EMBEDDING: ModelProvider(model_settings['default_embedding_provider']),
-            ModelOperation.CHUNK_GENERATION: ModelProvider(model_settings['default_chunk_provider']),
-            ModelOperation.SUMMARIZATION: ModelProvider(model_settings['default_summary_provider'])
+    config = ModelConfig(
+        path_settings=paths,
+        model_settings={
+            **model_settings,
+            'embedding_batch_size': args.embedding_batch_size,
+            'chunk_batch_size': args.chunk_batch_size,
+            'summary_batch_size': args.summary_batch_size
+        },
+        processing_settings={
+            **processing_settings,
+            'max_workers': args.max_workers
+        },
+        sample_settings={
+            **sample_settings,
+            'default_sample_size': args.sample_size
         }
     )
 
@@ -198,16 +199,10 @@ def main():
         )
     )
 
-    print("\nRelevant Chunks:")
-    print("-" * 80)
-    for chunk in chunks:
-        print(chunk)
-        print("-" * 80)
-
-    print("\nGenerated Summary:")
-    print("-" * 80)
+    # Print results
+    print("\nChunks analyzed:", len(chunks))
+    print("\nFinal Summary:")
     print(response)
-    print("-" * 80)
 
 if __name__ == "__main__":
     main()

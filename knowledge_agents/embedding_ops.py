@@ -11,20 +11,16 @@ from config.settings import Config
 
 # Initialize logging
 logger = logging.getLogger(__name__)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-# Prevent propagation to root logger to avoid duplicate logs
-logger.propagate = False
 
-# Load configuration using centralized Config
-model_config, app_config = load_config()
+# Use singleton pattern for KnowledgeAgent
+_agent_instance = None
 
-# Initialize agent with configuration
-logger.info("Initializing KnowledgeAgent with configuration from settings...")
-agent = KnowledgeAgent()
+def get_agent() -> KnowledgeAgent:
+    """Get or create the KnowledgeAgent singleton instance."""
+    global _agent_instance
+    if _agent_instance is None:
+        _agent_instance = KnowledgeAgent()
+    return _agent_instance
 
 class Article:
     """Data class for article information."""
@@ -211,7 +207,7 @@ async def process_article_batch(
             
             try:
                 # Make a single embedding request for the batch
-                response = await agent.embedding_request(
+                response = await get_agent().embedding_request(
                     text=valid_texts,
                     provider=provider,
                     batch_size=embedding_batch_size

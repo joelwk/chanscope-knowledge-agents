@@ -40,36 +40,42 @@ class ModelOperation(str, Enum):
     CHUNK_GENERATION = "chunk_generation"
     SUMMARIZATION = "summarization"
 
-class AppConfig(BaseModel):
-    max_tokens: int 
-    chunk_size: int
-    cache_enabled: bool
-    sample_size: int
-    root_data_path: str
-    stratified_path: str
-    knowledge_base: str
-    filter_date: Optional[str]
-
-class EmbeddingResponse(BaseModel):
-    """Standardized embedding response across providers."""
-    embedding: Union[List[float], List[List[float]]]
-    model: str
-    usage: Dict[str, int]
-
 class ModelConfig:
-    """Configuration class for model operations."""
+    """Unified configuration class for all knowledge agent operations.
+    
+    This class handles:
+    1. Model configurations and API settings
+    2. Path configurations
+    3. Processing settings including batching
+    4. Provider configurations
+    """
     def __init__(
         self,
-        path_settings: Dict[str, str],
-        model_settings: Dict[str, Any],
-        api_settings: Dict[str, Any]
+        path_settings: Dict[str, str] = None,
+        model_settings: Dict[str, Any] = None,
+        api_settings: Dict[str, Any] = None,
+        processing_settings: Dict[str, Any] = None,
+        sample_settings: Dict[str, Any] = None,
+        providers: Optional[Dict[ModelOperation, ModelProvider]] = None
     ):
-        """Initialize model configuration."""
+        """Initialize unified configuration."""
+        # Load settings if not provided
+        if path_settings is None:
+            path_settings = Config.get_paths()
+        if model_settings is None:
+            model_settings = Config.get_model_settings()
+        if api_settings is None:
+            api_settings = Config.get_api_settings()
+        if processing_settings is None:
+            processing_settings = Config.get_processing_settings()
+        if sample_settings is None:
+            sample_settings = Config.get_sample_settings()
+
         # Path settings
         self.root_data_path = path_settings['root_data_path']
-        self.stratified = path_settings['stratified']
-        self.knowledge_base = path_settings['knowledge_base']
-        self.temp = path_settings['temp']
+        self.stratified_path = path_settings['stratified']
+        self.knowledge_base_path = path_settings['knowledge_base']
+        self.temp_path = path_settings['temp']
         
         # Model settings
         self.embedding_model = model_settings['embedding_model']
@@ -80,6 +86,122 @@ class ModelConfig:
         self.openai_api_key = api_settings.get('openai_api_key')
         self.grok_api_key = api_settings.get('grok_api_key')
         self.venice_api_key = api_settings.get('venice_api_key')
+
+        # Processing settings
+        self.max_tokens = processing_settings['max_tokens']
+        self.chunk_size = processing_settings['chunk_size']
+        self.cache_enabled = processing_settings['cache_enabled']
+        self.filter_date = processing_settings.get('filter_date')
+        self.max_workers = processing_settings['max_workers']
+
+        # Batch settings
+        self.sample_size = sample_settings['default_sample_size']
+        self.embedding_batch_size = model_settings['embedding_batch_size']
+        self.chunk_batch_size = model_settings['chunk_batch_size']
+        self.summary_batch_size = model_settings['summary_batch_size']
+
+        # Provider settings
+        self.providers = providers or {
+            ModelOperation.EMBEDDING: ModelProvider(model_settings['default_embedding_provider']),
+            ModelOperation.CHUNK_GENERATION: ModelProvider(model_settings['default_chunk_provider']),
+            ModelOperation.SUMMARIZATION: ModelProvider(model_settings['default_summary_provider'])
+        }
+
+        # Validate configuration
+        self._validate_config(sample_settings)
+
+    def _validate_config(self, sample_settings: Dict[str, Any]) -> None:
+        """Validate configuration settings."""
+        # Validate sample size
+        if self.sample_size > sample_settings['max_sample_size']:
+            logger.warning(f"Sample size {self.sample_size} exceeds maximum of {sample_settings['max_sample_size']}. Setting to maximum.")
+            self.sample_size = sample_settings['max_sample_size']
+        elif self.sample_size < sample_settings['min_sample_size']:
+            logger.warning(f"Sample size {self.sample_size} below minimum of {sample_settings['min_sample_size']}. Setting to minimum.")
+            self.sample_size = sample_settings['min_sample_size']
+
+        # Validate paths
+        for path_attr in ['root_data_path', 'stratified_path', 'knowledge_base_path', 'temp_path']:
+            path = getattr(self, path_attr)
+            if not isinstance(path, (str, Path)):
+                raise ValueError(f"{path_attr} must be a string or Path")
+
+        # Validate numeric values
+        for num_attr in ['embedding_batch_size', 'chunk_batch_size', 'summary_batch_size', 'max_tokens', 'chunk_size']:
+            value = getattr(self, num_attr)
+            if not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{num_attr} must be a positive integer")
+
+        # Validate max_workers
+        if self.max_workers is not None and (not isinstance(self.max_workers, int) or self.max_workers <= 0):
+            raise ValueError("max_workers must be None or a positive integer")
+
+        # Validate providers
+        if not isinstance(self.providers, dict):
+            raise ValueError("providers must be a dictionary")
+        for op, provider in self.providers.items():
+            if not isinstance(op, ModelOperation):
+                raise ValueError("Provider keys must be ModelOperation instances")
+            if not isinstance(provider, ModelProvider):
+                raise ValueError("Provider values must be ModelProvider instances")
+
+    def get_batch_config(self) -> Dict[str, int]:
+        """Get the current batch configuration."""
+        return {
+            "sample_size": self.sample_size,
+            "embedding_batch_size": self.embedding_batch_size,
+            "chunk_batch_size": self.chunk_batch_size,
+            "summary_batch_size": self.summary_batch_size
+        }
+
+    @classmethod
+    def from_env(cls) -> 'ModelConfig':
+        """Create configuration from environment variables."""
+        return cls()
+
+    @classmethod
+    def from_settings(cls, settings: Any) -> 'ModelConfig':
+        """Create configuration from settings object."""
+        path_settings = Config.get_paths()
+        model_settings = Config.get_model_settings()
+        api_settings = Config.get_api_settings()
+        processing_settings = Config.get_processing_settings()
+        sample_settings = Config.get_sample_settings()
+
+        # Override settings with values from settings object
+        path_settings.update({
+            'root_data_path': getattr(settings, 'root_data_path', path_settings['root_data_path']),
+            'stratified': getattr(settings, 'stratified_path', path_settings['stratified']),
+            'knowledge_base': getattr(settings, 'knowledge_base_path', path_settings['knowledge_base'])
+        })
+
+        processing_settings.update({
+            'max_workers': getattr(settings, 'max_workers', processing_settings['max_workers'])
+        })
+
+        model_settings.update({
+            'embedding_batch_size': getattr(settings, 'embedding_batch_size', model_settings['embedding_batch_size']),
+            'chunk_batch_size': getattr(settings, 'chunk_batch_size', model_settings['chunk_batch_size']),
+            'summary_batch_size': getattr(settings, 'summary_batch_size', model_settings['summary_batch_size'])
+        })
+
+        sample_settings.update({
+            'default_sample_size': getattr(settings, 'sample_size', sample_settings['default_sample_size'])
+        })
+
+        return cls(
+            path_settings=path_settings,
+            model_settings=model_settings,
+            api_settings=api_settings,
+            processing_settings=processing_settings,
+            sample_settings=sample_settings
+        )
+
+class EmbeddingResponse(BaseModel):
+    """Standardized embedding response across providers."""
+    embedding: Union[List[float], List[List[float]]]
+    model: str
+    usage: Dict[str, int]
 
 def load_prompts(prompt_path: str = None) -> Dict[str, Any]:
     """Load prompts from YAML file."""
@@ -103,32 +225,25 @@ def load_prompts(prompt_path: str = None) -> Dict[str, Any]:
         logger.error(f"Error loading prompts from {prompt_path}: {str(e)}")
         raise
 
-def load_config() -> Tuple[ModelConfig, AppConfig]:
-    """Load configuration using Config class from settings."""
-    # Create model config using Config class values
-    model_config = ModelConfig(
-        path_settings=Config.get_paths(),
-        model_settings=Config.get_model_settings(),
-        api_settings=Config.get_api_settings()
-    )
+def load_config() -> Tuple[ModelConfig]:
+    """Load configuration using Config class from settings.
+    
+    This is a cached function that will only load the configuration once.
+    Subsequent calls will return the cached configuration.
+    """
+    if not hasattr(load_config, '_config_cache'):
+        # Create model config using Config class values
+        model_config = ModelConfig(
+            path_settings=Config.get_paths(),
+            model_settings=Config.get_model_settings(),
+            api_settings=Config.get_api_settings(),
+            processing_settings=Config.get_processing_settings()
+        )
 
-    # Get settings from Config
-    processing_settings = Config.get_processing_settings()
-    path_settings = Config.get_paths()
-    sample_settings = Config.get_sample_settings()
+        # Cache the configuration
+        load_config._config_cache = model_config
 
-    app_config = AppConfig(
-        max_tokens=processing_settings['max_tokens'],
-        chunk_size=processing_settings['chunk_size'],
-        cache_enabled=processing_settings['cache_enabled'],
-        sample_size=sample_settings['default_sample_size'],
-        root_data_path=path_settings['root_data_path'],
-        stratified_path=path_settings['stratified'],
-        knowledge_base=path_settings['knowledge_base'],
-        filter_date=processing_settings['filter_date']
-    )
-
-    return model_config, app_config
+    return load_config._config_cache
 
 class KnowledgeAgent:
     """Agent for handling model operations and API interactions."""
@@ -136,7 +251,7 @@ class KnowledgeAgent:
     def __init__(self):
         """Initialize the KnowledgeAgent using settings from Config."""
         # Load configuration
-        self.model_config, self.app_config = load_config()
+        self.config = load_config()
 
         # Initialize API clients
         self.models = self._initialize_clients()
@@ -144,39 +259,30 @@ class KnowledgeAgent:
         # Load prompts
         self.prompts = load_prompts()
 
-        # Get settings
-        sample_settings = Config.get_sample_settings()
-        processing_settings = Config.get_processing_settings()
-
-        # Set default values
-        self.sample_size = sample_settings['default_sample_size']
-        self.max_workers = processing_settings['max_workers']
-        self.cache_enabled = processing_settings['cache_enabled']
-
     def _initialize_clients(self):
         """Initialize API clients based on available credentials."""
         clients = {}
 
         # Check for OpenAI configuration
-        if self.model_config.openai_api_key:
+        if self.config.openai_api_key:
             try:
-                clients['openai'] = AsyncOpenAI(api_key=self.model_config.openai_api_key)
+                clients['openai'] = AsyncOpenAI(api_key=self.config.openai_api_key)
                 logger.info("OpenAI client initialized successfully")
             except Exception as e:
                 logger.warning(f"Failed to initialize OpenAI client: {str(e)}")
 
         # Check for Grok configuration
-        if self.model_config.grok_api_key:
+        if self.config.grok_api_key:
             try:
-                clients['grok'] = {'api_key': self.model_config.grok_api_key}
+                clients['grok'] = {'api_key': self.config.grok_api_key}
                 logger.info("Grok client initialized successfully")
             except Exception as e:
                 logger.warning(f"Failed to initialize Grok client: {str(e)}")
 
         # Check for Venice configuration
-        if self.model_config.venice_api_key:
+        if self.config.venice_api_key:
             try:
-                clients['venice'] = {'api_key': self.model_config.venice_api_key}
+                clients['venice'] = {'api_key': self.config.venice_api_key}
                 logger.info("Venice client initialized successfully")
             except Exception as e:
                 logger.warning(f"Failed to initialize Venice client: {str(e)}")

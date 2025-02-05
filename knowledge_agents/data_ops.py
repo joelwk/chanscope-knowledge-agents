@@ -311,9 +311,19 @@ class DataOperations:
             period_counts = defaultdict(int)
             total_processed = 0
             
+            # Log initial state
+            self._logger.info("=== Starting Data Loading ===")
+            self._logger.info(f"Filter date: {self.config.filter_date}")
+            self._logger.info(f"Last update: {last_update}")
+            
             # Single pass collection with reservoir sampling by time period
             for chunk_df in load_all_csv_data_from_s3(latest_date_processed=last_update):
                 try:
+                    # Log chunk info
+                    self._logger.info(f"=== Processing New Chunk ===")
+                    self._logger.info(f"Chunk size before processing: {len(chunk_df)}")
+                    self._logger.info(f"Chunk columns: {chunk_df.columns.tolist()}")
+                    
                     # Create a deep copy and reset index to avoid RangeIndex issues
                     chunk_df = chunk_df.copy(deep=True)
                     chunk_df.index = pd.RangeIndex(len(chunk_df))  # Explicitly set a new RangeIndex
@@ -348,15 +358,29 @@ class DataOperations:
                             errors='coerce'
                         )
                         
+                        # Log after time conversion
+                        self._logger.info(f"Rows after time conversion: {len(chunk_df)}")
+                        if len(chunk_df) > 0:
+                            self._logger.info(f"Time range in chunk: {chunk_df[self.config.time_column].min()} to {chunk_df[self.config.time_column].max()}")
+                        
                         # Filter out invalid dates and reset index
                         chunk_df = chunk_df.dropna(subset=[self.config.time_column])
                         chunk_df = chunk_df.reset_index(drop=True)
+                        
+                        # Log after filtering
+                        self._logger.info(f"Rows after filtering invalid dates: {len(chunk_df)}")
                         
                         # Create a copy before groupby to avoid RangeIndex issues
                         chunk_df = chunk_df.copy()
                         
                         # Convert time column to period before groupby
                         period_series = chunk_df[self.config.time_column].dt.tz_localize(None).dt.to_period('D')
+                        
+                        # Log period information
+                        unique_periods = period_series.unique()
+                        self._logger.info(f"Unique periods in chunk: {len(unique_periods)}")
+                        if len(unique_periods) > 0:
+                            self._logger.info(f"Period range: {unique_periods[0]} to {unique_periods[-1]}")
                         
                         # Group by date period
                         for period, group_indices in period_series.groupby(period_series).groups.items():
@@ -366,12 +390,18 @@ class DataOperations:
                             
                             period_counts[period] += len(period_data)
                             
+                            # Log period processing
+                            self._logger.info(f"Processing period {period}: {len(period_data)} rows")
+                            
                             # Calculate target size for this period based on proportion of data seen
                             total_seen = sum(period_counts.values())
                             target_size = max(
                                 int((remaining_samples * period_counts[period]) / total_seen),
                                 min(100, remaining_samples // 10)  # Ensure minimum representation
                             )
+                            
+                            # Log sampling information
+                            self._logger.info(f"Period {period} - Target size: {target_size}, Total seen: {total_seen}")
                             
                             # Perform reservoir sampling for this period
                             current_samples = reservoirs[period]
@@ -382,6 +412,9 @@ class DataOperations:
                                     j = random.randint(0, period_counts[period] - 1)
                                     if j < target_size:
                                         current_samples[j] = row.to_dict()
+                            
+                            # Log reservoir state
+                            self._logger.info(f"Period {period} - Current samples: {len(current_samples)}")
                         
                         total_processed += len(chunk_df)
                         if total_processed % 10000 == 0:

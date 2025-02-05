@@ -113,9 +113,36 @@ async def process_query(query: str, settings: dict):
     logger.info(f"Environment: {'Replit' if IS_REPLIT else 'Docker' if IS_DOCKER else 'Local'}")
     logger.info(f"Available API endpoints: {base_urls}")
     
+    # Log incoming settings
+    logger.info("=== Incoming Settings ===")
+    logger.info(f"Raw settings received: {settings}")
+    
     # Prepare settings for API
     api_settings = prepare_settings_for_api(settings)
-    logger.info(f"Using settings: {api_settings}")
+    
+    # Format the filter_date properly if it exists and set in environment
+    raw_filter_date = api_settings.get("filter_date")
+    if raw_filter_date:
+        try:
+            # Parse the date and format it with timezone info
+            filter_date = datetime.strptime(raw_filter_date, '%Y-%m-%d')
+            formatted_date = filter_date.strftime('%Y-%m-%d %H:%M:%S+00:00')
+            # Set the filter date in environment for data operations
+            os.environ['FILTER_DATE'] = formatted_date
+            api_settings["filter_date"] = formatted_date
+            logger.info(f"Set FILTER_DATE environment variable to: {formatted_date}")
+        except ValueError as e:
+            logger.error(f"Error formatting filter_date: {str(e)}")
+            # Keep the original date if parsing fails
+            pass
+    else:
+        # Clear the environment variable if no filter date
+        if 'FILTER_DATE' in os.environ:
+            del os.environ['FILTER_DATE']
+            logger.info("Cleared FILTER_DATE environment variable")
+    
+    logger.info("=== Prepared API Settings ===")
+    logger.info(f"Settings after preparation: {api_settings}")
 
     # Create session with proper connection settings
     connector = aiohttp.TCPConnector(
@@ -136,13 +163,48 @@ async def process_query(query: str, settings: dict):
                 # Add /api prefix for Replit environment
                 api_prefix = "/api" if IS_REPLIT else ""
                 logger.info(f"Attempting to connect to API at {base_url}")
-                
+
+                # Structure request data to match ModelConfig in routes.py
+                request_data = {
+                    "query": query,
+                    "force_refresh": bool(api_settings.get("force_refresh", False)),
+                    "model_settings": {
+                        "embedding_batch_size": int(api_settings.get("embedding_batch_size")),
+                        "chunk_batch_size": int(api_settings.get("chunk_batch_size")),
+                        "summary_batch_size": int(api_settings.get("summary_batch_size"))
+                    },
+                    "processing_settings": {
+                        "max_workers": int(api_settings.get("max_workers")),
+                        "filter_date": api_settings.get("filter_date", ""),
+                        "cache_enabled": bool(api_settings.get("cache_enabled")),
+                        "padding_enabled": bool(api_settings.get("padding_enabled")),
+                        "contraction_mapping_enabled": bool(api_settings.get("contraction_mapping_enabled")),
+                        "non_alpha_numeric_enabled": bool(api_settings.get("non_alpha_numeric_enabled")),
+                        "max_tokens": int(api_settings.get("max_tokens"))
+                    },
+                    "sample_settings": {
+                        "default_sample_size": int(api_settings.get("sample_size"))
+                    },
+                    "providers": {
+                        "embedding_provider": api_settings.get("embedding_provider"),
+                        "chunk_provider": api_settings.get("chunk_provider"),
+                        "summary_provider": api_settings.get("summary_provider")
+                    },
+                    "path_settings": {
+                        "root_data_path": api_settings.get("root_data_path"),
+                        "stratified": api_settings.get("stratified_path"),
+                        "knowledge_base": api_settings.get("knowledge_base_path"),
+                        "temp": api_settings.get("temp_path")
+                    }
+                }
+
+                # Log the complete request data
+                logger.info("=== Complete Request Data ===")
+                logger.info(f"Request data being sent to API: {request_data}")
+
                 async with session.post(
                     f"{base_url}{api_prefix}/process_query",
-                    json={
-                        "query": query,
-                        **api_settings
-                    },
+                    json=request_data,
                     headers={
                         "Content-Type": "application/json",
                         "Accept": "application/json"
