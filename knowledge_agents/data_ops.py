@@ -75,7 +75,6 @@ class DataConfig:
         """Create DataConfig instance from Config settings."""
         paths = Config.get_paths()
         column_settings = Config.get_column_settings()
-        processing_settings = Config.get_processing_settings()
         sample_settings = Config.get_sample_settings()
         
         # Create base data directory if it doesn't exist
@@ -253,13 +252,17 @@ class DataOperations:
     """Main data operations orchestrator."""
     def __init__(self, config: DataConfig):
         self.config = config
+        logger.info(f"DataOperations.__init__ received filter_date: {config.filter_date}")
         self.state_manager = DataStateManager(config)
         self.processor = DataProcessor(config)
         self._logger = logging.getLogger(__name__)
 
     async def _fetch_and_save_data(self, force_refresh: bool = False):
         """Stream and process data ensuring complete temporal coverage with reservoir sampling."""
-        self._logger.info(f"Fetching data with filter date: {self.config.filter_date}")
+        self._logger.info("=== Starting Data Fetch and Save ===")
+        self._logger.info(f"Force refresh: {force_refresh}")
+        self._logger.info(f"Config filter_date: {self.config.filter_date}")
+        
         try:
             # Get last update time if not forcing refresh
             last_update = self.config.filter_date if force_refresh else self.state_manager.get_last_update()
@@ -583,11 +586,17 @@ class DataOperations:
             self._logger.error(f"Failed to create directory structure: {e}")
             raise
 
-async def prepare_knowledge_base(force_refresh: bool = False) -> str:
+async def prepare_knowledge_base(force_refresh: bool = False, config: Optional[DataConfig] = None) -> str:
     """Main entry point for data preparation."""
     try:
-        config = DataConfig.from_config()
+        # Use provided config or create new one
+        if config is None:
+            config = DataConfig.from_config()
+            logger.info("Created new DataConfig from config")
+        logger.info(f"prepare_knowledge_base using filter_date: {config.filter_date}")
+        
         operations = DataOperations(config)
+        logger.info(f"DataOperations initialized with filter_date: {operations.config.filter_date}")
         
         # First run the main data preparation
         result = await operations.prepare_data(force_refresh)

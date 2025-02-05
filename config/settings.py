@@ -92,7 +92,7 @@ class Config:
         'max_workers': int(os.getenv('MAX_WORKERS')),
         'cache_enabled': os.getenv('CACHE_ENABLED', 'true').lower() == 'true',
         'chunk_size': int(os.getenv('CHUNK_SIZE')),
-        'filter_date': os.getenv('FILTER_DATE'),
+        'filter_date': None,  # Default to None, allow override from API/UI
         'select_board': os.getenv('SELECT_BOARD')
     }
 
@@ -219,7 +219,16 @@ class Config:
 
     @classmethod
     def get_filter_date(cls) -> Optional[datetime]:
-        """Single source of truth for filter date."""
+        """Single source of truth for filter date.
+        
+        Checks for runtime override before falling back to environment variable.
+        """
+        # First check if there's a runtime override in processing settings
+        runtime_date = cls.PROCESSING_SETTINGS.get('filter_date')
+        if runtime_date is not None:
+            return cls._parse_date(runtime_date)
+            
+        # Fall back to environment variable
         return cls._parse_date(os.getenv('FILTER_DATE'))
 
     @classmethod

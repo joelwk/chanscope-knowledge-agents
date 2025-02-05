@@ -9,6 +9,7 @@ from chainlit_frontend import API_BASE_URL
 from datetime import datetime
 from config.settings import Config
 from knowledge_agents.model_ops import ModelProvider
+import pandas as pd
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -51,10 +52,15 @@ def prepare_settings_for_api(settings: dict) -> dict:
     # Get paths from Config
     path_settings = Config.PATH_SETTINGS
     
+    # Log incoming settings for debugging
+    logger.info("=== Preparing Settings for API ===")
+    logger.info(f"Incoming UI settings: {settings}")
+    logger.info(f"UI filter_date: {settings.get('filter_date')}")
+    
     # Base settings that are always included
     api_settings = {
         "force_refresh": settings.get("force_refresh", False),
-        "filter_date": settings.get("filter_date"),
+        "filter_date": settings.get("filter_date"),  # Get directly from UI settings
         "sample_size": settings.get("sample_size"),
         "embedding_provider": settings.get("embedding_provider"),
         "chunk_provider": settings.get("chunk_provider"),
@@ -76,6 +82,8 @@ def prepare_settings_for_api(settings: dict) -> dict:
         "processing_chunk_size": settings.get("processing_chunk_size"),
         "stratification_chunk_size": settings.get("stratification_chunk_size")
     }
+    
+    logger.info(f"Base API settings prepared with filter_date: {api_settings.get('filter_date')}")
     
     # Add path settings based on environment
     if IS_DOCKER:
@@ -102,6 +110,10 @@ def prepare_settings_for_api(settings: dict) -> dict:
             "temp_path": path_settings['temp']
         })
     
+    logger.info("=== Final API Settings ===")
+    logger.info(f"Environment: {'Docker' if IS_DOCKER else 'Replit' if IS_REPLIT else 'Local'}")
+    logger.info(f"Final filter_date: {api_settings.get('filter_date')}")
+    
     return api_settings
 
 async def process_query(query: str, settings: dict):
@@ -120,27 +132,25 @@ async def process_query(query: str, settings: dict):
     # Prepare settings for API
     api_settings = prepare_settings_for_api(settings)
     
-    # Format the filter_date properly if it exists and set in environment
+    # Format the filter_date properly if it exists
     raw_filter_date = api_settings.get("filter_date")
+    formatted_date = None
     if raw_filter_date:
         try:
-            # Parse the date and format it with timezone info
-            filter_date = datetime.strptime(raw_filter_date, '%Y-%m-%d')
-            formatted_date = filter_date.strftime('%Y-%m-%d %H:%M:%S+00:00')
-            # Set the filter date in environment for data operations
-            os.environ['FILTER_DATE'] = formatted_date
-            api_settings["filter_date"] = formatted_date
-            logger.info(f"Set FILTER_DATE environment variable to: {formatted_date}")
+            # Parse the date and ensure it's in UTC
+            filter_date = pd.to_datetime(raw_filter_date)
+            # Set time to end of day for inclusive filtering
+            filter_date = filter_date.replace(hour=23, minute=59, second=59)
+            filter_date = filter_date.tz_localize('UTC')
+            formatted_date = filter_date.isoformat()
+            logger.info(f"Formatted filter_date for API: {formatted_date}")
         except ValueError as e:
             logger.error(f"Error formatting filter_date: {str(e)}")
             # Keep the original date if parsing fails
             pass
     else:
-        # Clear the environment variable if no filter date
-        if 'FILTER_DATE' in os.environ:
-            del os.environ['FILTER_DATE']
-            logger.info("Cleared FILTER_DATE environment variable")
-    
+        logger.info("No filter_date provided in settings")
+
     logger.info("=== Prepared API Settings ===")
     logger.info(f"Settings after preparation: {api_settings}")
 
@@ -158,44 +168,40 @@ async def process_query(query: str, settings: dict):
         logger.info("Created aiohttp session")
 
         # Try each base URL in order
+        last_error = None
         for base_url in base_urls:
             try:
                 # Add /api prefix for Replit environment
                 api_prefix = "/api" if IS_REPLIT else ""
                 logger.info(f"Attempting to connect to API at {base_url}")
 
-                # Structure request data to match ModelConfig in routes.py
+                # Structure request data to match API expectations (flat structure)
                 request_data = {
                     "query": query,
                     "force_refresh": bool(api_settings.get("force_refresh", False)),
-                    "model_settings": {
-                        "embedding_batch_size": int(api_settings.get("embedding_batch_size")),
-                        "chunk_batch_size": int(api_settings.get("chunk_batch_size")),
-                        "summary_batch_size": int(api_settings.get("summary_batch_size"))
-                    },
-                    "processing_settings": {
-                        "max_workers": int(api_settings.get("max_workers")),
-                        "filter_date": api_settings.get("filter_date", ""),
-                        "cache_enabled": bool(api_settings.get("cache_enabled")),
-                        "padding_enabled": bool(api_settings.get("padding_enabled")),
-                        "contraction_mapping_enabled": bool(api_settings.get("contraction_mapping_enabled")),
-                        "non_alpha_numeric_enabled": bool(api_settings.get("non_alpha_numeric_enabled")),
-                        "max_tokens": int(api_settings.get("max_tokens"))
-                    },
-                    "sample_settings": {
-                        "default_sample_size": int(api_settings.get("sample_size"))
-                    },
-                    "providers": {
-                        "embedding_provider": api_settings.get("embedding_provider"),
-                        "chunk_provider": api_settings.get("chunk_provider"),
-                        "summary_provider": api_settings.get("summary_provider")
-                    },
-                    "path_settings": {
-                        "root_data_path": api_settings.get("root_data_path"),
-                        "stratified": api_settings.get("stratified_path"),
-                        "knowledge_base": api_settings.get("knowledge_base_path"),
-                        "temp": api_settings.get("temp_path")
-                    }
+                    # Model settings
+                    "embedding_batch_size": int(api_settings.get("embedding_batch_size")),
+                    "chunk_batch_size": int(api_settings.get("chunk_batch_size")),
+                    "summary_batch_size": int(api_settings.get("summary_batch_size")),
+                    # Processing settings
+                    "max_workers": int(api_settings.get("max_workers")),
+                    "filter_date": formatted_date,  # At root level as expected by API
+                    "cache_enabled": bool(api_settings.get("cache_enabled")),
+                    "padding_enabled": bool(api_settings.get("padding_enabled")),
+                    "contraction_mapping_enabled": bool(api_settings.get("contraction_mapping_enabled")),
+                    "non_alpha_numeric_enabled": bool(api_settings.get("non_alpha_numeric_enabled")),
+                    "max_tokens": int(api_settings.get("max_tokens")),
+                    # Sample settings
+                    "sample_size": int(api_settings.get("sample_size")),
+                    # Provider settings
+                    "embedding_provider": api_settings.get("embedding_provider"),
+                    "chunk_provider": api_settings.get("chunk_provider"),
+                    "summary_provider": api_settings.get("summary_provider"),
+                    # Path settings
+                    "root_data_path": api_settings.get("root_data_path"),
+                    "stratified": api_settings.get("stratified_path"),
+                    "knowledge_base": api_settings.get("knowledge_base_path"),
+                    "temp": api_settings.get("temp_path")
                 }
 
                 # Log the complete request data
@@ -218,24 +224,34 @@ async def process_query(query: str, settings: dict):
                         try:
                             error_data = await response.json()
                             error_msg = error_data.get("message", "API request failed")
+                            if "Stratified sample file not found" in error_msg and request_data["force_refresh"]:
+                                # This is expected when force_refresh is True, try the next endpoint
+                                logger.info("Stratified file not found with force_refresh=True, trying next endpoint")
+                                continue
                         except:
                             error_msg = response_text
-                        raise Exception(f"API request failed with status {response.status}: {error_msg}")
+                        last_error = f"API request failed with status {response.status}: {error_msg}"
+                        continue
 
                     try:
                         data = await response.json()
                         return data["results"]["chunks"], data["results"]["summary"]
                     except Exception as e:
                         logger.error(f"Error parsing API response: {str(e)}")
-                        raise Exception(f"Invalid API response format: {response_text}")
+                        last_error = f"Invalid API response format: {response_text}"
+                        continue
 
-            except Exception as e:
+            except aiohttp.ClientError as e:
                 logger.error(f"API connection error for {base_url}: {str(e)}")
+                last_error = str(e)
                 continue
 
         # If we get here, all URLs failed
         logger.error("All API endpoints failed.")
-        raise Exception("Failed to connect to any API endpoint. Please try again in a moment.")
+        if last_error:
+            raise Exception(f"Failed to connect to any API endpoint: {last_error}")
+        else:
+            raise Exception("Failed to connect to any API endpoint. Please try again in a moment.")
 
 def format_chunk(chunk):
     """Format a chunk for display."""
@@ -271,6 +287,16 @@ async def start():
     chunk_settings = Config.get_chunk_settings()
     path_settings = Config.PATH_SETTINGS
 
+    # Get filter date from processing settings
+    filter_date = processing_settings.get('filter_date')
+    if filter_date:
+        try:
+            # Convert to datetime and format as YYYY-MM-DD for display
+            filter_date = pd.to_datetime(filter_date).strftime('%Y-%m-%d')
+        except:
+            # If conversion fails, use the raw value
+            pass
+
     # Initialize chat settings with all configuration options
     settings = await cl.ChatSettings([
         # Processing settings
@@ -280,7 +306,7 @@ async def start():
                description="Enable to force refresh the knowledge base data"),
         TextInput(id="filter_date",
                   label="Filter Date (YYYY-MM-DD)",
-                  initial=processing_settings['filter_date'],
+                  initial=filter_date,
                   description="Date to filter data from (format: YYYY-MM-DD)"),
         Slider(id="sample_size",
                label="Sample Size",
@@ -376,7 +402,17 @@ async def setup_agent(settings: dict):
         path_settings = Config.PATH_SETTINGS
         
         # Validate and update settings
-        filter_date = settings.get("filter_date", processing_settings.get('filter_date'))
+        raw_filter_date = settings.get("filter_date")
+        filter_date = None
+        if raw_filter_date:
+            try:
+                # Validate the date format
+                filter_date = pd.to_datetime(raw_filter_date).strftime('%Y-%m-%d')
+                logger.info(f"Validated filter_date: {filter_date}")
+            except ValueError as e:
+                logger.error(f"Invalid filter_date format: {str(e)}")
+                raise ValueError("Filter date must be in YYYY-MM-DD format")
+        
         sample_size = min(
             settings.get("sample_size", sample_settings['default_sample_size']),
             sample_settings['max_sample_size']

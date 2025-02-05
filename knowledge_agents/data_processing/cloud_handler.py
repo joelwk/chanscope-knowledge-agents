@@ -135,13 +135,12 @@ class S3Handler:
                                 # Apply date filter with detailed logging
                                 if latest_date is not None:
                                     before_filter = len(chunk)
-                                    # Include a small buffer (1 day) to account for timezone differences
-                                    filter_date_with_buffer = latest_date - pd.Timedelta(days=1)
-                                    chunk = chunk[chunk[column_settings['time_column']] >= filter_date_with_buffer]
+                                    chunk = chunk[chunk[column_settings['time_column']] >= latest_date]
                                     after_filter = len(chunk)
                                     if before_filter != after_filter:
                                         logger.info(f"Date filter: {before_filter - after_filter} rows filtered out")
                                         logger.info(f"Date range in chunk: {chunk[column_settings['time_column']].min()} to {chunk[column_settings['time_column']].max()}")
+                                        logger.info(f"Filter date being used: {latest_date}")
 
                                 if not chunk.empty:
                                     total_rows_processed += len(chunk)
@@ -158,8 +157,6 @@ class S3Handler:
                             except Exception as e:
                                 logger.error(f"Error processing chunk from {s3_key}: {str(e)}")
                                 continue
-
-                        logger.info(f"Completed processing {s3_key}: {total_rows_processed} total rows processed")
 
                     except Exception as e:
                         logger.error(f"Error processing file {s3_key}: {str(e)}")

@@ -46,6 +46,7 @@ async def _run_knowledge_agents_async(
     """Async implementation of knowledge agents pipeline with three distinct models."""
     try:
         logger.info("Starting knowledge agents pipeline")
+        logger.info(f"Initial ModelConfig filter_date: {config.filter_date}")
 
         # Create knowledge agent
         agent = KnowledgeAgent()
@@ -58,11 +59,13 @@ async def _run_knowledge_agents_async(
             temp_path=Path(config.temp_path),
             filter_date=config.filter_date
         )
+        logger.info(f"Created DataConfig with filter_date: {data_config.filter_date}")
 
         # Prepare data and process references using the full pipeline
         try:
             logger.info("Preparing knowledge base...")
-            result = await prepare_knowledge_base(force_refresh=force_refresh)
+            logger.info(f"Passing DataConfig with filter_date: {data_config.filter_date}")
+            result = await prepare_knowledge_base(force_refresh=force_refresh, config=data_config)
             logger.info(f"Knowledge base preparation result: {result}")
         except Exception as e:
             logger.error(f"Error preparing knowledge base: {e}")
@@ -181,7 +184,7 @@ def main():
         },
         processing_settings={
             **processing_settings,
-            'max_workers': args.max_workers
+            'max_workers': args.max_workers,
         },
         sample_settings={
             **sample_settings,
