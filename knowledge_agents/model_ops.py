@@ -1,201 +1,184 @@
+"""Model operations and API interactions module."""
 import os
+import yaml
+import logging
+import asyncio
+import threading
+import json
 from enum import Enum
-from typing import Dict, Any, Optional, Tuple, List, Union
+from typing import Dict, Any, Optional, List, Union
 from pydantic import BaseModel
 from openai import AsyncOpenAI
-import logging
-import yaml
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 from pathlib import Path
+from config.base_settings import get_base_settings
 from config.settings import Config
-import json
 import tiktoken
-
+import hashlib
+import numpy as np
 # Initialize logging
 logger = logging.getLogger(__name__)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-logger.propagate = False
+
+# Thread-safe singleton pattern
+_instance = None
+_instance_lock = threading.Lock()
+
+class ModelProviderError(Exception):
+    """Base exception for model provider errors."""
+    pass
+
+class ModelConfigurationError(Exception):
+    """Exception for model configuration errors."""
+    pass
+
+class ModelOperationError(Exception):
+    """Exception for model operation errors."""
+    pass
+
+class EmbeddingError(ModelOperationError):
+    """Exception for embedding-specific errors."""
+    pass
+
+class ChunkGenerationError(ModelOperationError):
+    """Exception for chunk generation errors."""
+    pass
+
+class SummarizationError(ModelOperationError):
+    """Exception for summarization errors."""
+    pass
 
 class ModelProvider(Enum):
+    """Supported model providers."""
     OPENAI = "openai"
     GROK = "grok"
     VENICE = "venice"
 
     @classmethod
-    def from_str(cls, value: str) -> "ModelProvider":
-        """Convert string to ModelProvider enum."""
-        if isinstance(value, cls):
-            return value
+    def from_str(cls, value: str) -> 'ModelProvider':
+        """Convert string to ModelProvider enum, handling carriage returns."""
+        if value is None:
+            raise ValueError("Provider value cannot be None")
+        # Clean the value of any carriage returns or whitespace
+        cleaned_value = value.strip().lower()
         try:
-            return cls(value.lower() if isinstance(value, str) else value)
+            return cls(cleaned_value)
         except ValueError:
-            raise ValueError(f"Unknown model provider: {value}")
+            raise ValueError(f"'{value}' is not a valid ModelProvider")
+
+    def __str__(self) -> str:
+        """Return the string value of the provider."""
+        return self.value
+
+# Initialize client locks after ModelProvider is defined
+_client_locks = {
+    ModelProvider.OPENAI: asyncio.Lock(),
+    ModelProvider.GROK: asyncio.Lock(),
+    ModelProvider.VENICE: asyncio.Lock()
+}
 
 class ModelOperation(str, Enum):
+    """Types of model operations."""
     EMBEDDING = "embedding"
     CHUNK_GENERATION = "chunk_generation"
     SUMMARIZATION = "summarization"
 
 class ModelConfig:
-    """Unified configuration class for all knowledge agent operations.
-    
-    This class handles:
-    1. Model configurations and API settings
-    2. Path configurations
-    3. Processing settings including batching
-    4. Provider configurations
-    """
-    def __init__(
-        self,
-        path_settings: Dict[str, str] = None,
-        model_settings: Dict[str, Any] = None,
-        api_settings: Dict[str, Any] = None,
-        processing_settings: Dict[str, Any] = None,
-        sample_settings: Dict[str, Any] = None,
-        providers: Optional[Dict[ModelOperation, ModelProvider]] = None
-    ):
-        """Initialize unified configuration."""
-        # Load settings if not provided
-        if path_settings is None:
-            path_settings = Config.get_paths()
-        if model_settings is None:
-            model_settings = Config.get_model_settings()
-        if api_settings is None:
-            api_settings = Config.get_api_settings()
-        if processing_settings is None:
-            processing_settings = Config.get_processing_settings()
-        if sample_settings is None:
-            sample_settings = Config.get_sample_settings()
+    """Model configuration with validated settings."""
+    def __init__(self, **settings):
+        """Initialize ModelConfig with validated settings."""
+        if not settings:
+            settings = get_base_settings()
 
-        # Path settings
-        self.root_data_path = path_settings['root_data_path']
-        self.stratified_path = path_settings['stratified']
-        self.knowledge_base_path = path_settings['knowledge_base']
-        self.temp_path = path_settings['temp']
-        
+        # Get model settings
+        model_settings = settings.get('model', {})
+
         # Model settings
-        self.embedding_model = model_settings['embedding_model']
-        self.chunk_model = model_settings['chunk_model']
-        self.summary_model = model_settings['summary_model']
-        
-        # API settings
-        self.openai_api_key = api_settings.get('openai_api_key')
-        self.grok_api_key = api_settings.get('grok_api_key')
-        self.venice_api_key = api_settings.get('venice_api_key')
+        self.embedding_batch_size = model_settings.get('embedding_batch_size', 10)
+        self.chunk_batch_size = model_settings.get('chunk_batch_size', 5)
+        self.summary_batch_size = model_settings.get('summary_batch_size', 3)
+        self.default_embedding_provider = model_settings.get('default_embedding_provider')
+        self.default_chunk_provider = model_settings.get('default_chunk_provider')
+        self.default_summary_provider = model_settings.get('default_summary_provider')
 
-        # Processing settings
-        self.max_tokens = processing_settings['max_tokens']
-        self.chunk_size = processing_settings['chunk_size']
-        self.cache_enabled = processing_settings['cache_enabled']
-        self.filter_date = processing_settings.get('filter_date')
-        self.max_workers = processing_settings['max_workers']
+        # Get path settings
+        path_settings = settings.get('paths', {})
 
-        # Batch settings
-        self.sample_size = sample_settings['default_sample_size']
-        self.embedding_batch_size = model_settings['embedding_batch_size']
-        self.chunk_batch_size = model_settings['chunk_batch_size']
-        self.summary_batch_size = model_settings['summary_batch_size']
+        # Path settings - convert to strings
+        self.root_data_path = str(path_settings.get('root_data_path', 'data'))
+        self.stratified_path = str(path_settings.get('stratified', 'data/stratified'))
+        self.temp_path = str(path_settings.get('temp', 'temp_files'))
 
-        # Provider settings
-        self.providers = providers or {
-            ModelOperation.EMBEDDING: ModelProvider(model_settings['default_embedding_provider']),
-            ModelOperation.CHUNK_GENERATION: ModelProvider(model_settings['default_chunk_provider']),
-            ModelOperation.SUMMARIZATION: ModelProvider(model_settings['default_summary_provider'])
+        # Get processing settings
+        self.processing_settings = settings.get('processing', {})
+
+        # Store path settings for easy access
+        self.path_settings = {
+            'root_data_path': self.root_data_path,
+            'stratified': self.stratified_path,
+            'temp': self.temp_path
         }
 
-        # Validate configuration
-        self._validate_config(sample_settings)
+        # Store model settings for easy access
+        self.model_settings = model_settings
 
-    def _validate_config(self, sample_settings: Dict[str, Any]) -> None:
-        """Validate configuration settings."""
-        # Validate sample size
-        if self.sample_size > sample_settings['max_sample_size']:
-            logger.warning(f"Sample size {self.sample_size} exceeds maximum of {sample_settings['max_sample_size']}. Setting to maximum.")
-            self.sample_size = sample_settings['max_sample_size']
-        elif self.sample_size < sample_settings['min_sample_size']:
-            logger.warning(f"Sample size {self.sample_size} below minimum of {sample_settings['min_sample_size']}. Setting to minimum.")
-            self.sample_size = sample_settings['min_sample_size']
+        # Extract common processing settings for direct access
+        self.filter_date = self.processing_settings.get('filter_date')
+        self.sample_size = self.processing_settings.get('sample_size', 1500)
+        self.max_workers = self.processing_settings.get('max_workers', 4)
 
-        # Validate paths
-        for path_attr in ['root_data_path', 'stratified_path', 'knowledge_base_path', 'temp_path']:
-            path = getattr(self, path_attr)
-            if not isinstance(path, (str, Path)):
-                raise ValueError(f"{path_attr} must be a string or Path")
-
-        # Validate numeric values
-        for num_attr in ['embedding_batch_size', 'chunk_batch_size', 'summary_batch_size', 'max_tokens', 'chunk_size']:
-            value = getattr(self, num_attr)
-            if not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{num_attr} must be a positive integer")
-
-        # Validate max_workers
-        if self.max_workers is not None and (not isinstance(self.max_workers, int) or self.max_workers <= 0):
-            raise ValueError("max_workers must be None or a positive integer")
-
-        # Validate providers
-        if not isinstance(self.providers, dict):
-            raise ValueError("providers must be a dictionary")
-        for op, provider in self.providers.items():
-            if not isinstance(op, ModelOperation):
-                raise ValueError("Provider keys must be ModelOperation instances")
-            if not isinstance(provider, ModelProvider):
-                raise ValueError("Provider values must be ModelProvider instances")
-
-    def get_batch_config(self) -> Dict[str, int]:
-        """Get the current batch configuration."""
-        return {
-            "sample_size": self.sample_size,
-            "embedding_batch_size": self.embedding_batch_size,
-            "chunk_batch_size": self.chunk_batch_size,
-            "summary_batch_size": self.summary_batch_size
-        }
+    @property
+    def paths(self) -> Dict[str, str]:
+        """Get path settings."""
+        return self.path_settings
 
     @classmethod
     def from_env(cls) -> 'ModelConfig':
-        """Create configuration from environment variables."""
+        """Create ModelConfig from environment settings."""
         return cls()
 
-    @classmethod
-    def from_settings(cls, settings: Any) -> 'ModelConfig':
-        """Create configuration from settings object."""
-        path_settings = Config.get_paths()
-        model_settings = Config.get_model_settings()
-        api_settings = Config.get_api_settings()
-        processing_settings = Config.get_processing_settings()
-        sample_settings = Config.get_sample_settings()
+    def get_provider(self, operation: ModelOperation) -> ModelProvider:
+        """Get the configured provider for a given operation."""
+        provider_map = {
+            ModelOperation.EMBEDDING: self.default_embedding_provider,
+            ModelOperation.CHUNK_GENERATION: self.default_chunk_provider,
+            ModelOperation.SUMMARIZATION: self.default_summary_provider
+        }
+        return ModelProvider(provider_map[operation])
 
-        # Override settings with values from settings object
-        path_settings.update({
-            'root_data_path': getattr(settings, 'root_data_path', path_settings['root_data_path']),
-            'stratified': getattr(settings, 'stratified_path', path_settings['stratified']),
-            'knowledge_base': getattr(settings, 'knowledge_base_path', path_settings['knowledge_base'])
-        })
+    def get_batch_size(self, operation: ModelOperation) -> int:
+        """Get the configured batch size for a given operation."""
+        batch_map = {
+            ModelOperation.EMBEDDING: self.embedding_batch_size,
+            ModelOperation.CHUNK_GENERATION: self.chunk_batch_size,
+            ModelOperation.SUMMARIZATION: self.summary_batch_size
+        }
+        return batch_map[operation]
 
-        processing_settings.update({
-            'max_workers': getattr(settings, 'max_workers', processing_settings['max_workers'])
-        })
+def _get_config_hash(config: ModelConfig) -> str:
+    """Generate a hash of configuration settings that affect the data processing.
 
-        model_settings.update({
-            'embedding_batch_size': getattr(settings, 'embedding_batch_size', model_settings['embedding_batch_size']),
-            'chunk_batch_size': getattr(settings, 'chunk_batch_size', model_settings['chunk_batch_size']),
-            'summary_batch_size': getattr(settings, 'summary_batch_size', model_settings['summary_batch_size'])
-        })
+    This function extracts relevant settings that determine the data content
+    and creates a unique hash to identify the configuration state.
 
-        sample_settings.update({
-            'default_sample_size': getattr(settings, 'sample_size', sample_settings['default_sample_size'])
-        })
+    Args:
+        config: ModelConfig instance containing configuration settings
 
-        return cls(
-            path_settings=path_settings,
-            model_settings=model_settings,
-            api_settings=api_settings,
-            processing_settings=processing_settings,
-            sample_settings=sample_settings
-        )
+    Returns:
+        str: MD5 hash of the configuration settings
+    """
+    # Extract relevant settings that affect data processing
+    settings = {
+        'filter_date': str(config.filter_date) if config.filter_date else None,
+        'sample_size': config.sample_size,
+        'paths': {
+            'root_data_path': config.root_data_path,
+            'stratified': config.stratified_path
+        }
+    }
+
+    # Create hash
+    settings_str = json.dumps(settings, sort_keys=True)
+    return hashlib.md5(settings_str.encode()).hexdigest()
 
 class EmbeddingResponse(BaseModel):
     """Standardized embedding response across providers."""
@@ -225,105 +208,196 @@ def load_prompts(prompt_path: str = None) -> Dict[str, Any]:
         logger.error(f"Error loading prompts from {prompt_path}: {str(e)}")
         raise
 
-def load_config() -> Tuple[ModelConfig]:
-    """Load configuration using Config class from settings.
-    
-    This is a cached function that will only load the configuration once.
-    Subsequent calls will return the cached configuration.
+def load_config() -> ModelConfig:
+    """Load configuration using BaseConfig.
+
+    Returns:
+        ModelConfig: Configuration instance with validated settings
     """
     if not hasattr(load_config, '_config_cache'):
-        # Create model config using Config class values
-        model_config = ModelConfig(
-            path_settings=Config.get_paths(),
-            model_settings=Config.get_model_settings(),
-            api_settings=Config.get_api_settings(),
-            processing_settings=Config.get_processing_settings()
-        )
+        try:
+            # Create model config directly from BaseConfig
+            model_config = ModelConfig()
 
-        # Cache the configuration
-        load_config._config_cache = model_config
+            # Validate required paths exist
+            for path_name, path in model_config.paths.items():
+                path_obj = Path(path)
+                if path_name != 'temp':  # temp directory is created on demand
+                    if not path_obj.exists():
+                        logger.warning(f"Creating required directory: {path}")
+                        path_obj.mkdir(parents=True, exist_ok=True)
+
+            # Cache the configuration
+            load_config._config_cache = model_config
+
+        except Exception as e:
+            logger.error(f"Error loading configuration: {str(e)}")
+            raise ModelConfigurationError(f"Failed to load configuration: {str(e)}") from e
 
     return load_config._config_cache
 
 class KnowledgeAgent:
-    """Agent for handling model operations and API interactions."""
+    """Thread-safe singleton class for model operations."""
+
+    def __new__(cls):
+        """Ensure singleton pattern with thread safety."""
+        global _instance
+        if _instance is None:
+            with _instance_lock:
+                if _instance is None:
+                    _instance = super(KnowledgeAgent, cls).__new__(cls)
+                    _instance._initialized = False
+        return _instance
 
     def __init__(self):
-        """Initialize the KnowledgeAgent using settings from Config."""
-        # Load configuration
-        self.config = load_config()
+        """Initialize the agent if not already initialized."""
+        if not getattr(self, '_initialized', False):
+            with _instance_lock:
+                if not getattr(self, '_initialized', False):
+                    self._config = None
+                    self._chunk_lock = asyncio.Lock()
+                    self._embedding_lock = asyncio.Lock()
+                    self.prompts = load_prompts()
+                    self._clients = self._initialize_clients()
+                    self._initialized = True
+                    logger.info("Initialized KnowledgeAgent singleton")
 
-        # Initialize API clients
-        self.models = self._initialize_clients()
+    async def _get_client(self, provider: ModelProvider) -> Any:
+        """Get or create a client for the specified provider with proper locking."""
+        async with _client_locks[provider]:
+            if provider not in self._clients:
+                self._clients[provider] = await self._create_client(provider)
+            return self._clients[provider]
 
-        # Load prompts
-        self.prompts = load_prompts()
+    async def _create_client(self, provider: ModelProvider) -> Any:
+        """Create a new client for the specified provider."""
+        try:
+            # Import Config here to avoid circular dependency
+            from config.settings import Config
 
-    def _initialize_clients(self):
-        """Initialize API clients based on available credentials."""
+            if provider == ModelProvider.OPENAI:
+                return AsyncOpenAI(api_key=Config.get_openai_api_key())
+            elif provider == ModelProvider.GROK:
+                grok_key = Config.get_grok_api_key()
+                if not grok_key:
+                    raise ModelProviderError("Grok API key not found")
+                return AsyncOpenAI(
+                    api_key=grok_key,
+                    base_url=get_base_settings()['model'].get('grok_api_base')
+                )
+            elif provider == ModelProvider.VENICE:
+                venice_key = Config.get_venice_api_key()
+                if not venice_key:
+                    raise ModelProviderError("Venice API key not found")
+                return AsyncOpenAI(
+                    api_key=venice_key,
+                    base_url=get_base_settings()['model'].get('venice_api_base')
+                )
+            else:
+                raise ModelProviderError(f"Unsupported provider: {provider}")
+        except Exception as e:
+            logger.error(f"Error creating client for provider {provider}: {str(e)}")
+            logger.error(f"Provider settings: {get_base_settings()['model']}")
+            raise ModelProviderError(f"Failed to create client for {provider}: {str(e)}")
+
+    def _validate_config(self, config: Optional[ModelConfig] = None) -> ModelConfig:
+        """Validate and return configuration."""
+        if config is None:
+            if self._config is None:
+                self._config = ModelConfig.from_env()
+            return self._config
+        return config
+
+    def _initialize_clients(self) -> Dict[str, AsyncOpenAI]:
+        """Initialize model clients dynamically based on provided configuration."""
         clients = {}
+        base_settings = get_base_settings()
 
-        # Check for OpenAI configuration
-        if self.config.openai_api_key:
+        # Initialize OpenAI client
+        openai_api_key = Config.get_openai_api_key()
+        if not openai_api_key:
+            logger.warning("OpenAI API key is missing or empty")
+        else:
             try:
-                clients['openai'] = AsyncOpenAI(api_key=self.config.openai_api_key)
+                clients[ModelProvider.OPENAI.value] = AsyncOpenAI(
+                    api_key=openai_api_key,
+                    base_url=base_settings['model'].get('openai_api_base', 'https://api.openai.com/v1'),
+                    max_retries=5
+                )
                 logger.info("OpenAI client initialized successfully")
             except Exception as e:
-                logger.warning(f"Failed to initialize OpenAI client: {str(e)}")
+                logger.error(f"Failed to initialize OpenAI client: {str(e)}")
+                raise ModelConfigurationError(f"Failed to initialize OpenAI client: {str(e)}") from e
 
-        # Check for Grok configuration
-        if self.config.grok_api_key:
+        # Initialize Grok client using OpenAI framework
+        grok_api_key = Config.get_grok_api_key()
+        if grok_api_key:
             try:
-                clients['grok'] = {'api_key': self.config.grok_api_key}
+                clients[ModelProvider.GROK.value] = AsyncOpenAI(
+                    api_key=grok_api_key,
+                    base_url=base_settings['model'].get('grok_api_base'),
+                    max_retries=5
+                )
                 logger.info("Grok client initialized successfully")
             except Exception as e:
-                logger.warning(f"Failed to initialize Grok client: {str(e)}")
+                logger.error(f"Failed to initialize Grok client: {str(e)}")
 
-        # Check for Venice configuration
-        if self.config.venice_api_key:
+        # Initialize Venice client using OpenAI framework
+        venice_api_key = Config.get_venice_api_key()
+        if venice_api_key:
             try:
-                clients['venice'] = {'api_key': self.config.venice_api_key}
+                clients[ModelProvider.VENICE.value] = AsyncOpenAI(
+                    api_key=venice_api_key,
+                    base_url=base_settings['model'].get('venice_api_base'),
+                    max_retries=5
+                )
                 logger.info("Venice client initialized successfully")
             except Exception as e:
-                logger.warning(f"Failed to initialize Venice client: {str(e)}")
+                logger.error(f"Failed to initialize Venice client: {str(e)}")
 
         if not clients:
-            raise ValueError(
-                "No API providers configured. Please set at least one of the following in settings:\n"
-                "- OPENAI_API_KEY (Required)\n"
-                "- GROK_API_KEY (Optional)\n"
-                "- VENICE_API_KEY (Optional)")
+            raise ModelConfigurationError("No API providers configured. Please set at least one of the following in settings:\n"
+                           "- OPENAI_API_KEY (Required)\n"
+                           "- GROK_API_KEY (Optional)\n"
+                           "- VENICE_API_KEY (Optional)")
         return clients
 
     def _get_model_name(self, provider: ModelProvider, operation: ModelOperation) -> str:
         """Get the appropriate model name for a provider and operation type."""
-        model_settings = Config.get_model_settings()
-        
-        if operation == ModelOperation.EMBEDDING:
-            if provider == ModelProvider.OPENAI:
-                return model_settings['embedding_model']
+        try:
+            # Import Config here to avoid circular dependency
+            from config.settings import Config
+
+            if operation == ModelOperation.EMBEDDING:
+                if provider == ModelProvider.OPENAI:
+                    return Config.get_openai_embedding_model()
+                elif provider == ModelProvider.GROK:
+                    return Config.get_grok_model() or "grok-v1-embedding"
+                else:
+                    raise ModelProviderError(f"Unsupported embedding provider: {provider}")
+            elif operation == ModelOperation.CHUNK_GENERATION:
+                if provider == ModelProvider.OPENAI:
+                    return Config.get_openai_model()
+                elif provider == ModelProvider.GROK:
+                    return Config.get_grok_model()
+                elif provider == ModelProvider.VENICE:
+                    return Config.get_venice_chunk_model()
+                else:
+                    raise ModelProviderError(f"Unsupported chunk generation provider: {provider}")
+            elif operation == ModelOperation.SUMMARIZATION:
+                if provider == ModelProvider.OPENAI:
+                    return Config.get_openai_model()
+                elif provider == ModelProvider.GROK:
+                    return Config.get_grok_model()
+                elif provider == ModelProvider.VENICE:
+                    return Config.get_venice_model()
+                else:
+                    raise ModelProviderError(f"Unsupported summarization provider: {provider}")
             else:
-                raise ValueError(f"Unsupported embedding provider: {provider}")
-        elif operation == ModelOperation.CHUNK_GENERATION:
-            if provider == ModelProvider.OPENAI:
-                return model_settings['chunk_model']
-            elif provider == ModelProvider.GROK:
-                return model_settings['grok_model']
-            elif provider == ModelProvider.VENICE:
-                return model_settings['venice_chunk_model']
-            else:
-                raise ValueError(f"Unsupported chunk generation provider: {provider}")
-        elif operation == ModelOperation.SUMMARIZATION:
-            if provider == ModelProvider.OPENAI:
-                return model_settings['chunk_model']  # Use same model for summarization
-            elif provider == ModelProvider.GROK:
-                return model_settings['grok_model']
-            elif provider == ModelProvider.VENICE:
-                return model_settings['venice_model']
-            else:
-                raise ValueError(f"Unsupported summarization provider: {provider}")
-        else:
-            raise ValueError(f"Unknown operation: {operation}")
+                raise ModelOperationError(f"Unknown operation: {operation}")
+        except Exception as e:
+            logger.error(f"Error getting model name for {provider} and operation {operation}: {str(e)}")
+            raise ModelProviderError(f"Failed to get model name: {str(e)}")
 
     async def generate_summary(
         self, 
@@ -337,17 +411,17 @@ class KnowledgeAgent:
         if provider is None:
             provider = self._get_default_provider(ModelOperation.SUMMARIZATION)
 
-        client = self._get_client(provider)
-        model = self._get_model_name(provider, ModelOperation.SUMMARIZATION)
-
-        # Ensure temporal context is properly formatted
-        if temporal_context is None:
-            temporal_context = {
-                "start_date": "Unknown",
-                "end_date": "Unknown"
-            }
-
         try:
+            client = await self._get_client(provider)
+            model = self._get_model_name(provider, ModelOperation.SUMMARIZATION)
+
+            # Ensure temporal context is properly formatted
+            if temporal_context is None:
+                temporal_context = {
+                    "start_date": "Unknown",
+                    "end_date": "Unknown"
+                }
+
             # Create base message content without results first
             base_content = self.prompts["user_prompts"]["summary_generation"]["content"].format(
                 query=query,
@@ -368,7 +442,12 @@ class KnowledgeAgent:
             available_tokens = 7000 - base_tokens
 
             # Parse results and create chunks if needed
-            chunk_results = json.loads(results)
+            try:
+                chunk_results = json.loads(results)
+            except json.JSONDecodeError as e:
+                logger.error(f"Error parsing results JSON: {str(e)}")
+                raise SummarizationError("Invalid results format") from e
+
             if not isinstance(chunk_results, list):
                 chunk_results = [chunk_results]
 
@@ -377,14 +456,16 @@ class KnowledgeAgent:
             chunks_tokens = len(encoding.encode(chunks_text))
 
             if chunks_tokens > available_tokens:
+                logger.warning(f"Results exceed token limit ({chunks_tokens} > {available_tokens}). Truncating...")
                 # Use create_chunks to manage token size
                 from .inference_ops import create_chunks
                 chunks = create_chunks(chunks_text, available_tokens, encoding)
 
-                # Take the first chunk that fits
                 if chunks:
                     chunks_text = chunks[0]["text"]
+                    logger.info(f"Truncated results to {len(encoding.encode(chunks_text))} tokens")
                 else:
+                    logger.warning("Fallback to simple truncation")
                     # If chunking fails, take a simple truncation approach
                     truncated_results = []
                     current_tokens = 0
@@ -432,10 +513,13 @@ class KnowledgeAgent:
                 frequency_penalty=0.2
             )
             return response.choices[0].message.content
+
+        except SummarizationError:
+            raise
         except Exception as e:
-            logging.error(f"Error generating summary with {provider}: {e}")
-            if provider != ModelProvider.OPENAI and ModelProvider.OPENAI in self.models:
-                logging.warning(f"Falling back to OpenAI for summary generation")
+            logger.error(f"Error generating summary with {provider}: {str(e)}")
+            if provider != ModelProvider.OPENAI and ModelProvider.OPENAI in self._clients:
+                logger.warning(f"Falling back to OpenAI for summary generation")
                 return await self.generate_summary(
                     query, 
                     results, 
@@ -443,7 +527,7 @@ class KnowledgeAgent:
                     temporal_context=temporal_context,
                     provider=ModelProvider.OPENAI
                 )
-            raise
+            raise SummarizationError(f"Failed to generate summary: {str(e)}") from e
 
     async def generate_chunks(
         self, 
@@ -454,190 +538,121 @@ class KnowledgeAgent:
         if provider is None:
             provider = self._get_default_provider(ModelOperation.CHUNK_GENERATION)
 
-        client = self._get_client(provider)
+        client = await self._get_client(provider)
         model = self._get_model_name(provider, ModelOperation.CHUNK_GENERATION)
 
-        try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": self.prompts["system_prompts"]["generate_chunks"]["content"]
-                    },
-                    {
-                        "role": "user",
-                        "content": self.prompts["user_prompts"]["text_chunk_summary"]["content"].format(
-                            content=content
-                        )
-                    }
-                ],
-                temperature=0.1,
-                presence_penalty=0.1,
-                frequency_penalty=0.1
-            )
-
-            result = response.choices[0].message.content
-            if not result:
-                raise ValueError("Empty response from model")
-
-            # Split on signal_context as per prompt template
-            sections = result.split("<signal_context>")
-
-            if len(sections) > 1:
-                thread_analysis = sections[0].strip()
-                signal_context = sections[1].strip()
-
-                # Parse thread analysis metrics
-                metrics = {}
-                for line in thread_analysis.split('\n'):
-                    if '(' in line and ')' in line:
-                        try:
-                            # Extract metrics from format: (t, metric, value, confidence)
-                            metric_str = line[line.find("(")+1:line.find(")")].strip()
-                            parts = [p.strip().strip("'\"") for p in metric_str.split(',')]                            
-                            # Skip header lines
-                            if parts[0] == 't' or 'metric' in parts:
-                                continue
-
-                            if len(parts) >= 4:
-                                timestamp, metric_name, value, confidence = parts[:4]
-                                try:
-                                    metrics[metric_name] = float(value)
-                                except (ValueError, TypeError):
-                                    logger.warning(f"Could not convert metric value to float: {value}")
-                        except Exception as e:
-                            logger.warning(f"Failed to parse metric line: {line}, error: {e}")
-
-                # Parse context sections
-                context_elements = {
-                    "key_claims": [],
-                    "supporting_text": [],
-                    "risk_assessment": [],
-                    "viral_potential": []
-                }
-
-                current_section = None
-                for line in signal_context.split('\n'):
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    # Check for section headers
-                    lower_line = line.lower()
-                    if "key claims" in lower_line:
-                        current_section = "key_claims"
-                    elif "supporting" in lower_line and "text" in lower_line:
-                        current_section = "supporting_text"
-                    elif "risk" in lower_line and "assessment" in lower_line:
-                        current_section = "risk_assessment"
-                    elif "viral" in lower_line and "potential" in lower_line:
-                        current_section = "viral_potential"
-                    elif current_section and (line.startswith('-') or line.startswith('*')):
-                        # Remove leading dash/asterisk and strip whitespace
-                        content = line.lstrip('-* ').strip()
-                        if content:  # Only add non-empty lines
-                            context_elements[current_section].append(content)
-
-                return {
-                    "analysis": {
-                        "thread_analysis": thread_analysis,
-                        "metrics": metrics
-                    },
-                    "context": context_elements,
-                    "metrics": {
-                        "sections": len(sections),
-                        "analysis_length": len(thread_analysis),
-                        "context_length": len(signal_context),
-                        **metrics
-                    }
-                }
-            else:
-                # If no signal context found, try to parse as basic analysis
-                logger.warning("No signal_context found in response, using basic format")
-                return {
-                    "analysis": {
-                        "thread_analysis": result.strip(),
-                        "metrics": {}
-                    },
-                    "context": {
-                        "key_claims": [],
-                        "supporting_text": [],
-                        "risk_assessment": [],
-                        "viral_potential": []
-                    },
-                    "metrics": {
-                        "sections": 1,
-                        "analysis_length": len(result),
-                        "context_length": 0
-                    }
-                }
-
-        except Exception as e:
-            logger.error(f"Error generating chunks with {provider}: {e}")
-            if provider != ModelProvider.OPENAI and ModelProvider.OPENAI in self.models:
-                logger.warning(f"Falling back to OpenAI for chunk generation")
-                return await self.generate_chunks(content, provider=ModelProvider.OPENAI)
-            raise ValueError(f"Failed to generate chunks with {provider}: {str(e)}")
-
-    async def generate_chunks_batch(
-        self,
-        contents: List[str],
-        provider: Optional[ModelProvider] = None,
-        chunk_batch_size: int = 20  # OpenAI recommends 20 requests per batch
-    ) -> List[Dict[str, str]]:
-        """Generate chunks for multiple contents in batches."""
-        if provider is None:
-            provider = self._get_default_provider(ModelOperation.CHUNK_GENERATION)
-
-        client = self._get_client(provider)
-        model = self._get_model_name(provider, ModelOperation.CHUNK_GENERATION)
-        results = []
-
-        # Process in batches
-        for i in range(0, len(contents), chunk_batch_size):
-            batch = contents[i:i + chunk_batch_size]
+        async with self._chunk_lock:
             try:
-                # Create messages for each content in batch
-                messages = [
-                    {
-                        "role": "system",
-                        "content": self.prompts["system_prompts"]["generate_chunks"]["content"]
-                    }
-                ]
-                for content in batch:
-                    messages.append({
-                        "role": "user",
-                        "content": self.prompts["user_prompts"]["text_chunk_summary"]["content"].format(
-                            content=content
-                        )
-                    })
-
-                # Make batch request
                 response = await client.chat.completions.create(
                     model=model,
-                    messages=messages,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": self.prompts["system_prompts"]["generate_chunks"]["content"]
+                        },
+                        {
+                            "role": "user",
+                            "content": self.prompts["user_prompts"]["text_chunk_summary"]["content"].format(
+                                content=content
+                            )
+                        }
+                    ],
                     temperature=0.1,
                     presence_penalty=0.1,
                     frequency_penalty=0.1
                 )
 
-                # Process responses
-                for choice in response.choices:
-                    result = self._process_chunk_response(choice.message.content)
-                    results.append(result)
+                result = response.choices[0].message.content
+                if not result:
+                    raise ChunkGenerationError("Empty response from model")
 
+                # Split on signal_context as per prompt template
+                sections = result.split("<signal_context>")
+
+                if len(sections) > 1:
+                    thread_analysis = sections[0].strip()
+                    signal_context = sections[1].strip()
+
+                    # Parse thread analysis metrics
+                    metrics = {}
+                    for line in thread_analysis.split('\n'):
+                        if '(' in line and ')' in line:
+                            try:
+                                # Extract metrics from format: (t, metric, value, confidence)
+                                metric_str = line[line.find("(")+1:line.find(")")].strip()
+                                parts = [p.strip().strip("'\"") for p in metric_str.split(',')]
+                                if parts[0] == 't' or 'metric' in parts:
+                                    continue
+                                if len(parts) >= 4:
+                                    timestamp, metric_name, value, confidence = parts[:4]
+                                    try:
+                                        metrics[metric_name] = float(value)
+                                    except (ValueError, TypeError) as e:
+                                        logger.warning(f"Could not convert metric value to float: {value}")
+                            except Exception as e:
+                                logger.warning(f"Failed to parse metric line: {line}, error: {e}")
+
+                    # Parse context sections
+                    context_elements = self._parse_context_sections(signal_context)
+
+                    return {
+                        "analysis": {
+                            "thread_analysis": thread_analysis,
+                            "metrics": metrics
+                        },
+                        "context": context_elements,
+                        "metrics": {
+                            "sections": len(sections),
+                            "analysis_length": len(thread_analysis),
+                            "context_length": len(signal_context),
+                            **metrics
+                        }
+                    }
+                else:
+                    return {
+                        "analysis": {
+                            "thread_analysis": result.strip(),
+                            "metrics": {}
+                        },
+                        "context": {
+                            "key_claims": [],
+                            "supporting_text": [],
+                            "risk_assessment": [],
+                            "viral_potential": []
+                        },
+                        "metrics": {
+                            "sections": 1,
+                            "analysis_length": len(result),
+                            "context_length": 0
+                        }
+                    }
+            except ChunkGenerationError:
+                raise
             except Exception as e:
-                logger.error(f"Error in batch chunk generation: {e}")
-                # Fall back to individual processing if batch fails
-                for content in batch:
-                    try:
-                        result = await self.generate_chunks(content, provider)
-                        results.append(result)
-                    except Exception as inner_e:
-                        logger.error(f"Error in fallback chunk generation: {inner_e}")
-                        results.append(None)
+                logger.error(f"Error generating chunks with {provider}: {str(e)}")
+                if provider != ModelProvider.OPENAI and ModelProvider.OPENAI in self._clients:
+                    logger.warning(f"Falling back to OpenAI for chunk generation")
+                    return await self.generate_chunks(content, provider=ModelProvider.OPENAI)
+                raise ChunkGenerationError(f"Failed to generate chunks: {str(e)}") from e
 
+    async def generate_chunks_batch(
+        self,
+        contents: List[str],
+        provider: Optional[ModelProvider] = None,
+        chunk_batch_size: Optional[int] = None
+    ) -> List[Dict[str, str]]:
+        """Generate chunks for multiple contents in batches."""
+        config = self._validate_config()
+        provider = provider or self._get_default_provider(ModelOperation.CHUNK_GENERATION)
+        chunk_batch_size = chunk_batch_size or config.chunk_batch_size
+
+        results = []
+        for i in range(0, len(contents), chunk_batch_size):
+            batch = contents[i:i + chunk_batch_size]
+            batch_results = await asyncio.gather(
+                *[self.generate_chunks(content, provider=provider) for content in batch]
+            )
+            results.extend(batch_results)
         return results
 
     async def generate_summaries_batch(
@@ -647,77 +662,38 @@ class KnowledgeAgent:
         contexts: Optional[List[str]] = None,
         temporal_contexts: Optional[List[Dict[str, str]]] = None,
         provider: Optional[ModelProvider] = None,
-        summary_batch_size: int = 20  # OpenAI recommends 20 requests per batch
+        summary_batch_size: Optional[int] = None
     ) -> List[str]:
         """Generate summaries for multiple queries in batches."""
-        if provider is None:
-            provider = self._get_default_provider(ModelOperation.SUMMARIZATION)
+        config = self._validate_config()
+        provider = provider or self._get_default_provider(ModelOperation.SUMMARIZATION)
+        summary_batch_size = summary_batch_size or config.summary_batch_size
 
-        client = self._get_client(provider)
-        model = self._get_model_name(provider, ModelOperation.SUMMARIZATION)
-
-        # Initialize optional parameters
         if contexts is None:
             contexts = [None] * len(queries)
         if temporal_contexts is None:
-            temporal_contexts = [{"start_date": "Unknown", "end_date": "Unknown"}] * len(queries)
+            temporal_contexts = [None] * len(queries)
 
-        summaries = []
-
-        # Process in batches
+        results = []
         for i in range(0, len(queries), summary_batch_size):
             batch_queries = queries[i:i + summary_batch_size]
             batch_results = results_list[i:i + summary_batch_size]
             batch_contexts = contexts[i:i + summary_batch_size]
             batch_temporal = temporal_contexts[i:i + summary_batch_size]
 
-            try:
-                # Create messages for each query in batch
-                messages = []
-                for q, r, c, t in zip(batch_queries, batch_results, batch_contexts, batch_temporal):
-                    messages.extend([
-                        {
-                            "role": "system",
-                            "content": self.prompts["system_prompts"]["objective_analysis"]["content"]
-                        },
-                        {
-                            "role": "user",
-                            "content": self.prompts["user_prompts"]["summary_generation"]["content"].format(
-                                query=q,
-                                temporal_context=f"Time Range: {t['start_date']} to {t['end_date']}",
-                                context=c or "No additional context provided.",
-                                results=r,
-                                start_date=t['start_date'],
-                                end_date=t['end_date']
-                            )
-                        }
-                    ])
-
-                # Make batch request
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.3,
-                    presence_penalty=0.2,
-                    frequency_penalty=0.2
-                )
-
-                # Process responses
-                batch_summaries = [choice.message.content for choice in response.choices]
-                summaries.extend(batch_summaries)
-
-            except Exception as e:
-                logger.error(f"Error in batch summary generation: {e}")
-                # Fall back to individual processing if batch fails
-                for q, r, c, t in zip(batch_queries, batch_results, batch_contexts, batch_temporal):
-                    try:
-                        summary = await self.generate_summary(q, r, c, t, provider)
-                        summaries.append(summary)
-                    except Exception as inner_e:
-                        logger.error(f"Error in fallback summary generation: {inner_e}")
-                        summaries.append(None)
-
-        return summaries
+            batch_summaries = await asyncio.gather(
+                *[self.generate_summary(
+                    query=query,
+                    results=result,
+                    context=context,
+                    temporal_context=temporal,
+                    provider=provider
+                ) for query, result, context, temporal in zip(
+                    batch_queries, batch_results, batch_contexts, batch_temporal
+                )]
+            )
+            results.extend(batch_summaries)
+        return results
 
     def _process_chunk_response(self, result: str) -> Dict[str, Any]:
         """Process chunk response and extract structured data."""
@@ -823,24 +799,31 @@ class KnowledgeAgent:
         provider: Optional[ModelProvider] = None,
         batch_size: Optional[int] = None
     ) -> EmbeddingResponse:
-        """Get embeddings for text using specified provider.
+        """Request embeddings from the specified provider with batching support."""
+        async with self._embedding_lock:
+            config = self._validate_config()
+            provider = provider or self._get_default_provider(ModelOperation.EMBEDDING)
+            batch_size = batch_size or config.embedding_batch_size
 
-        This implementation follows OpenAI's best practices for batching:
-        - Respects the passed batch_size parameter for number of items per batch
-        - Counts tokens to ensure we don't exceed OpenAI's limits (max 8191 tokens per text)
-        - Falls back to token-based batching if no batch_size specified
-        - Properly handles both single and batch requests
-        """
-        if provider is None:
-            provider = self._get_default_provider(ModelOperation.EMBEDDING)
+            # Generate a deterministic hash for mock embeddings based on text content
+            def generate_mock_embeddings(input_texts: List[str], dim: int = 3072) -> List[List[float]]:
+                """Generate mock embeddings for when no API provider is available."""
+                import hashlib
+                import numpy as np
 
-        if provider not in [ModelProvider.OPENAI, ModelProvider.GROK]:
-            raise ValueError(f"Unsupported embedding provider: {provider}")
+                mock_embeddings = []
+                for t in input_texts:
+                    # Create a deterministic seed from the text hash
+                    seed = int(hashlib.md5(t.encode('utf-8')).hexdigest(), 16) % (2**32)
+                    np.random.seed(seed)
 
-        client = self._get_client(provider)
-        model = self._get_model_name(provider, ModelOperation.EMBEDDING)
+                    # Generate a normalized random embedding
+                    mock_embedding = np.random.normal(0, 0.1, dim)
+                    mock_embedding = mock_embedding / np.linalg.norm(mock_embedding)
+                    mock_embeddings.append(mock_embedding.tolist())
 
-        try:
+                return mock_embeddings
+
             # Ensure text is properly formatted
             if isinstance(text, str):
                 input_text = text.strip()
@@ -848,30 +831,73 @@ class KnowledgeAgent:
                     raise ValueError("Empty text input")
                 texts_to_process = [input_text]
             elif isinstance(text, list):
-                # Filter and clean list input
-                texts_to_process = [str(t).strip() for t in text if t and str(t).strip()]
+                # Filter out empty strings and non-strings
+                texts_to_process = [t.strip() for t in text if isinstance(t, str) and t.strip()]
                 if not texts_to_process:
-                    raise ValueError("No valid text inputs in list")
+                    raise ValueError("No valid text inputs provided")
             else:
-                raise ValueError(f"Invalid input type: {type(text)}")
+                raise ValueError(f"Unsupported text input type: {type(text)}")
 
-            # Get token counts for validation
-            encoding = tiktoken.get_encoding("cl100k_base")
-            token_counts = [len(encoding.encode(t)) for t in texts_to_process]
+            # Check if the provider is configured
+            try:
+                # If provider is not in clients or the value is None, generate mock embeddings
+                if provider.value not in self._clients or self._clients.get(provider.value) is None:
+                    logger.warning(f"Provider {provider} not configured, generating mock embeddings")
+                    mock_embeddings = generate_mock_embeddings(texts_to_process)
+                    return EmbeddingResponse(
+                        embedding=mock_embeddings if len(mock_embeddings) > 1 else mock_embeddings[0],
+                        model="mock-embedding-model",
+                        usage={"prompt_tokens": 0, "total_tokens": 0}
+                    )
 
-            # Validate token counts (OpenAI limit is 8191 per text)
-            MAX_TOKENS_PER_TEXT = 8191
-            for text_item, token_count in zip(texts_to_process, token_counts):
-                if token_count > MAX_TOKENS_PER_TEXT:
-                    logger.warning(f"Text exceeds token limit ({token_count} > {MAX_TOKENS_PER_TEXT}). Truncating...")
-                    # Truncate text to fit within limits
-                    truncated_text = encoding.decode(encoding.encode(text_item)[:MAX_TOKENS_PER_TEXT])
-                    texts_to_process[texts_to_process.index(text_item)] = truncated_text
+                # Continue with normal flow if provider is configured
+                client = await self._get_client(provider)
+                model = self._get_model_name(provider, ModelOperation.EMBEDDING)
+            except Exception as e:
+                logger.warning(f"Failed to get client for provider {provider}: {str(e)}")
+                # Generate mock embeddings as fallback
+                mock_embeddings = generate_mock_embeddings(texts_to_process)
+                return EmbeddingResponse(
+                    embedding=mock_embeddings if len(mock_embeddings) > 1 else mock_embeddings[0],
+                    model="mock-embedding-model",
+                    usage={"prompt_tokens": 0, "total_tokens": 0}
+                )
 
-            all_embeddings = []
+            try:
+                # Get token counts for validation with robust tiktoken handling
+                try:
+                    encoding = tiktoken.get_encoding("cl100k_base")
+                except (ValueError, KeyError) as e:
+                    logger.warning(f"Failed to get cl100k_base encoding: {e}, falling back to p50k_base")
+                    try:
+                        encoding = tiktoken.get_encoding("p50k_base")
+                    except Exception as e2:
+                        logger.error(f"Failed to get fallback encoding: {e2}")
+                        # If we can't get any encoding, use a simple length-based estimate
+                        token_counts = [len(t.split()) * 1.3 for t in texts_to_process]  # Rough estimate
+                    else:
+                        token_counts = [len(encoding.encode(t)) for t in texts_to_process]
+                else:
+                    token_counts = [len(encoding.encode(t)) for t in texts_to_process]
 
-            if batch_size:
-                # Use the specified batch_size for batching
+                # Validate token counts (OpenAI limit is 8191 per text)
+                MAX_TOKENS_PER_TEXT = 8191
+                for text_item, token_count in zip(texts_to_process, token_counts):
+                    if token_count > MAX_TOKENS_PER_TEXT:
+                        logger.warning(f"Text exceeds token limit ({token_count} > {MAX_TOKENS_PER_TEXT}). Truncating...")
+                        # If we have encoding, use it for truncation
+                        if 'encoding' in locals():
+                            truncated_text = encoding.decode(encoding.encode(text_item)[:MAX_TOKENS_PER_TEXT])
+                        else:
+                            # Fallback to simple word-based truncation
+                            words = text_item.split()
+                            truncated_text = ' '.join(words[:int(MAX_TOKENS_PER_TEXT/1.3)])  # Rough estimate
+                        texts_to_process[texts_to_process.index(text_item)] = truncated_text
+
+                all_embeddings = []
+                total_tokens = 0
+
+                # Process in batches
                 for i in range(0, len(texts_to_process), batch_size):
                     batch = texts_to_process[i:i + batch_size]
                     response = await client.embeddings.create(
@@ -879,86 +905,55 @@ class KnowledgeAgent:
                         model=model,
                         encoding_format="float",
                         dimensions=3072)
-                    all_embeddings.extend([data.embedding for data in response.data])
-            else:
-                # Fall back to token-based batching if no batch_size specified
-                tokens_per_batch = 2048
-                current_batch = []
-                current_tokens = 0
 
-                for text_item, token_count in zip(texts_to_process, token_counts):
-                    if current_tokens + token_count > tokens_per_batch and current_batch:
-                        response = await client.embeddings.create(
-                            input=current_batch,
-                            model=model,
-                            encoding_format="float",
-                            dimensions=3072)
-                        all_embeddings.extend([data.embedding for data in response.data])
-                        current_batch = []
-                        current_tokens = 0
+                    batch_embeddings = [data.embedding for data in response.data]
+                    all_embeddings.extend(batch_embeddings)
+                    total_tokens += response.usage.total_tokens
 
-                    current_batch.append(text_item)
-                    current_tokens += token_count
+                return EmbeddingResponse(
+                    embedding=all_embeddings[0] if isinstance(text, str) else all_embeddings,
+                    model=model,
+                    usage={"total_tokens": total_tokens}
+                )
 
-                # Process any remaining items
-                if current_batch:
-                    response = await client.embeddings.create(
-                        input=current_batch,
-                        model=model,
-                        encoding_format="float",
-                        dimensions=3072)
-                    all_embeddings.extend([data.embedding for data in response.data])
-
-            # Return appropriate format based on input type
-            return EmbeddingResponse(
-                embedding=all_embeddings[0] if isinstance(text, str) else all_embeddings,
-                model=model,
-                usage=response.usage.model_dump()  # Using last response's usage
-            )
-
-        except Exception as e:
-            logging.error(f"Error getting embeddings from {provider}: {str(e)}")
-            if provider != ModelProvider.OPENAI and ModelProvider.OPENAI in self.models:
-                logging.warning("Falling back to OpenAI embeddings")
-                return await self.embedding_request(text, provider=ModelProvider.OPENAI)
-            raise
-
-    def _get_client(self, provider: ModelProvider) -> AsyncOpenAI:
-        """Retrieve the appropriate client for a provider."""
-        if not isinstance(provider, ModelProvider):
-            provider = ModelProvider.from_str(provider)
-        client = self.models.get(provider.value)
-        if not client:
-            available_providers = list(self.models.keys())
-            if not available_providers:
-                raise ValueError("No API providers are configured")
-            fallback_provider = available_providers[0]
-            logging.warning(f"Provider {provider.value} not configured, falling back to {fallback_provider}")
-            return self.models[fallback_provider]
-        return client
+            except Exception as e:
+                logger.error(f"Error getting embeddings from {provider}: {str(e)}")
+                if provider != ModelProvider.OPENAI and ModelProvider.OPENAI in self._clients:
+                    logger.warning("Falling back to OpenAI embeddings")
+                    return await self.embedding_request(text, provider=ModelProvider.OPENAI, batch_size=batch_size)
+                raise
 
     def _get_default_provider(self, operation: ModelOperation) -> ModelProvider:
-        """Get the default provider for a specific operation."""
-        model_settings = Config.get_model_settings()
-        
+        """Get the default provider for a given operation.
+
+        Args:
+            operation: The model operation type
+
+        Returns:
+            ModelProvider enum representing the provider to use
+
+        Raises:
+            ValueError: If the specified operation is unknown
+        """
+        # Try to get provider based on operation
         if operation == ModelOperation.EMBEDDING:
-            provider = ModelProvider.from_str(model_settings['default_embedding_provider'])
-            # Only OpenAI and Grok support embeddings
-            if provider not in [ModelProvider.OPENAI, ModelProvider.GROK]:
-                provider = ModelProvider.OPENAI
+            provider = ModelProvider.from_str(Config.get_default_embedding_provider())
         elif operation == ModelOperation.CHUNK_GENERATION:
-            provider = ModelProvider.from_str(model_settings['default_chunk_provider'])
+            provider = ModelProvider.from_str(Config.get_default_chunk_provider())
         elif operation == ModelOperation.SUMMARIZATION:
-            provider = ModelProvider.from_str(model_settings['default_summary_provider'])
+            provider = ModelProvider.from_str(Config.get_default_summary_provider())
         else:
             raise ValueError(f"Unknown operation: {operation}")
 
         # Validate provider is configured
-        if provider.value not in self.models:
-            available_providers = list(self.models.keys())
+        if provider.value not in self._clients:
+            available_providers = list(self._clients.keys())
             if not available_providers:
-                raise ValueError("No API providers are configured. Please check your API keys in settings")
+                # Instead of raising an error, log a warning and return OPENAI as a fallback
+                # This will be handled later in the embedding_request method with mock embeddings
+                logger.warning("No API providers are configured. Returning fallback provider for mock embeddings.")
+                return ModelProvider.OPENAI  # Return a default provider that will trigger mock embeddings
             provider = ModelProvider.from_str(available_providers[0])
-            logging.warning(f"Default provider not configured, using {provider.value}")
+            logger.warning(f"Default provider not configured, using {provider.value}")
 
         return provider

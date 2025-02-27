@@ -14,7 +14,6 @@ from knowledge_agents.data_ops import (
     DataConfig,
     DataOperations,
     DataStateManager,
-    prepare_knowledge_base
 )
 from knowledge_agents.embedding_ops import get_relevant_content
 from knowledge_agents.model_ops import ModelProvider
@@ -55,7 +54,6 @@ def test_config(tmp_path):
         root_path=tmp_path / "root",
         all_data_path=tmp_path / "data" / "all_data.csv",
         stratified_data_path=tmp_path / "data" / "stratified",
-        knowledge_base_path=tmp_path / "data" / "knowledge_base.csv",
         filter_date=processing_settings['filter_date'],
         sample_size=sample_settings['default_sample_size'],
         time_column=processing_settings['time_column'],
@@ -69,7 +67,6 @@ def setup_test_data(test_config):
     test_config.root_path.mkdir(parents=True, exist_ok=True)
     test_config.all_data_path.parent.mkdir(parents=True, exist_ok=True)
     test_config.stratified_data_path.mkdir(parents=True, exist_ok=True)
-    test_config.knowledge_base_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Create test DataFrame
     df = pd.DataFrame(TEST_DATA)
@@ -93,7 +90,6 @@ async def test_initial_data_preparation(setup_test_data):
     assert "completed successfully" in result.lower()
     
     # Verify files were created
-    assert config.knowledge_base_path.exists()
     assert (config.stratified_data_path / "stratified_sample.csv").exists()
     
     # Verify state was updated
@@ -132,59 +128,6 @@ async def test_incremental_update(setup_test_data):
     # Verify state was updated
     new_state = DataStateManager(config).get_last_update()
     assert new_state > initial_state
-
-@pytest.mark.asyncio
-async def test_force_refresh_handling(setup_test_data):
-    """Test force refresh handling in prepare_knowledge_base."""
-    config = setup_test_data
-    
-    # Initial setup
-    await prepare_knowledge_base(force_refresh=True)
-    initial_modification_time = config.knowledge_base_path.stat().st_mtime
-    
-    # Try without force refresh
-    await prepare_knowledge_base(force_refresh=False)
-    assert config.knowledge_base_path.stat().st_mtime == initial_modification_time
-    
-    # Force refresh
-    await prepare_knowledge_base(force_refresh=True)
-    assert config.knowledge_base_path.stat().st_mtime > initial_modification_time
-
-@pytest.mark.asyncio
-async def test_embedding_generation(setup_test_data):
-    """Test embedding generation and caching."""
-    config = setup_test_data
-    
-    # Create test stratified data
-    stratified_file = config.stratified_data_path / "stratified_sample.csv"
-    pd.DataFrame(TEST_DATA).to_csv(stratified_file, index=False)
-    
-    # Initial embedding generation
-    await get_relevant_content(
-        library=str(config.stratified_data_path),
-        knowledge_base=str(config.knowledge_base_path),
-        batch_size=2,
-        provider=ModelProvider.OPENAI,
-        force_refresh=True
-    )
-    
-    # Verify embeddings were generated
-    kb_data = pd.read_csv(config.knowledge_base_path)
-    assert 'embedding' in kb_data.columns
-    assert len(kb_data) > 0
-    
-    # Test embedding caching
-    initial_modification_time = config.knowledge_base_path.stat().st_mtime
-    
-    await get_relevant_content(
-        library=str(config.stratified_data_path),
-        knowledge_base=str(config.knowledge_base_path),
-        batch_size=2,
-        provider=ModelProvider.OPENAI,
-        force_refresh=False
-    )
-    
-    assert config.knowledge_base_path.stat().st_mtime == initial_modification_time
 
 @pytest.mark.asyncio
 async def test_data_state_management(setup_test_data):

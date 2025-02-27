@@ -1,44 +1,29 @@
-"""Base configuration module for path and environment setup."""
-from pathlib import Path
+"""Base configuration module without dependencies."""
 import os
-import logging
+from pathlib import Path
+from typing import Dict, Any
+from config.base_settings import get_base_settings, get_base_paths, ensure_base_paths as _ensure_base_paths
 
-logger = logging.getLogger(__name__)
+def get_base_paths() -> Dict[str, Path]:
+    """Get base paths without any dependencies."""
+    return get_base_paths()
 
-# Project root directory
-ROOT_DIR = Path(__file__).parent.parent.resolve()
+def ensure_base_paths() -> None:
+    """Ensure base paths exist."""
+    _ensure_base_paths()
 
-# Environment file path
-ENV_PATH = ROOT_DIR / '.env'
-
-# Basic path configuration
-def get_base_paths():
-    """Get base paths configuration."""
-    return {
-        "root": ROOT_DIR,
-        "env": ENV_PATH,
-        "data": ROOT_DIR / 'data',
-        "logs": ROOT_DIR / 'logs',
-        "temp": ROOT_DIR / 'temp_files'
-    }
-
-def get_directory_paths():
-    """Get only the directory paths that should be created."""
-    paths = get_base_paths()
-    # Filter out file paths (env) and special paths (root)
-    return {k: v for k, v in paths.items() 
-            if k not in ('env', 'root')}
-
-# Ensure critical directories exist
-def ensure_base_paths():
-    """Create base directories if they don't exist."""
-    directory_paths = get_directory_paths()
+class BaseConfig:
+    """Base configuration without dependencies."""
     
-    for path_name, path in directory_paths.items():
-        try:
-            if isinstance(path, Path):
-                path.mkdir(parents=True, exist_ok=True)
-                logger.debug(f"Ensured directory exists: {path}")
-        except Exception as e:
-            logger.error(f"Error creating directory {path_name} at {path}: {str(e)}")
-            raise 
+    @staticmethod
+    def get_env_path() -> Path:
+        """Get the path to the .env file."""
+        return get_base_paths()['root'] / '.env'
+    
+    @staticmethod
+    def get_base_settings() -> Dict[str, Any]:
+        """Get base settings from environment variables."""
+        return get_base_settings()
+
+# Initialize paths on module import
+ensure_base_paths() 

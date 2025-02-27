@@ -1,29 +1,39 @@
-run = "./scripts/replit/start.sh"
-entrypoint = "api/api.py"
-modules = ["python-3.11", "postgresql-16"]
+modules = ["python-3.11"]
+hidden = [".pythonlibs"]
+run = "bash deployment/setup.sh"
 
 [nix]
 channel = "stable-23_11"
 
 [env]
 PYTHONPATH = "${REPL_HOME}"
-FLASK_APP = "api.app"
-FLASK_ENV = "development"
 PYTHONUNBUFFERED = "1"
+REPLIT_ENV = "replit"
+API_PORT = "80"
+PORT = "80"
+HOST = "0.0.0.0"
 
 [deployment]
-run = ["sh", "-c", "bash ./scripts/replit/start.sh"]
-build = ["poetry", "install"]
-ignorePorts = false
+run = ["bash", "deployment/setup.sh"]
+build = ["sh", "-c", "poetry install --only main"]
 deploymentTarget = "cloudrun"
 
+# Configure the primary HTTP port for the API
 [[ports]]
-localPort = 5000
+localPort = 80
 externalPort = 80
 
-[[ports]]
-localPort = 8000
-externalPort = 8000
+# Health check configuration
+[deployment.healthCheck]
+path = "/healthz"
+port = 80
+initialDelay = 5
+
+# Remove external mapping for port 8001:
+# [[ports]]
+# localPort = 8001
+# externalPort = 8001
+# exposeLocalhost = true
 
 [languages.python3]
 pattern = "**/*.py"
@@ -31,6 +41,3 @@ syntax = "python"
 
 [languages.python3.languageServer]
 start = "pylsp"
-
-[objectStorage]
-defaultBucketID = "replit-objstore-05cbbe20-4215-4b30-a9e9-5d2d386b4ae7"

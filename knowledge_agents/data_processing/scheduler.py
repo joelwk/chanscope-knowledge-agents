@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pytz
 import logging
 from .cloud_handler import S3Handler, load_all_csv_data_from_s3
-from ..data_ops import DataConfig, prepare_knowledge_base
+from ..data_ops import DataConfig, DataOperations
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +31,16 @@ class DataScheduler:
             logger.info(f"Loaded {total_records} records from S3")
 
             if total_records > 0:
-                # Process data using the full pipeline
+                # Process data using the pipeline but skip embedding generation
                 try:
-                    result = await prepare_knowledge_base(force_refresh=True)
-                    logger.info(f"Knowledge base preparation completed: {result}")
+                    # Initialize data operations
+                    data_ops = DataOperations(self.config)
+                    # Initialize basic data structures without embeddings
+                    result = await data_ops.prepare_data(force_refresh=True, skip_embeddings=True)
+                    logger.info(f"Basic data preparation completed: {result}")
+                    logger.info("Embeddings will be generated separately via the API endpoint")
                 except Exception as e:
-                    logger.error(f"Error preparing knowledge base: {e}")
+                    logger.error(f"Error preparing data: {e}")
                     raise
             else:
                 logger.warning("No data found in S3 for the specified date range")
@@ -53,7 +57,7 @@ class DataScheduler:
             # Set up time window for update
             current_time = datetime.now(pytz.UTC)
             cutoff_time = current_time - timedelta(days=7)
-            
+
             # If filter_date is not set, use last successful update or one hour ago
             if not self.config.filter_date:
                 one_hour_ago = current_time - timedelta(hours=1)
@@ -67,7 +71,7 @@ class DataScheduler:
                     logger.warning(f"Error parsing filter date: {e}, using one hour ago")
                     one_hour_ago = current_time - timedelta(hours=1)
                     self.config.filter_date = one_hour_ago.strftime('%Y-%m-%d %H:%M:%S')
-            
+
             logger.info(f"Set filter date to: {self.config.filter_date}")
             logger.info(f"Update window: {self.config.filter_date} to {current_time}")
 
@@ -81,10 +85,12 @@ class DataScheduler:
 
             if total_new_records > 0:
                 logger.info(f"Found {total_new_records} new records since {self.config.filter_date}")
+                # Initialize data operations
+                data_ops = DataOperations(self.config)
                 # Process new data using the full pipeline
                 # force_refresh=False will handle merging with existing data
-                result = await prepare_knowledge_base(force_refresh=False)
-                logger.info(f"Knowledge base update completed: {result}")
+                result = await data_ops.prepare_data(force_refresh=False)
+                logger.info(f"Data update completed: {result}")
             else:
                 logger.info(f"No new data found after {self.config.filter_date}")
 

@@ -27,7 +27,6 @@ async def main():
         data_config = DataConfig(
             root_data_path=Path(paths['root_data_path']),
             stratified_data_path=Path(paths['stratified']),
-            knowledge_base_path=Path(paths['knowledge_base']),
             temp_path=Path(paths['temp']),
             filter_date=processing_settings['filter_date'],
             sample_size=sample_settings['default_sample_size'],

@@ -1,7 +1,7 @@
 # Chanscope Knowledge Agent
 
 ## Overview
-An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice) for comprehensive 4chan data analysis to extract actionable insights and patterns. The system employs intelligent sampling techniques and a multi-stage analysis pipeline to process large volumes of 4chan data, enabling temporal analysis, cross-source verification, and predictive analytics.
+An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice) for comprehensive 4chan data analysis to extract actionable insights and patterns. The system provides a robust API layer that can be integrated with autonomous AI agents and agentic systems. It employs intelligent sampling techniques and a multi-stage analysis pipeline to process large volumes of 4chan data, enabling temporal analysis, cross-source verification, and predictive analytics.
 
 ### Platform Integration
 - **Traditional Deployment**: Docker-based local or server deployment for controlled environments
@@ -10,19 +10,21 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
   - Automated hourly data updates
   - Environment-specific path handling
   - Optimized memory management
-- **[Virtuals Protocol](https://app.virtuals.io/prototypes/0x2cc92Fc77180815834FfdAa72C58f72d457C4308)/[X](https://x.com/4Chanscope)**: 
-Integration with autonomous AI agents that can:
-  - Process and interact with X & 4chan data through their own autonomous decision-making
-  - Maintain synchronized memory across multiple data analysis sessions
-  - Execute onchain transactions and data validations
-  - Leverage the G.A.M.E. framework for dynamic analysis patterns
-  - Enable co-owned and tokenized analysis capabilities
+- **Agentic System Integration**: 
+  The API architecture is designed to be integrated with autonomous AI agents and agentic systems, such as:
+  - **[Virtuals Protocol](https://app.virtuals.io/prototypes/0x2cc92Fc77180815834FfdAa72C58f72d457C4308)/[X](https://x.com/4Chanscope)**: 
+  The system can be integrated with autonomous AI agents through its API layer, enabling:
+    - Consumption of 4chan data analysis through standardized API endpoints
+    - Integration with agent memory systems for persistent context
+    - Support for agent-driven data exploration and pattern recognition
+    - Potential for onchain data validation and verification
+    - Extensibility for custom agent-specific analysis patterns
 
 ### Core Architecture
 - **Multi-Provider Architecture**
   - OpenAI (Primary): GPT-4o, text-embedding-3-large
   - Grok (Optional): grok-2-1212, grok-v1-embedding
-  - Venice (Optional): llama-3.1-405b, dolphin-2.9.2-qwen2-72b
+  - Venice (Optional): dolphin-2.9.2-qwen2-72b, deepseek-r1-671b
 
 - **Intelligent Data Processing**
   - Automated hourly data updates with incremental processing
@@ -33,12 +35,21 @@ Integration with autonomous AI agents that can:
   - Cloud-optimized processing for Replit environment
 
 - **Advanced Analysis Pipeline**
-  - Real-time monitoring with 3-hour rolling window
+  - Real-time monitoring with 6-hour rolling window
   - Context-aware temporal analysis with validation
   - Parallel processing with automatic model fallback
   - Event mapping and relationship extraction
   - Cross-platform data synchronization
   - Enhanced S3 data streaming with board filtering
+  - Optimized batch processing for query efficiency
+
+- **API-First Design**
+  - RESTful endpoints for all core functionality
+  - Structured JSON responses for easy integration
+  - Comprehensive error handling with detailed feedback
+  - Batch processing for high-volume requests
+  - Authentication and rate limiting for production use
+  - Detailed documentation for third-party integration
 
 For greater technical details and examples, refer to the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
 
@@ -68,6 +79,28 @@ For greater technical details and examples, refer to the [knowledge-agents](http
 - **Content**: toxicity, relevance, uniqueness, influence
 - **Forecast**: event probability, confidence bounds, reliability
 
+## Integration with Agentic Systems
+
+The Knowledge Agent is designed to serve as a backend for AI agents and agentic systems through its API layer:
+
+### 1. Agent Integration Patterns
+- **Direct API Consumption**: Agents can directly query the API endpoints
+- **Memory Augmentation**: Results can be stored in agent memory systems
+- **Decision Support**: Analysis can inform agent decision-making processes
+- **Autonomous Monitoring**: Agents can set up scheduled queries for monitoring
+
+### 2. Agent Capabilities Enabled
+- **Contextual Understanding**: Deep understanding of 4chan discussions and trends
+- **Pattern Recognition**: Identification of emerging patterns and anomalies
+- **Temporal Awareness**: Understanding of how topics evolve over time
+- **Cross-Reference Analysis**: Connecting related discussions across threads and boards
+
+### 3. Implementation Examples
+- Autonomous monitoring agents that alert on specific patterns
+- Research agents that can explore and analyze specific topics
+- Trend analysis agents that track evolving narratives
+- Verification agents that cross-check claims across multiple sources
+
 ## Supported Models
 The project supports multiple AI model providers:
 - **OpenAI** (Required): Default provider for both completions and embeddings
@@ -78,7 +111,7 @@ The project supports multiple AI model providers:
   - Models: `grok-2-1212`, `grok-v1-embedding` (not publicly available)
 - **Venice.AI** (Optional): Additional model provider for completion and chunking
   - Optional: `VENICE_API_KEY`
-  - Models: `llama-3.1-405b`, `dolphin-2.9.2-qwen2-72b`
+  - Models: `dolphin-2.9.2-qwen2-72b`, `deepseek-r1-671b`
 
 ## Quick Start
 
@@ -165,8 +198,7 @@ docker-compose -f deployment/docker-compose.dev.yml down
 
 ### Docker Environment Features
 - **Multi-Service Architecture**:
-  - API service (Python/Quart)
-  - UI service (Chainlit)
+  - API service (FastAPI)
   - Shared networking and volumes
 - **Development Optimizations**:
   - Hot-reload for code changes
@@ -187,8 +219,8 @@ Example docker-compose environment configuration:
 - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
 - GROK_MODEL=${GROK_MODEL:-grok-2-1212}
 - GROK_EMBEDDING_MODEL=${GROK_EMBEDDING_MODEL:-grok-v1-embedding}
-- VENICE_MODEL=${VENICE_MODEL:-llama-3.1-405b}
-- VENICE_CHUNK_MODEL=${VENICE_CHUNK_MODEL:-dolphin-2.9.2-qwen2-72b}
+- VENICE_MODEL=${VENICE_MODEL:-dolphin-2.9.2-qwen2-72b}
+- VENICE_CHUNK_MODEL=${VENICE_CHUNK_MODEL:-deepseek-r1-671b}
 
 # Data Processing Settings
 - SELECT_BOARD=${SELECT_BOARD}  # Optional: Filter data by specific board
@@ -197,214 +229,432 @@ Example docker-compose environment configuration:
 
 ## API and Frontend Integration
 
-### API Endpoints
+### API Endpoints (v1)
+
+All API endpoints are versioned under `/api/v1`. The API provides comprehensive Pydantic model validation, structured error handling, and optimized batch processing.
 
 #### 1. Query Processing
-- `/process_query` (POST): Process a single query
+- `POST /api/v1/process_query`: Process a single query with optional batching
 ```python
+# Request
 {
-    "query": "Your analysis query",
-    "force_refresh": false,
-    "sample_size": 1500,
-    "embedding_batch_size": 2000,
-    "chunk_batch_size": 100,
-    "summary_batch_size": 100,
-    "embedding_provider": "openai",
-    "chunk_provider": "openai",
-    "summary_provider": "openai"
+    "query": str,                    # Required: Your analysis query
+    "force_refresh": bool = False,   # Optional: Force knowledge base refresh
+    "skip_embeddings": bool = False, # Optional: Skip embedding generation
+    "skip_batching": bool = False,   # Optional: Process immediately vs. batch queue
+    "filter_date": str = None,       # Optional: Filter results by date (ISO format)
+    "select_board": str = None,      # Optional: Filter by specific board
+    "embedding_provider": str = None, # Optional: Override default embedding provider
+    "chunk_provider": str = None,    # Optional: Override default chunk provider
+    "summary_provider": str = None   # Optional: Override default summary provider
 }
-```
 
-- `/batch_process` (POST): Process multiple queries in batch
-```python
+# Response (Direct Processing)
 {
-    "queries": [
-        "What are the latest developments in AI?",
-        "How is AI impacting healthcare?"
+    "chunks": [
+        {
+            "content": str,
+            "score": float,
+            "metadata": Dict[str, Any]  # Optional
+        }
     ],
-    "force_refresh": false,
-    "sample_size": 1500,
-    "embedding_batch_size": 2000,
-    "chunk_batch_size": 100,
-    "summary_batch_size": 100
+    "summary": str
+}
+
+# Response (Batch Processing)
+{
+    "status": "queued",
+    "batch_id": str,
+    "message": str,
+    "position": int,
+    "eta_seconds": int
 }
 ```
 
-- `/process_recent_query` (GET): Process data from the last 3 hours
-```
-GET /process_recent_query?force_refresh=true
-
-Response:
+- `POST /api/v1/batch_process`: Process multiple queries in batch
+```python
+# Request
 {
-    "success": true,
-    "results": {
-        "query": "Your query",
-        "time_range": {
-            "start": "2024-03-20T10:00:00Z",
-            "end": "2024-03-20T13:00:00Z"
-        },
-        "chunks": [...],
-        "summary": "Analysis summary"
+    "queries": List[str],           # Required: List of queries to process
+    "force_refresh": bool = False,  # Optional: Force refresh
+    "config": {                     # Optional: Configuration overrides
+        "embedding_batch_size": int = 25,
+        "chunk_batch_size": int = 25000,
+        "summary_batch_size": int = 50,
+        "embedding_provider": str = "openai",
+        "chunk_provider": str = "openai",
+        "summary_provider": str = "openai",
+        "select_board": str = None
+    }
+}
+
+# Response
+{
+    "task_id": str,
+    "status": "processing",
+    "message": str,
+    "total_queries": int,
+    "estimated_completion_time": str  # ISO format datetime
+}
+```
+
+- `GET /api/v1/batch_status/{task_id}`: Check batch processing status
+```python
+# Response
+{
+    "status": str,  # "initializing", "processing", "completed", "failed"
+    "message": str,
+    "progress": {
+        "total": int,
+        "completed": int,
+        "percent": float
+    },
+    "results": List[Dict] if completed,
+    "errors": List[Dict] if any errors
+}
+```
+
+- `GET /api/v1/process_recent_query`: Process data from the last 6 hours
+```python
+# Request Parameters
+select_board: str = None  # Optional query parameter to filter by board
+
+# Response
+{
+    "status": str,  # "queued" or direct results
+    "batch_id": str if queued,
+    "time_range": {
+        "start": str,  # ISO format datetime
+        "end": str     # ISO format datetime
+    },
+    # If direct processing:
+    "chunks": List[Dict[str, Any]],
+    "summary": str
+}
+```
+
+#### 2. Embedding Generation
+- `POST /api/v1/trigger_embedding_generation`: Trigger background embedding generation
+```python
+# Response
+{
+    "status": "started",
+    "message": str,
+    "task_id": str
+}
+```
+
+- `GET /api/v1/embedding_status`: Check embedding generation status
+```python
+# Response
+{
+    "status": str,  # "idle", "processing", "completed", "failed"
+    "progress": {
+        "current": int,
+        "total": int,
+        "percent": float
+    },
+    "start_time": str,  # ISO format datetime
+    "estimated_completion_time": str if processing
+}
+```
+
+#### 3. Data Management
+- `POST /api/v1/stratify`: Stratify data for processing
+```python
+# Response
+{
+    "status": "success",
+    "message": str,
+    "data": {
+        "stratified_rows": int,
+        "stratified_file": str
     }
 }
 ```
 
-#### 2. Health Check Endpoints
-- `/health`: Basic health check
-- `/health_replit`: Replit-specific health status
-- `/health/connections`: Check all service connections
-- `/health/s3`: Check S3 connection and bucket access
-- `/health/provider/{provider}`: Check specific provider status
+#### 4. Health Check Endpoints
+- `GET /api/v1/health`: Basic health check with version info
+```python
+# Response
+{
+    "status": str,
+    "message": str,
+    "timestamp": datetime,
+    "environment": {
+        "ENV": str,
+        "DEBUG": bool
+    }
+}
+```
 
-### Frontend Interface
+- `GET /api/v1/health/connections`: Check all service connections
+```python
+# Response
+{
+    "services": {
+        "openai": Dict[str, Any],
+        # Other providers as configured
+    }
+}
+```
 
-The project uses Chainlit for an interactive frontend interface with the following features:
+- `GET /api/v1/health/s3`: Check S3 connection status
+```python
+# Response
+{
+    "s3_status": str,
+    "bucket_access": bool,
+    "bucket_name": str,
+    "bucket_details": Dict[str, Any],
+    "aws_region": str,
+    "latency_ms": float
+}
+```
 
-#### 1. Interactive Settings
-- Model provider selection (OpenAI, Grok, Venice)
-- Batch size configuration
-- Data processing options
-- Force refresh toggle
+- `GET /api/v1/health/provider/{provider}`: Check specific provider status
+```python
+# Response
+{
+    "status": str,
+    "provider": str,
+    "latency_ms": float
+}
+```
 
-#### 2. Query Interface
-- Real-time query processing
-- Progress indicators
-- Error handling and feedback
-- Results display with related chunks
+- `GET /api/v1/health/all`: Check all configured providers
+```python
+# Response
+{
+    "status": "completed",
+    "providers": {
+        "openai": Dict[str, Any],
+        # Other providers as configured
+    },
+    "latency_ms": float
+}
+```
 
-#### 3. Environment-Specific Features
-- Automatic Replit URL detection
-- Optimized settings for different environments
-- Responsive UI with theme support
+- `GET /api/v1/health/cache`: Check cache status
+```python
+# Response
+{
+    "status": str,
+    "stats": {
+        "hits": int,
+        "misses": int,
+        "errors": int,
+        "hit_ratio": float
+    },
+    "backend": str,
+    "ttl": int
+}
+```
+
+- `GET /api/v1/health/embeddings`: Check embedding status
+```python
+# Response
+{
+    "status": str,
+    "embedding_stats": {
+        "total_embeddings": int,
+        "missing_embeddings": int,
+        "embedding_coverage": float
+    },
+    "providers": List[str]
+}
+```
+
+#### 5. Debug Endpoints
+- `GET /api/v1/debug/routes`: List all available routes
+- `GET /api/v1/debug/request`: Echo request details for debugging
+
+### Error Handling
+
+All endpoints use a consistent error handling structure:
+
+```python
+{
+    "error": str,           # Error code
+    "message": str,         # Human-readable message
+    "status_code": int,     # HTTP status code
+    "details": Dict,        # Additional error details
+    "timestamp": str        # ISO format datetime
+}
+```
+
+Error types include:
+- `VALIDATION_ERROR`: Request validation failures
+- `CONFIGURATION_ERROR`: System configuration issues
+- `PROCESSING_ERROR`: Data processing failures
+- `PROVIDER_ERROR`: AI provider communication issues
 
 ### Example Usage
 
 #### 1. Using PowerShell
 ```powershell
-# Create request body
+# Process a single query
 $body = @{
     query = "What are the latest developments in AI?"
     force_refresh = $false
-    sample_size = 1500
-    embedding_batch_size = 2000
-    chunk_batch_size = 100
-    summary_batch_size = 100
-    embedding_provider = "openai"
-    summary_provider = "openai"
+    skip_embeddings = $false
+    skip_batching = $true
 } | ConvertTo-Json
 
-# Make request
-$response = Invoke-RestMethod -Uri "http://localhost:5000/api/process_query" -Method Post -Body $body -ContentType "application/json"
+$response = Invoke-RestMethod -Uri "http://localhost:5000/api/v1/process_query" -Method Post -Body $body -ContentType "application/json"
+
 # View results
-$response.results.summary
+$response.summary
 ```
 
-#### 2. Using Bash
+#### 2. Using Bash/cURL
 ```bash
-# Single query
-curl -X POST "http://localhost:5000/api/process_query" \
+# Single query with direct processing
+curl -X POST "http://localhost:5000/api/v1/process_query" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "What are the latest developments in AI?",
     "force_refresh": false,
-    "sample_size": 1500,
-    "embedding_batch_size": 2000,
-    "chunk_batch_size": 100,
-    "summary_batch_size": 100,
-    "embedding_provider": "openai",
-    "summary_provider": "openai"
+    "skip_embeddings": false,
+    "skip_batching": true
   }'
 
+# Batch processing
+curl -X POST "http://localhost:5000/api/v1/batch_process" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queries": ["What are the latest developments in AI?", "What are people saying about cryptocurrency?"],
+    "config": {
+      "embedding_provider": "openai",
+      "select_board": "biz"
+    }
+  }'
+
+# Health check
+curl "http://localhost:5000/api/v1/health"
+
 # Recent data query
-curl "http://localhost:5000/api/process_recent_query?force_refresh=true"
+curl "http://localhost:5000/api/v1/process_recent_query?select_board=biz"
 ```
 
-
-#### 3. Using the Frontend
-1. Access the UI at `http://localhost:8000`
-2. Configure settings using the ⚙️ button:
-   - Select model providers
-   - Set batch sizes
-   - Configure processing options
-3. Enter your query in the chat interface
-4. View results with related chunks in the sidebar
-
-### Response Format
+#### 3. Using Python Requests
 ```python
-{
-    "success": true,
-    "results": {
-        "query": "Your original query",
-        "chunks": [
-            {
-                "content": "Relevant text chunk",
-                "score": 0.85
-            }
-        ],
-        "summary": "Comprehensive analysis and response"
+import requests
+import time
+
+# Configuration
+API_BASE = "http://localhost:5000/api/v1"
+
+# Process a query with batching
+response = requests.post(
+    f"{API_BASE}/process_query",
+    json={
+        "query": "What are the latest developments in AI?",
+        "force_refresh": False,
+        "skip_embeddings": False,
+        "skip_batching": False
     }
-}
+)
+
+# Check response
+if response.status_code == 200:
+    data = response.json()
+    
+    # If queued for batch processing
+    if "batch_id" in data:
+        batch_id = data["batch_id"]
+        print(f"Query queued for processing. Batch ID: {batch_id}")
+        print(f"Position in queue: {data['position']}")
+        print(f"Estimated wait time: {data['eta_seconds']} seconds")
+        
+        # Poll for results
+        while True:
+            time.sleep(5)  # Wait 5 seconds between checks
+            status_response = requests.get(f"{API_BASE}/batch_status/{batch_id}")
+            status_data = status_response.json()
+            
+            if status_data["status"] == "completed":
+                print("Processing complete!")
+                print(status_data["results"][0]["summary"])
+                break
+            elif status_data["status"] == "failed":
+                print("Processing failed:", status_data["message"])
+                break
+            else:
+                print(f"Status: {status_data['status']} - {status_data['progress']['percent']}% complete")
+    
+    # If processed immediately
+    elif "summary" in data:
+        print("Query processed immediately:")
+        print(data["summary"])
+```
+
+#### 4. Integration with AI Agents
+```python
+# Example of how an AI agent might use the Knowledge Agent API
+class Agent4ChanAnalyzer:
+    def __init__(self, api_base="http://localhost:5000/api/v1"):
+        self.api_base = api_base
+        self.memory = []  # Simple memory store
+        
+    async def analyze_topic(self, topic, board=None):
+        """Agent analyzes a specific topic on 4chan"""
+        query = f"What are people saying about {topic} in the last 6 hours?"
+        
+        # Call Knowledge Agent API
+        response = requests.post(
+            f"{self.api_base}/process_query",
+            json={
+                "query": query,
+                "select_board": board,
+                "skip_batching": True  # Get immediate results
+            }
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Store in agent memory
+            self.memory.append({
+                "topic": topic,
+                "timestamp": datetime.now().isoformat(),
+                "summary": data["summary"],
+                "source_chunks": len(data["chunks"])
+            })
+            
+            # Agent processes the information
+            return self._process_information(data["summary"], topic)
+        
+        return "Failed to retrieve information"
+    
+    def _process_information(self, summary, topic):
+        """Agent's internal processing of information"""
+        # This would contain the agent's own logic for processing the data
+        return f"Analysis of {topic}: {summary}"
 ```
 
 ## Project Structure
-
 ```
 knowledge_agents/
-├── api/                    # REST API service
-│   ├── __init__.py        # API initialization and configuration
-│   ├── app.py             # Main API application
-│   └── routes.py          # API endpoint definitions
-│
-├── chainlit_frontend/      # Interactive UI
-│   ├── app.py             # Chainlit application
-│   ├── styles/            # Custom UI styles
-│   └── .chainlit/         # Chainlit configuration
-│
-├── config/                 # Configuration files
-│   ├── base.py            # Base configuration
-│   ├── settings.py        # Main settings
-│   ├── env_loader.py      # Environment variable loader
-│   ├── logging.conf       # Logging configuration
-│   └── stored_queries.yaml # Predefined queries
-│
-├── knowledge_agents/       # Core processing modules
-│   ├── data_processing/   # Data processing components
-│   │   ├── cloud_handler.py    # Cloud storage operations
-│   │   ├── processing.py       # Data processing utilities
-│   │   └── sampler.py          # Data sampling logic
-│   ├── model_ops.py       # Model operations
-│   ├── inference_ops.py   # Inference pipeline
-│   ├── embedding_ops.py   # Embedding operations
-│   ├── data_ops.py        # Data operations
-│   ├── stratified_ops.py  # Stratified sampling
-│   ├── utils.py           # Utility functions
-│   └── prompt.yaml        # Model prompts
-│
-├── deployment/            # Deployment configurations
-│   ├── Dockerfile        # Main Dockerfile
-│   ├── docker-compose.yml      # Production compose
-│   └── docker-compose.dev.yml  # Development compose
-│
-├── scripts/              # Utility scripts
-│   └── replit/          # Replit-specific scripts
-│       ├── api.sh       # API startup script
-│       └── ui.sh        # UI startup script
-│
-├── tests/               # Test suite
-│   ├── test_endpoints.py     # API endpoint tests
-│   └── debug_client.py       # Debug utilities
-│
-├── examples/            # Example notebooks and scripts
-├── data/               # Data directory
-├── logs/               # Log files
-├── temp_files/         # Temporary processing files
-│
-├── .env.template       # Environment template
-├── .replit            # Replit configuration
-├── replit.nix         # Replit Nix configuration
-├── pyproject.toml     # Poetry dependencies
-├── poetry.lock        # Poetry lock file
-└── README.md          # Project documentation
+├── api/                # FastAPI application
+│   ├── routes.py      # API endpoints
+│   ├── models.py      # Response models
+│   ├── errors.py      # Error handling
+│   ├── cache.py       # Caching system
+│   └── app.py         # Application setup
+├── config/            # Configuration files
+├── data/              # Data storage
+├── deployment/        # Deployment configurations
+├── knowledge_agents/  # Core business logic
+│   ├── model_ops.py   # Model operations
+│   ├── data_ops.py    # Data operations
+│   ├── embedding_ops.py # Embedding generation
+│   ├── inference_ops.py # Inference operations
+│   └── data_processing/ # Data processing utilities
+├── logs/             # Application logs
+├── scripts/          # Utility scripts
+├── tests/            # Test suite
+└── temp_files/       # Temporary file storage
 ```
 
 ### Key Components
@@ -416,10 +666,12 @@ knowledge_agents/
 - Utility functions and configurations
 
 #### 2. API Service (`api/`)
-- REST API implementation
-- Route definitions
-- Request handling
-- Health checks and monitoring
+- REST API implementation with FastAPI
+- Structured error handling system
+- Efficient batch processing
+- Comprehensive health checks
+- Caching system for query results
+- Background task management
 
 #### 3. Frontend (`chainlit_frontend/`)
 - Interactive UI implementation
@@ -536,7 +788,7 @@ docker-compose -f deployment/docker-compose.dev.yml logs test
 #### Health Checks and Monitoring
 ```bash
 # Check API health
-curl http://localhost:5000/api/health
+curl http://localhost:5000/api/v1/health
 
 # Check Chainlit frontend
 Open http://localhost:8000 in your browser
@@ -562,8 +814,8 @@ docker-compose -f deployment/docker-compose.dev.yml logs -f
 - `OPENAI_EMBEDDING_MODEL`: OpenAI model for embeddings (Default: 'text-embedding-3-large')
 - `GROK_MODEL`: Grok model for completions (Default: 'grok-2-1212')
 - `GROK_EMBEDDING_MODEL`: Grok model for embeddings (Default: 'grok-v1-embedding')
-- `VENICE_MODEL`: Venice model for completions (Default: 'llama-3.1-405b')
-- `VENICE_CHUNK_MODEL`: Venice model for chunking (Default: 'dolphin-2.9.2-qwen2-72b')
+- `VENICE_MODEL`: Venice model for completions (Default: 'dolphin-2.9.2-qwen2-72b')
+- `VENICE_CHUNK_MODEL`: Venice model for chunking (Default: 'deepseek-r1-671b')
 
 ### Provider Settings (Optional, with defaults)
 - `DEFAULT_EMBEDDING_PROVIDER`: Default provider for embeddings (Default: 'openai')
@@ -571,10 +823,11 @@ docker-compose -f deployment/docker-compose.dev.yml logs -f
 - `DEFAULT_SUMMARY_PROVIDER`: Default provider for summarization (Default: 'openai')
 
 ### Processing Settings (Optional, with defaults)
-- `BATCH_SIZE`: Number of items to process in each batch (Default: 100)
+- `EMBEDDING_BATCH_SIZE`: Number of items to process in each embedding batch (Default: 25)
+- `CHUNK_BATCH_SIZE`: Size of chunks for processing (Default: 25000)
+- `SUMMARY_BATCH_SIZE`: Number of items in each summary batch (Default: 50)
 - `MAX_WORKERS`: Maximum number of parallel workers (Default: 4)
-- `MAX_TOKENS`: Maximum tokens per API request (Default: 2048)
-- `CHUNK_SIZE`: Size of text chunks for processing (Default: 1000)
+- `MAX_TOKENS`: Maximum tokens per API request (Default: 4096)
 - `CACHE_ENABLED`: Enable/disable caching (Default: true)
 
 ### Data Processing Settings (Optional, with defaults)
@@ -582,6 +835,7 @@ docker-compose -f deployment/docker-compose.dev.yml logs -f
 - `STRATA_COLUMN`: Column name for stratification (Optional)
 - `FREQ`: Frequency for time-based operations (Default: 'H')
 - `FILTER_DATE`: Date to filter data from (Optional)
+- `SELECT_BOARD`: Filter data by specific board (Optional)
 - `PADDING_ENABLED`: Enable text padding (Default: false)
 - `CONTRACTION_MAPPING_ENABLED`: Enable contraction mapping (Default: false)
 - `NON_ALPHA_NUMERIC_ENABLED`: Enable non-alphanumeric processing (Default: false)
@@ -590,20 +844,20 @@ docker-compose -f deployment/docker-compose.dev.yml logs -f
 - `AWS_ACCESS_KEY_ID`: AWS access key ID
 - `AWS_SECRET_ACCESS_KEY`: AWS secret access key
 - `AWS_DEFAULT_REGION`: AWS region (Default: 'us-east-1')
-- `S3_BUCKET`: S3 bucket name (Default: 'rolling-data')
-- `S3_BUCKET_PREFIX`: S3 bucket prefix (Default: 'data')
+- `S3_BUCKET`: S3 bucket name (Default: 'chanscope-data')
+- `S3_BUCKET_PREFIX`: S3 bucket prefix (Default: 'data/')
+- `S3_BUCKET_PROCESSED`: S3 bucket for processed data (Default: 'processed')
+- `S3_BUCKET_MODELS`: S3 bucket for models (Default: 'models')
 
 (Optional, for data gathering, hourly for the last 30 days. email chanscope@proton.me for access)
 
 ### Path Settings (Optional, with defaults)
-- `ROOT_PATH`: Root path for data (Default: 'data')
-- `DATA_PATH`: Path for data files (Default: 'data')
-- `ALL_DATA`: Path for all data file (Default: 'data/all_data.csv')
-- `ALL_DATA_STRATIFIED_PATH`: Path for stratified data (Default: 'data/stratified')
-- `KNOWLEDGE_BASE`: Path for knowledge base (Default: 'data/knowledge_base.csv')
+- `ROOT_DATA_PATH`: Root path for data (Default: 'data')
+- `STRATIFIED_PATH`: Path for stratified data (Default: 'data/stratified')
 - `PATH_TEMP`: Path for temporary files (Default: 'temp_files')
 
 > Note: All paths are relative to the project root unless specified as absolute paths.
+
 ## References
 - Data Gathering Lambda: [chanscope-lambda](https://github.com/joelwk/chanscope-lambda)
 - Original Chanscope R&D: [Chanscope](https://github.com/joelwk/chanscope)
@@ -612,16 +866,17 @@ docker-compose -f deployment/docker-compose.dev.yml logs -f
 
 ### Default Configuration Settings
 - **Batch Processing**:
-  - Embedding Batch Size: 50
-  - Chunk Batch Size: 50
-  - Summary Batch Size: 20
+  - Embedding Batch Size: 25
+  - Chunk Batch Size: 25000
+  - Summary Batch Size: 50
 - **Data Processing**:
-  - Chunk Size: 500
-  - Sample Size: 2000 (Optimized)
+  - Stratification Chunk Size: 2500
+  - Processing Chunk Size: 25000
+  - Sample Size: 1500
   - Max Tokens: 4096
   - Cache Enabled: true
   - Max Workers: 4
 - **Update Schedule**:
   - Hourly data refresh
-  - 3-hour rolling window for real-time queries
-  - 7-day data retention window
+  - 6-hour rolling window for real-time queries
+  - 30-day data retention window

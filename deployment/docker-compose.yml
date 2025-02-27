@@ -1,171 +1,119 @@
-version: '3.8'
-
 services:
-  api:
+  app:
     build:
       context: ..
       dockerfile: deployment/Dockerfile
-      target: production
     volumes:
-      - ../data:/app/data
-      - ../logs:/app/logs
-      - ../.env:/app/.env
+      - type: bind
+        source: ../.env
+        target: /app/.env
+        read_only: true
+      - type: bind
+        source: ../api
+        target: /app/api
+        read_only: true
+      - type: bind
+        source: ../config
+        target: /app/config
+        read_only: true
+      - type: bind
+        source: ../knowledge_agents
+        target: /app/knowledge_agents
+        read_only: true
+      - type: volume
+        source: poetry_cache
+        target: /home/nobody/.cache/pypoetry
+      - type: volume
+        source: app_data
+        target: /app/data
+      - type: volume
+        source: app_logs
+        target: /app/logs
+      - type: volume
+        source: app_temp
+        target: /app/temp_files
+    user: "nobody:nogroup"
+    env_file:
+      - ../.env
     environment:
-      # Service Type
-      - SERVICE_TYPE=api
       - DOCKER_ENV=true
-      
-      # Port Configuration
-      - PORT=5000
-      - HOST=0.0.0.0
-      
-      # Production Settings
-      - QUART_APP=api.app
-      - QUART_ENV=production
       - PYTHONPATH=/app
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-
-      # API Keys
-      - OPENAI_API_KEY=${OPENAI_API_KEY}  # Required, no default
-      - GROK_API_KEY=${GROK_API_KEY}      # Optional
-      - VENICE_API_KEY=${VENICE_API_KEY}   # Optional
+      - PYTHONUNBUFFERED=1
+      - FASTAPI_ENV=production
+      - FASTAPI_DEBUG=false
+      - SETUP_TIMEOUT=120
+      - INIT_WAIT_TIME=300
+      - API_WORKERS=4  # Set number of worker processes
       
-      # Model Settings
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4}
-      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
-      - GROK_MODEL=${GROK_MODEL:-grok-2-1212}
-      - GROK_EMBEDDING_MODEL=${GROK_EMBEDDING_MODEL:-grok-v1-embedding}
-      - VENICE_MODEL=${VENICE_MODEL:-llama-3.1-405b}
-      - VENICE_CHUNK_MODEL=${VENICE_CHUNK_MODEL:-dolphin-2.9.2-qwen2-72b}
+      # API Paths
+      - API_BASE_PATH=/api/v1
+      - API_BASE_URL=http://localhost/api/v1
       
-      # Default Providers
-      - DEFAULT_EMBEDDING_PROVIDER=${DEFAULT_EMBEDDING_PROVIDER:-openai}
-      - DEFAULT_CHUNK_PROVIDER=${DEFAULT_CHUNK_PROVIDER:-openai}
-      - DEFAULT_SUMMARY_PROVIDER=${DEFAULT_SUMMARY_PROVIDER:-openai}
-      
-      # Application Settings
-      - BATCH_SIZE=${BATCH_SIZE:-100}
-      - SAMPLE_SIZE=${SAMPLE_SIZE:-2500}
-      - MAX_WORKERS=${MAX_WORKERS:-4}
-      - FILTER_DATE=${FILTER_DATE}
-      - MAX_TOKENS=${MAX_TOKENS:-4096}
-      - CHUNK_SIZE=${CHUNK_SIZE:-1000}
-      - CACHE_ENABLED=${CACHE_ENABLED:-true}
-      - SELECT_BOARD=${SELECT_BOARD}
-      - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-500}
-      - CHUNK_BATCH_SIZE=${CHUNK_BATCH_SIZE:-100}
-      - SUMMARY_BATCH_SIZE=${SUMMARY_BATCH_SIZE:-100}
-      
-      # Data Paths (Fixed in container)
-      - ROOT_PATH=/app/data
-      - DATA_PATH=/app/data
-      - KNOWLEDGE_BASE=/app/data/knowledge_base.csv
-      - ALL_DATA=/app/data/all_data.csv
-      - ALL_DATA_STRATIFIED_PATH=/app/data/stratified
-      - PATH_TEMP=/app/temp_files
-      - FILE_TYPE=${FILE_TYPE:-csv}
-      
-      # AWS Configuration
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
-      - S3_BUCKET=${S3_BUCKET}
-      - S3_BUCKET_PREFIX=${S3_BUCKET_PREFIX}
-      - S3_BUCKET_PROCESSED=${S3_BUCKET_PROCESSED}
-      - S3_BUCKET_MODELS=${S3_BUCKET_MODELS}
+      # System Configuration
+      - TZ=UTC
+      - PYTHONOPTIMIZE=2  # Enable Python optimizations
+      - PYTHONASYNCIODEBUG=0  # Disable async debug for better performance
+      - PYTHONWARNINGS=ignore  # Reduce logging overhead
     ports:
-      - "${API_PORT:-5000}:5000"
+      - "80:80"
     networks:
-      - knowledge-net
+      knowledge-net:
+        aliases:
+          - knowledge-api
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
     restart: unless-stopped
-
-  ui:
-    build:
-      context: ..
-      dockerfile: deployment/Dockerfile
-      target: production
-    volumes:
-      - ../data:/app/data
-      - ../logs:/app/logs
-      - ../.env:/app/.env
-    environment:
-      # Service Type
-      - SERVICE_TYPE=ui
-      - DOCKER_ENV=true
-      
-      # Port Configuration
-      - PORT=8000
-      - HOST=0.0.0.0
-      
-      # Production Settings
-      - PYTHONPATH=/app
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-
-      # API Keys
-      - OPENAI_API_KEY=${OPENAI_API_KEY}  # Required
-      - GROK_API_KEY=${GROK_API_KEY}      # Optional
-      - VENICE_API_KEY=${VENICE_API_KEY}   # Optional
-      
-      # Model Settings
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4}
-      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
-      - GROK_MODEL=${GROK_MODEL:-grok-2-1212}
-      - GROK_EMBEDDING_MODEL=${GROK_EMBEDDING_MODEL:-grok-v1-embedding}
-      - VENICE_MODEL=${VENICE_MODEL:-llama-3.1-405b}
-      - VENICE_CHUNK_MODEL=${VENICE_CHUNK_MODEL:-dolphin-2.9.2-qwen2-72b}
-      
-      # Default Providers
-      - DEFAULT_EMBEDDING_PROVIDER=${DEFAULT_EMBEDDING_PROVIDER:-openai}
-      - DEFAULT_CHUNK_PROVIDER=${DEFAULT_CHUNK_PROVIDER:-openai}
-      - DEFAULT_SUMMARY_PROVIDER=${DEFAULT_SUMMARY_PROVIDER:-openai}
-      
-      # Application Settings
-      - BATCH_SIZE=${BATCH_SIZE:-100}
-      - SAMPLE_SIZE=${SAMPLE_SIZE:-2500}
-      - FILTER_DATE=${FILTER_DATE}
-      - MAX_TOKENS=${MAX_TOKENS:-2048}
-      - CHUNK_SIZE=${CHUNK_SIZE:-1000}
-      - CACHE_ENABLED=${CACHE_ENABLED:-true}
-      - SELECT_BOARD=${SELECT_BOARD}
-      
-      # Data Paths (Fixed in container)
-      - ROOT_PATH=/app/data
-      - DATA_PATH=/app/data
-      - KNOWLEDGE_BASE=/app/data/knowledge_base.csv
-      - ALL_DATA=/app/data/all_data.csv
-      - ALL_DATA_STRATIFIED_PATH=/app/data/stratified
-      - PATH_TEMP=/app/temp_files
-      - FILE_TYPE=${FILE_TYPE:-csv}
-      
-      # AWS Configuration
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
-      - S3_BUCKET=${S3_BUCKET}
-      - S3_BUCKET_PREFIX=${S3_BUCKET_PREFIX}
-      - S3_BUCKET_PROCESSED=${S3_BUCKET_PROCESSED}
-      - S3_BUCKET_MODELS=${S3_BUCKET_MODELS}
-
-      # Service-specific settings
-      - API_HOST=api
-      - API_PORT=5000
-    ports:
-      - "${UI_PORT:-8000}:8000"
-    depends_on:
-      - api
-    networks:
-      - knowledge-net
-    restart: unless-stopped
+    stop_grace_period: 30s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4'
+        reservations:
+          memory: 2G
+          cpus: '1'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+        tag: "{{.Name}}"
+        labels: "production"
+        env: "FASTAPI_ENV,DOCKER_ENV"
 
 networks:
   knowledge-net:
     driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1
+    labels:
+      environment: production
 
 volumes:
-  data:
-  logs: 
+  poetry_cache:
+    driver: local
+    labels:
+      environment: production
+  app_data:
+    driver: local
+    labels:
+      environment: production
+  app_logs:
+    driver: local
+    labels:
+      environment: production
+  app_temp:
+    driver: local
+    labels:
+      environment: production
