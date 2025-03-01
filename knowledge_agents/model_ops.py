@@ -16,6 +16,7 @@ from config.settings import Config
 import tiktoken
 import hashlib
 import numpy as np
+from config.base import BaseConfig  # Ensure this import is present at the top
 # Initialize logging
 logger = logging.getLogger(__name__)
 
@@ -86,16 +87,27 @@ class ModelConfig:
     """Model configuration with validated settings."""
     def __init__(self, **settings):
         """Initialize ModelConfig with validated settings."""
+        logger.debug(f"Initializing ModelConfig with settings: {settings}")
+        self._settings = settings
+        
+        # Initialize with default values for batch sizes
+        self.embedding_batch_size = 10
+        self.chunk_batch_size = 5
+        self.summary_batch_size = 3
+        
+        # Initialize path settings with defaults
+        self.root_data_path = 'data'
+        self.stratified_path = 'data/stratified'
+        self.temp_path = 'temp_files'
+        
+        # Get settings from base settings if not provided
         if not settings:
             settings = get_base_settings()
 
         # Get model settings
         model_settings = settings.get('model', {})
 
-        # Model settings
-        self.embedding_batch_size = model_settings.get('embedding_batch_size', 10)
-        self.chunk_batch_size = model_settings.get('chunk_batch_size', 5)
-        self.summary_batch_size = model_settings.get('summary_batch_size', 3)
+        # Model provider settings
         self.default_embedding_provider = model_settings.get('default_embedding_provider')
         self.default_chunk_provider = model_settings.get('default_chunk_provider')
         self.default_summary_provider = model_settings.get('default_summary_provider')
@@ -104,9 +116,9 @@ class ModelConfig:
         path_settings = settings.get('paths', {})
 
         # Path settings - convert to strings
-        self.root_data_path = str(path_settings.get('root_data_path', 'data'))
-        self.stratified_path = str(path_settings.get('stratified', 'data/stratified'))
-        self.temp_path = str(path_settings.get('temp', 'temp_files'))
+        self.root_data_path = str(path_settings.get('root_data_path', self.root_data_path))
+        self.stratified_path = str(path_settings.get('stratified', self.stratified_path))
+        self.temp_path = str(path_settings.get('temp', self.temp_path))
 
         # Get processing settings
         self.processing_settings = settings.get('processing', {})
@@ -125,16 +137,63 @@ class ModelConfig:
         self.filter_date = self.processing_settings.get('filter_date')
         self.sample_size = self.processing_settings.get('sample_size', 1500)
         self.max_workers = self.processing_settings.get('max_workers', 4)
+        
+        # Load batch sizes from centralized settings
+        base_settings = BaseConfig.get_base_settings()['model']
+        embedding_batch_size = base_settings.get('embedding_batch_size', 25)
+        chunk_batch_size = base_settings.get('chunk_batch_size', 25)
+        summary_batch_size = base_settings.get('summary_batch_size', 25)
+
+        # Sanity checks for batch sizes
+        if embedding_batch_size > 1000:
+            logger.warning(f"Embedding batch size {embedding_batch_size} is unusually high, defaulting to 25")
+            embedding_batch_size = 25
+        if chunk_batch_size > 1000:
+            logger.warning(f"Chunk batch size {chunk_batch_size} is unusually high, defaulting to 25")
+            chunk_batch_size = 25
+        if summary_batch_size > 1000:
+            logger.warning(f"Summary batch size {summary_batch_size} is unusually high, defaulting to 25")
+            summary_batch_size = 25
+
+        self.embedding_batch_size = embedding_batch_size
+        self.chunk_batch_size = chunk_batch_size
+        self.summary_batch_size = summary_batch_size
+        
+        # Log configuration after everything is initialized
+        logger.debug(f"ModelConfig initialized with paths: {self.paths}")
+        logger.debug(f"Batch sizes: embedding={self.embedding_batch_size}, chunk={self.chunk_batch_size}, summary={self.summary_batch_size}")
 
     @property
     def paths(self) -> Dict[str, str]:
-        """Get path settings."""
-        return self.path_settings
+        """Get all configured filesystem paths."""
+        # Return only the known filesystem paths, not any setting with 'path' in the name
+        filesystem_paths = {
+            'root_data_path': self.root_data_path,
+            'stratified': self.stratified_path,
+            'temp': self.temp_path
+        }
+        logger.debug(f"Retrieved filesystem paths: {filesystem_paths}")
+        return filesystem_paths
 
     @classmethod
     def from_env(cls) -> 'ModelConfig':
-        """Create ModelConfig from environment settings."""
-        return cls()
+        """Create configuration from environment variables."""
+        logger.debug("Loading ModelConfig from environment")
+        try:
+            base_settings = BaseConfig.get_base_settings()['model']
+            settings = {
+                'embedding_batch_size': base_settings.get('embedding_batch_size'),
+                'chunk_batch_size': base_settings.get('chunk_batch_size'),
+                'summary_batch_size': base_settings.get('summary_batch_size'),
+                # ... other settings ...
+            }
+            logger.info(f"Loaded batch sizes from centralized settings: {settings}")
+            return cls(**settings)
+        except Exception as e:
+            logger.error(f"Error loading environment settings: {e}")
+            # Return a basic config with defaults
+            logger.warning("Falling back to default configuration")
+            return cls()
 
     def get_provider(self, operation: ModelOperation) -> ModelProvider:
         """Get the configured provider for a given operation."""
@@ -209,32 +268,50 @@ def load_prompts(prompt_path: str = None) -> Dict[str, Any]:
         raise
 
 def load_config() -> ModelConfig:
-    """Load configuration using BaseConfig.
-
-    Returns:
-        ModelConfig: Configuration instance with validated settings
-    """
-    if not hasattr(load_config, '_config_cache'):
-        try:
-            # Create model config directly from BaseConfig
-            model_config = ModelConfig()
-
-            # Validate required paths exist
-            for path_name, path in model_config.paths.items():
+    """Load model configuration from environment variables."""
+    try:
+        # Load from environment
+        logger.info("Loading model configuration from environment variables")
+        env_config = ModelConfig.from_env()
+        
+        # Log batch size settings for debugging
+        logger.info("Model configuration loaded:")
+        logger.info(f"  Batch sizes: embedding={env_config.embedding_batch_size}, " +
+                   f"chunk={env_config.chunk_batch_size}, summary={env_config.summary_batch_size}")
+        logger.info(f"  Data paths: stratified={env_config.stratified_path}, " +
+                   f"root={env_config.root_data_path}, temp={env_config.temp_path}")
+        
+        # Only create known filesystem directories, not API paths or other settings
+        # that might contain 'path' in their name
+        filesystem_paths = {
+            'root_data_path': env_config.root_data_path,
+            'stratified': env_config.stratified_path
+            # temp_path is created on demand
+        }
+        
+        # Ensure required directories exist
+        for path_name, path in filesystem_paths.items():
+            if path and not path.startswith('/api/'):  # Skip API paths
                 path_obj = Path(path)
-                if path_name != 'temp':  # temp directory is created on demand
-                    if not path_obj.exists():
-                        logger.warning(f"Creating required directory: {path}")
+                if not path_obj.exists():
+                    logger.info(f"Creating required directory: {path}")
+                    try:
                         path_obj.mkdir(parents=True, exist_ok=True)
-
-            # Cache the configuration
-            load_config._config_cache = model_config
-
-        except Exception as e:
-            logger.error(f"Error loading configuration: {str(e)}")
-            raise ModelConfigurationError(f"Failed to load configuration: {str(e)}") from e
-
-    return load_config._config_cache
+                    except PermissionError as pe:
+                        logger.warning(f"Permission denied creating directory {path}: {pe}")
+                        # Continue without failing - the app might still work if the directory already exists
+                    except Exception as e:
+                        logger.warning(f"Could not create directory {path}: {e}")
+        
+        return env_config
+    except AttributeError as ae:
+        logger.error(f"Configuration attribute error: {ae}")
+        # Create a basic config with defaults as fallback
+        logger.warning("Creating fallback configuration with default values")
+        return ModelConfig()
+    except Exception as e:
+        logger.error(f"Error loading model configuration: {e}")
+        raise ModelConfigurationError(f"Failed to load model configuration: {str(e)}")
 
 class KnowledgeAgent:
     """Thread-safe singleton class for model operations."""
@@ -274,6 +351,7 @@ class KnowledgeAgent:
         try:
             # Import Config here to avoid circular dependency
             from config.settings import Config
+            base_settings = get_base_settings()['model']
 
             if provider == ModelProvider.OPENAI:
                 return AsyncOpenAI(api_key=Config.get_openai_api_key())
@@ -283,7 +361,7 @@ class KnowledgeAgent:
                     raise ModelProviderError("Grok API key not found")
                 return AsyncOpenAI(
                     api_key=grok_key,
-                    base_url=get_base_settings()['model'].get('grok_api_base')
+                    base_url=base_settings.get('grok_api_base')
                 )
             elif provider == ModelProvider.VENICE:
                 venice_key = Config.get_venice_api_key()
@@ -291,7 +369,7 @@ class KnowledgeAgent:
                     raise ModelProviderError("Venice API key not found")
                 return AsyncOpenAI(
                     api_key=venice_key,
-                    base_url=get_base_settings()['model'].get('venice_api_base')
+                    base_url=base_settings.get('venice_api_base'),
                 )
             else:
                 raise ModelProviderError(f"Unsupported provider: {provider}")
@@ -301,11 +379,33 @@ class KnowledgeAgent:
             raise ModelProviderError(f"Failed to create client for {provider}: {str(e)}")
 
     def _validate_config(self, config: Optional[ModelConfig] = None) -> ModelConfig:
-        """Validate and return configuration."""
+        """Validate and return configuration.
+        
+        Args:
+            config: Optional configuration to validate
+            
+        Returns:
+            Validated ModelConfig instance
+        """
         if config is None:
             if self._config is None:
-                self._config = ModelConfig.from_env()
+                self._config = load_config()
+                logger.debug("Loaded new configuration")
             return self._config
+        
+        # If config is provided, validate it has required attributes
+        required_attrs = ['embedding_batch_size', 'chunk_batch_size', 'summary_batch_size']
+        for attr in required_attrs:
+            if not hasattr(config, attr):
+                logger.warning(f"Config missing required attribute: {attr}, using default")
+                # Set default values if missing
+                if attr == 'embedding_batch_size':
+                    setattr(config, attr, 25)
+                elif attr == 'chunk_batch_size':
+                    setattr(config, attr, 5)
+                elif attr == 'summary_batch_size':
+                    setattr(config, attr, 3)
+        
         return config
 
     def _initialize_clients(self) -> Dict[str, AsyncOpenAI]:
@@ -510,10 +610,12 @@ class KnowledgeAgent:
                 messages=messages,
                 temperature=0.3,
                 presence_penalty=0.2,
-                frequency_penalty=0.2
-            )
+                frequency_penalty=0.2)
+            
+            if isinstance(response, str):
+                logger.error(f"Unexpected string response from API: {response}")
+                raise SummarizationError("Received unexpected string response from API")
             return response.choices[0].message.content
-
         except SummarizationError:
             raise
         except Exception as e:
@@ -635,24 +737,113 @@ class KnowledgeAgent:
                     return await self.generate_chunks(content, provider=ModelProvider.OPENAI)
                 raise ChunkGenerationError(f"Failed to generate chunks: {str(e)}") from e
 
+    def _optimize_batch_size(self, contents: List[str], default_batch_size: int) -> int:
+        """Dynamically optimize batch size based on content length.
+        
+        For very long content items, reduce batch size to avoid rate limits and token limits.
+        
+        Args:
+            contents: List of content strings to process
+            default_batch_size: Default batch size from configuration
+            
+        Returns:
+            Optimized batch size
+        """
+        if not contents:
+            return default_batch_size
+            
+        # Calculate average content length
+        avg_length = sum(len(content) for content in contents) / len(contents)
+        
+        # Adjust batch size based on content length
+        if avg_length > 10000:  # Very long content
+            return max(1, min(3, default_batch_size))
+        elif avg_length > 5000:  # Moderately long content
+            return max(1, min(5, default_batch_size))
+        elif avg_length > 2000:  # Average content
+            return max(1, min(10, default_batch_size))
+        else:  # Short content
+            return default_batch_size
+            
     async def generate_chunks_batch(
         self,
         contents: List[str],
         provider: Optional[ModelProvider] = None,
         chunk_batch_size: Optional[int] = None
     ) -> List[Dict[str, str]]:
-        """Generate chunks for multiple contents in batches."""
-        config = self._validate_config()
+        """Generate content chunks for a batch of text contents.
+        
+        Args:
+            contents: List of text contents to process
+            provider: Optional model provider override
+            chunk_batch_size: Optional batch size override
+            
+        Returns:
+            List of chunked contents
+        """
+        if not contents:
+            return []
+            
+        # Ensure we have a valid config
+        self._config = self._validate_config(self._config)
+        
+        # Get provider (use default if not specified)
         provider = provider or self._get_default_provider(ModelOperation.CHUNK_GENERATION)
-        chunk_batch_size = chunk_batch_size or config.chunk_batch_size
-
+        
+        # Get appropriate batch size from config if not specified
+        config_batch_size = self._config.chunk_batch_size
+        
+        # Use provided batch size, or config batch size, or default
+        batch_size = chunk_batch_size or config_batch_size or 5
+        
+        # Optimize batch size based on content length if needed
+        optimized_batch_size = self._optimize_batch_size(contents, batch_size)
+        
+        # Log debug information about batching
+        logger.info(f"Chunk generation batch settings - Requested: {chunk_batch_size}, " +
+                   f"Config: {config_batch_size}, Optimized: {optimized_batch_size}, Using: {optimized_batch_size}")
+        logger.info(f"Content statistics - Count: {len(contents)}, " + 
+                   f"Avg Length: {sum(len(c) for c in contents) / len(contents):.1f} chars, " +
+                   f"Max Length: {max(len(c) for c in contents)} chars")
+        
+        # Actual number of batches
+        num_batches = (len(contents) + optimized_batch_size - 1) // optimized_batch_size
+        
+        logger.info(f"Starting generate_chunks_batch with {len(contents)} items, batch_size={optimized_batch_size}, resulting in {num_batches} batches")
+        
         results = []
-        for i in range(0, len(contents), chunk_batch_size):
-            batch = contents[i:i + chunk_batch_size]
-            batch_results = await asyncio.gather(
-                *[self.generate_chunks(content, provider=provider) for content in batch]
-            )
-            results.extend(batch_results)
+        total_batches = (len(contents) + optimized_batch_size - 1) // optimized_batch_size
+        
+        for i in range(0, len(contents), optimized_batch_size):
+            batch = contents[i:i + optimized_batch_size]
+            batch_num = i // optimized_batch_size + 1
+            
+            logger.info(f"Processing chunk batch {batch_num}/{total_batches}: {len(batch)} items")
+            
+            # Process batch with proper error handling
+            try:
+                batch_results = await asyncio.gather(
+                    *[self.generate_chunks(content, provider=provider) for content in batch],
+                    return_exceptions=True
+                )
+                
+                # Handle any exceptions in the batch
+                processed_results = []
+                for j, result in enumerate(batch_results):
+                    if isinstance(result, Exception):
+                        logger.error(f"Error in chunk generation (item {i+j}): {str(result)}")
+                        processed_results.append(None)  # Use None for failed items
+                    else:
+                        processed_results.append(result)
+                        
+                results.extend(processed_results)
+                logger.info(f"Completed chunk batch {batch_num}/{total_batches}, total results: {len(results)}/{len(contents)}")
+                
+            except Exception as e:
+                logger.error(f"Error processing chunk batch {batch_num}: {str(e)}")
+                # Add None results for the entire batch on catastrophic failure
+                results.extend([None] * len(batch))
+        
         return results
 
     async def generate_summaries_batch(
@@ -664,35 +855,100 @@ class KnowledgeAgent:
         provider: Optional[ModelProvider] = None,
         summary_batch_size: Optional[int] = None
     ) -> List[str]:
-        """Generate summaries for multiple queries in batches."""
-        config = self._validate_config()
+        """Generate summaries for multiple queries in batches.
+        
+        Args:
+            queries: List of query strings
+            results_list: List of results strings (one per query)
+            contexts: Optional list of context strings (one per query)
+            temporal_contexts: Optional list of temporal context dicts (one per query)
+            provider: Optional model provider override
+            summary_batch_size: Optional batch size override
+            
+        Returns:
+            List of summary strings (one per query)
+        """
+        if not queries or not results_list:
+            return []
+            
+        if len(queries) != len(results_list):
+            raise ValueError(f"Number of queries ({len(queries)}) must match number of results ({len(results_list)})")
+            
+        if contexts and len(contexts) != len(queries):
+            raise ValueError(f"Number of contexts ({len(contexts)}) must match number of queries ({len(queries)})")
+            
+        if temporal_contexts and len(temporal_contexts) != len(queries):
+            raise ValueError(f"Number of temporal contexts ({len(temporal_contexts)}) must match number of queries ({len(queries)})")
+        
+        # Ensure we have a valid config
+        self._config = self._validate_config(self._config)
+        
+        # Get provider (use default if not specified)
         provider = provider or self._get_default_provider(ModelOperation.SUMMARIZATION)
-        summary_batch_size = summary_batch_size or config.summary_batch_size
-
-        if contexts is None:
+        
+        # Get appropriate batch size from config if not specified
+        config_batch_size = self._config.summary_batch_size
+        
+        # Use provided batch size, or config batch size, or default
+        batch_size = summary_batch_size or config_batch_size or 3
+        
+        # Log batch information
+        logger.info(f"Summary generation batch settings - Requested: {summary_batch_size}, " +
+                   f"Config: {config_batch_size}, Using: {batch_size}")
+        logger.info(f"Processing {len(queries)} summaries in batches of {batch_size}")
+        
+        # Prepare empty contexts if not provided
+        if not contexts:
             contexts = [None] * len(queries)
-        if temporal_contexts is None:
+            
+        if not temporal_contexts:
             temporal_contexts = [None] * len(queries)
-
+            
+        # Process in batches
         results = []
-        for i in range(0, len(queries), summary_batch_size):
-            batch_queries = queries[i:i + summary_batch_size]
-            batch_results = results_list[i:i + summary_batch_size]
-            batch_contexts = contexts[i:i + summary_batch_size]
-            batch_temporal = temporal_contexts[i:i + summary_batch_size]
-
-            batch_summaries = await asyncio.gather(
-                *[self.generate_summary(
-                    query=query,
-                    results=result,
-                    context=context,
-                    temporal_context=temporal,
-                    provider=provider
-                ) for query, result, context, temporal in zip(
-                    batch_queries, batch_results, batch_contexts, batch_temporal
-                )]
-            )
-            results.extend(batch_summaries)
+        total_batches = (len(queries) + batch_size - 1) // batch_size
+        
+        for i in range(0, len(queries), batch_size):
+            batch_queries = queries[i:i + batch_size]
+            batch_results = results_list[i:i + batch_size]
+            batch_contexts = contexts[i:i + batch_size]
+            batch_temporal_contexts = temporal_contexts[i:i + batch_size]
+            batch_num = i // batch_size + 1
+            
+            logger.info(f"Processing summary batch {batch_num}/{total_batches}: {len(batch_queries)} items")
+            
+            # Process batch with proper error handling
+            try:
+                batch_summaries = await asyncio.gather(
+                    *[self.generate_summary(
+                        query=query,
+                        results=result,
+                        context=context,
+                        temporal_context=temp_context,
+                        provider=provider
+                    ) for query, result, context, temp_context in zip(
+                        batch_queries, batch_results, batch_contexts, batch_temporal_contexts
+                    )],
+                    return_exceptions=True
+                )
+                
+                # Handle any exceptions in the batch
+                processed_summaries = []
+                for j, summary in enumerate(batch_summaries):
+                    if isinstance(summary, Exception):
+                        logger.error(f"Error in summary generation (item {i+j}): {str(summary)}")
+                        processed_summaries.append(f"Error generating summary: {str(summary)}")
+                    else:
+                        processed_summaries.append(summary)
+                        
+                results.extend(processed_summaries)
+                logger.info(f"Completed summary batch {batch_num}/{total_batches}")
+                
+            except Exception as e:
+                logger.error(f"Error processing summary batch {batch_num}: {str(e)}")
+                # Add error messages for the entire batch on catastrophic failure
+                results.extend([f"Error generating summary: {str(e)}"] * len(batch_queries))
+        
         return results
 
     def _process_chunk_response(self, result: str) -> Dict[str, Any]:

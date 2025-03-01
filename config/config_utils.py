@@ -39,6 +39,7 @@ class QueryRequest(BaseModel):
     force_refresh: bool = Field(False, description="Force refresh the data cache")
     skip_embeddings: bool = Field(False, description="Skip embedding generation")
     skip_batching: bool = Field(False, description="Skip batching")
+    skip_cache: bool = Field(False, description="Skip cache lookup for query")
     filter_date: Optional[str] = Field(None, description="Filter results by date (format: YYYY-MM-DD HH:MM:SS+00:00)")
     select_board: Optional[str] = Field(None, description="Filter S3 data by board ID")
     # Configuration options
@@ -51,6 +52,17 @@ class QueryRequest(BaseModel):
     embedding_provider: Optional[str] = Field(None, description="Provider for embeddings (openai/grok/venice)")
     chunk_provider: Optional[str] = Field(None, description="Provider for chunk generation (openai/grok/venice)")
     summary_provider: Optional[str] = Field(None, description="Provider for summarization (openai/grok/venice)")
+    use_background: bool = Field(False, description="Use background processing")
+
+class QueryResponse(BaseModel):
+    """Response model for query processing.
+    
+    This model defines the structure for query processing responses,
+    including the generated chunks and summary.
+    """
+    chunks: List[Dict[str, Any]] = Field(..., description="List of processed chunks with metadata")
+    summary: str = Field(..., description="Generated summary of the chunks")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata about the processing")
 
 class BatchQueryRequest(BaseModel):
     """Request model for batch query processing.
@@ -59,6 +71,14 @@ class BatchQueryRequest(BaseModel):
     """
     queries: List[str] = Field(..., description="List of queries to process")
     config: Optional[QueryRequest] = Field(None, description="Configuration options for all queries")
+    
+    # Batch processing parameters
+    chunk_batch_size: Optional[int] = Field(None, description="Batch size for chunk generation")
+    summary_batch_size: Optional[int] = Field(None, description="Batch size for summary generation")
+    max_workers: Optional[int] = Field(None, description="Maximum number of workers for parallel processing")
+    
+    # Skip cache option
+    skip_cache: bool = Field(False, description="Skip cache lookup for queries")
 
 class QueryValidationResult(BaseModel):
     """Validation result for query requests.

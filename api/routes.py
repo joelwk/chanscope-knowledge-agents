@@ -8,18 +8,20 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple, Union, Set, Awaitable, Callable
+from typing import Optional, Dict, Any, Union
 from collections import deque
+
 import hashlib
 import json
 import shutil
 from filelock import FileLock
 import numpy as np
-
+import uuid
 import pytz
 import pandas as pd
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
+import secrets
 
 from knowledge_agents.model_ops import (
     ModelProvider, 
@@ -28,12 +30,13 @@ from knowledge_agents.model_ops import (
     ModelConfigurationError,
     ModelOperationError,
     ModelOperation,
-    ModelConfig)
+    ModelConfig,
+    load_config)
  
-from knowledge_agents.embedding_ops import get_agent
+from knowledge_agents.embedding_ops import get_agent, merge_articles_and_embeddings
 from knowledge_agents.data_processing.cloud_handler import S3Handler
 from knowledge_agents.data_ops import DataConfig, DataOperations
-from knowledge_agents.inference_ops import process_multiple_queries
+from knowledge_agents.inference_ops import process_multiple_queries_efficient, process_query
 from knowledge_agents.run import run_inference
 
 from config.base_settings import get_base_settings
@@ -41,6 +44,8 @@ from config.settings import Config
 from config.config_utils import (
     QueryRequest,
     BatchQueryRequest,
+    build_model_config,
+    QueryResponse,
     build_unified_config)
 
 from config.logging_config import get_logger
@@ -57,13 +62,14 @@ _background_tasks: Dict[str, Dict[str, Any]] = {}
 _tasks_lock = asyncio.Lock()
 _embedding_task_key = 'embedding_generation'
 
+task_response_queue: asyncio.Queue = asyncio.Queue()
+
 # Batch processing configuration
-_query_batch: deque = deque()
-_query_batch_lock = asyncio.Lock()
 _batch_results: Dict[str, Any] = {}
 _BATCH_SIZE = Config.get_model_settings()['embedding_batch_size']  # Batch size from configuration
 _BATCH_WAIT_TIME = 2  # Seconds to wait for batch accumulation
 _last_batch_processing_time = 0  # Track processing time for ETA estimates
+_query_batch = deque()  # Initialize the query batch queue
 
 # Enhanced error handling classes
 class APIError(Exception):
@@ -586,453 +592,485 @@ async def stratify_data(
         logger.error(f"Error during stratification: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/process_query")
-async def process_query(
-    request: QueryRequest,
-    agent: KnowledgeAgent = Depends(get_agent),
-    data_ops: DataOperations = Depends(get_data_ops),
-    background_tasks: BackgroundTasks = None
-):
-    """Process a query with optimized batching and parallel processing.
-    
-    This function serves as the main entry point for query processing, with two paths:
-    1. Direct processing (skip_batching=True): Processes the query immediately
-    2. Batch processing: Adds query to a batch queue for efficient processing
+async def load_stratified_data(
+    stratified_path: str,
+) -> pd.DataFrame:
+    """Load and merge stratified data with embeddings.
     
     Args:
-        request: The query request with parameters
-        agent: Knowledge agent for processing
-        data_ops: Data operations for data preparation
-        background_tasks: Optional background tasks for async processing
+        stratified_path: Path to the stratified data directory
         
     Returns:
-        Either the query results or a batch status object
+        DataFrame containing merged stratified data with embeddings
     """
+    from knowledge_agents.embedding_ops import merge_articles_and_embeddings
+    from pathlib import Path
+    
+    # Log input path
+    logger.info(f"Loading stratified data from base path: {stratified_path}")
+    
+    # Construct full paths - all files should be in the same stratified_path directory
+    stratified_file = Path(stratified_path) / 'stratified_sample.csv'
+    embeddings_file = Path(stratified_path) / 'embeddings.npz'
+    thread_id_file = Path(stratified_path) / 'thread_id_map.json'
+    
+    # Verify files exist
+    logger.info(f"Checking stratified data files:")
+    logger.info(f"  Stratified file: {stratified_file} (exists: {stratified_file.exists()})")
+    logger.info(f"  Embeddings file: {embeddings_file} (exists: {embeddings_file.exists()})")
+    logger.info(f"  Thread ID file: {thread_id_file} (exists: {thread_id_file.exists()})")
+    
+    # Load and merge the data
+    library_df = await merge_articles_and_embeddings(
+        stratified_file, embeddings_file, thread_id_file
+    )
+    
+    logger.info(f"Loaded stratified data: {library_df.shape[0]} rows, {library_df.shape[1]} columns")
+    
+    return library_df
+
+@router.post("/query", response_model=Dict[str, Any])
+async def base_query(
+    request: QueryRequest,
+    background_tasks: BackgroundTasks
+) -> Dict[str, Any]:
+    """Process a single query and return results."""
     start_time = time.time()
+    task_id = None
+    
     try:
-        # Generate a unique request ID for tracking and caching
-        request_id = hashlib.md5(
-            f"{request.query}:{request.filter_date or ''}:{request.embedding_provider or ''}:{request.chunk_provider or ''}:{request.select_board or ''}"
-            .encode()
-        ).hexdigest()
-        cache_key = f"query_result:{request_id}"
-        
-        # Try to get from cache first if not forcing refresh
-        if not request.force_refresh:
-            try:
-                cached_result = await cache.get(cache_key)
-                if cached_result:
-                    logger.info(f"Cache hit for query: {request_id[:8]}...")
-                    return cached_result
-            except Exception as cache_error:
-                # Log cache error but continue processing
-                logger.warning(f"Cache retrieval error: {str(cache_error)}")
-        
-        # Process immediately if batching is skipped
-        if request.skip_batching:
-            logger.info(f"Processing query immediately (skip_batching=True): {request_id[:8]}...")
+        # Validate request
+        if not request.query or not isinstance(request.query, str):
+            raise ValidationError(
+                message="Invalid query format",
+                field="query",
+                value=request.query
+            )
             
-            # Build unified configuration
-            config = build_unified_config(request)
-            
-            # Prepare data if needed - ensures stratified data is ready for embeddings and search
-            await _prepare_data_if_needed(
+        # Generate task ID
+        timestamp = int(time.time())
+        task_id = f"query_{timestamp}_{secrets.token_hex(4)}"
+        
+        logger.info(f"Processing query request {task_id}: {request.query[:50]}...")
+        
+        # Get required services
+        agent = await get_agent()
+        data_ops = await get_data_ops()
+        
+        # Get configuration
+        config = build_model_config()
+        
+        if request.use_background:
+            # Add task to background processing
+            background_tasks.add_task(
+                _process_single_query,
+                task_id=task_id,
+                query=request.query,
+                agent=agent,
                 config=config,
+                use_batching=True,
                 data_ops=data_ops,
                 force_refresh=request.force_refresh,
                 skip_embeddings=request.skip_embeddings
             )
             
-            # Run inference using the prepared data
-            chunks, summary = await _run_inference_async(
-                request.query,
-                config,
-                agent,
-                request.force_refresh,
-                request.skip_embeddings
-            )
-            
-            # Construct and cache the result
-            result = {"chunks": chunks, "summary": summary}
-            try:
-                await cache.set(cache_key, result, ttl=3600)  # Cache for 1 hour
-            except Exception as cache_error:
-                # Log cache error but continue since we have the result
-                logger.warning(f"Cache storage error: {str(cache_error)}")
-            
-            # Log query processing time
-            duration_ms = round((time.time() - start_time) * 1000, 2)
-            logger.info(f"Query processed in {duration_ms}ms: {request_id[:8]}...")
-            
-            return result
-        else:
-            # Add to batch queue for efficient processing
-            if background_tasks is None:
-                # If no background_tasks provided, return error
-                raise ValidationError(
-                    message="Background tasks unavailable for batch processing",
-                    field="background_tasks",
-                    value=None
-                )
-            
-            # Add to query batch and get batch ID
-            batch_id = await _add_to_query_batch(request)
-            logger.info(f"Added query to batch: {batch_id}")
-            
-            # Schedule batch processing if needed
-            if _should_process_batch():
-                logger.info(f"Batch processing triggered by batch size threshold")
-                background_tasks.add_task(_process_query_batch, agent, data_ops)
-            else:
-                # Schedule processing after wait time
-                async def delayed_process():
-                    await asyncio.sleep(_BATCH_WAIT_TIME)
-                    if _should_process_batch():
-                        await _process_query_batch(agent, data_ops)
-                
-                logger.info(f"Scheduled delayed batch processing in {_BATCH_WAIT_TIME}s")
-                background_tasks.add_task(delayed_process)
-                
-            # Return batch status information
-            queue_position = len(_query_batch) - 1
-            eta_seconds = _estimate_processing_time()
             return {
-                "status": "queued",
-                "batch_id": batch_id,
-                "message": f"Query added to processing queue (position: {queue_position})",
-                "position": queue_position,
-                "eta_seconds": eta_seconds
+                "status": "processing",
+                "task_id": task_id,
+                "message": "Query processing started in background"
             }
-            
+        else:
+            # Process query synchronously
+            try:
+                # Initialize task status
+                async with _tasks_lock:
+                    _background_tasks[task_id] = {
+                        "status": "processing",
+                        "timestamp": time.time(),
+                        "query": request.query,
+                        "progress": 0
+                    }
+                
+                # Process query
+                result = await process_query(
+                    query=request.query,
+                    agent=agent,
+                    library_df=await _prepare_data_if_needed(
+                        config=config,
+                        data_ops=data_ops,
+                        force_refresh=request.force_refresh,
+                        skip_embeddings=request.skip_embeddings
+                    ),
+                    config=config,
+                    use_batching=True
+                )
+                
+                # Store result
+                success = await _store_batch_result(
+                    batch_id=task_id,
+                    result=result,  # Pass the entire result dictionary
+                    config=config
+                )
+                
+                if not success:
+                    raise ProcessingError(
+                        message="Failed to store query results",
+                        operation="store_result"
+                    )
+                
+                # Update task status
+                async with _tasks_lock:
+                    if task_id in _background_tasks:
+                        _background_tasks[task_id]["status"] = "completed"
+                        _background_tasks[task_id]["progress"] = 100
+                
+                # Return complete result
+                response = {
+                    "status": "completed",
+                    "task_id": task_id,
+                    "chunks": result.get("chunks", []),
+                    "summary": result.get("summary", ""),
+                    "metadata": result.get("metadata", {})
+                }
+                
+                duration_ms = round((time.time() - start_time) * 1000, 2)
+                logger.info(f"Query {task_id} processed in {duration_ms}ms")
+                
+                return response
+                
+            except Exception as e:
+                logger.error(f"Error processing query {task_id}: {str(e)}")
+                logger.error(traceback.format_exc())
+                
+                # Update task status to failed
+                async with _tasks_lock:
+                    if task_id in _background_tasks:
+                        _background_tasks[task_id]["status"] = "failed"
+                        _background_tasks[task_id]["error"] = str(e)
+                
+                # Store error result
+                error_result = {
+                    "chunks": [],
+                    "summary": f"Error processing query: {str(e)}",
+                    "metadata": {
+                        "error": str(e),
+                        "traceback": traceback.format_exc()
+                    }
+                }
+                
+                await _store_batch_result(
+                    batch_id=task_id,
+                    result=error_result,
+                    config=config
+                )
+                
     except ValidationError as e:
-        # Handle validation errors with structured logging
         e.log_error(logger)
         raise HTTPException(
             status_code=e.status_code,
             detail=e.to_dict()
         )
-    except ModelProviderError as e:
-        # Handle model provider errors
-        error = ProcessingError(
-            message=f"Model provider error: {str(e)}",
-            operation="query_processing",
-            resource=request.query,
-            original_error=e
-        )
-        error.log_error(logger)
-        raise HTTPException(
-            status_code=error.status_code,
-            detail=error.to_dict()
-        )
-    except ModelConfigurationError as e:
-        # Handle configuration errors
-        error = ConfigurationError(
-            message=f"Model configuration error: {str(e)}",
-            config_key="model_config",
-            config_value=str(e)
-        )
-        error.log_error(logger)
-        raise HTTPException(
-            status_code=error.status_code,
-            detail=error.to_dict()
-        )
     except Exception as e:
-        # Handle all other exceptions
-        logger.error(f"Error processing query: {str(e)}")
+        logger.error(f"Unexpected error in base_query: {str(e)}")
         logger.error(traceback.format_exc())
-        error = ProcessingError(
-            message="Error processing query",
-            operation="process_query",
-            resource=request.query,
-            original_error=e
-        )
-        error.log_error(logger)
         raise HTTPException(
-            status_code=500, 
-            detail=error.to_dict()
-        )
-
-@router.post("/batch_process")
-async def batch_process(
-    request: BatchQueryRequest,
-    background_tasks: BackgroundTasks,
-    agent: KnowledgeAgent = Depends(get_agent)) -> Dict[str, Any]:
-    """Process multiple queries in the background with proper agent lifecycle."""
-    start_time = time.time()
-    try:
-        # Generate unique task ID
-        task_id = f"batch_{int(time.time())}_{os.getpid()}"
-        async with _tasks_lock:
-            _background_tasks[task_id] = {
-                "status": "initializing",
-                "start_time": datetime.now(pytz.UTC),
-                "total_queries": len(request.queries),
-                "completed_queries": 0,
-                "results": [],
-                "errors": []}
-        # Define background processing function
-        async def process_batch():
-            batch_start_time = time.time()
-            try:
-                config = await build_unified_config(request.config)
-                results = []
-                errors = []
-                for query in request.queries:
-                    query_start_time = time.time()
-                    try:
-                        result = await _run_inference_async(
-                            query=query,
-                            agent=agent,
-                            config=config)
-                        results.append({
-                            "query": query,
-                            "result": result,
-                            "duration_ms": round((time.time() - query_start_time) * 1000, 2)})
-                        async with _tasks_lock:
-                            _background_tasks[task_id]["completed_queries"] += 1
-                            _background_tasks[task_id]["results"] = results
-                            
-                    except Exception as query_error:
-                        error = ProcessingError(
-                            message=f"Error processing query: {str(query_error)}",
-                            operation="process_single_query",
-                            resource=query,
-                            original_error=query_error
-                        )
-                        error.log_error(logger)
-                        errors.append(error.to_dict())
-                        results.append({
-                            "query": query,
-                            "error": error.to_dict(),
-                            "duration_ms": round((time.time() - query_start_time) * 1000, 2)
-                        })
-                
-                async with _tasks_lock:
-                    _background_tasks[task_id].update({
-                        "status": "completed",
-                        "end_time": datetime.now(pytz.UTC),
-                        "duration_ms": round((time.time() - batch_start_time) * 1000, 2),
-                        "results": results,
-                        "errors": errors
-                    })
-                
-                # Log completion
-                log_endpoint_call(
-                    logger=logger,
-                    endpoint=f"/batch_process/{task_id}",
-                    method="BACKGROUND",
-                    duration_ms=round((time.time() - batch_start_time) * 1000, 2),
-                    params={
-                        "total_queries": len(request.queries),
-                        "completed_queries": len(results),
-                        "error_count": len(errors)
-                    }
-                )
-                
-                # Ensure proper cleanup
-                gc.collect()
-                
-            except Exception as batch_error:
-                error = ProcessingError(
-                    message="Batch processing failed",
-                    operation="process_batch",
-                    resource=task_id,
-                    original_error=batch_error
-                )
-                error.log_error(logger)
-                async with _tasks_lock:
-                    _background_tasks[task_id].update({
-                        "status": "failed",
-                        "end_time": datetime.now(pytz.UTC),
-                        "error": error.to_dict(),
-                        "duration_ms": round((time.time() - batch_start_time) * 1000, 2)
-                    })
-        
-        # Add task to background tasks
-        background_tasks.add_task(process_batch)
-        
-        response = {
-            "status": "accepted",
-            "message": "Batch processing started",
-            "task_id": task_id,
-            "status_endpoint": f"/batch_status/{task_id}"
-        }
-
+            status_code=500,
+            detail={
+                "error": str(e),
+                "task_id": task_id})
+    finally:
+        # Log endpoint call
         duration_ms = round((time.time() - start_time) * 1000, 2)
         log_endpoint_call(
             logger=logger,
-            endpoint="/batch_process",
+            endpoint="/query",
             method="POST",
-            duration_ms=duration_ms,
             params={
                 "task_id": task_id,
-                "total_queries": len(request.queries)
+                "query_length": len(request.query) if request.query else 0,
+                "use_background": request.use_background
+            },
+            duration_ms=duration_ms
+        )
+
+async def _process_single_query(
+    task_id: str,
+    query: str,
+    agent: KnowledgeAgent,
+    config: ModelConfig,
+    use_batching: bool,
+    data_ops: DataOperations,
+    force_refresh: bool = False,
+    skip_embeddings: bool = False
+) -> None:
+    """Process a single query and store the results."""
+    try:
+        # Update task status to processing
+        async with _tasks_lock:
+            _background_tasks[task_id] = {
+                "status": "processing",
+                "timestamp": time.time(),
+                "query": query,
+                "progress": 10
+            }
+        
+        # Process the query
+        result = await process_query(
+            query=query,
+            agent=agent,
+            library_df=await _prepare_data_if_needed(
+                config=config,
+                data_ops=data_ops,
+                force_refresh=force_refresh,
+                skip_embeddings=skip_embeddings
+            ),
+            config=config,
+            use_batching=use_batching
+        )
+        
+        # Store the result directly (no need to unpack)
+        success = await _store_batch_result(
+            batch_id=task_id,
+            result=result,  # Pass the entire result dictionary
+            config=config
+        )
+        
+        if success:
+            processing_time = result.get("metadata", {}).get("processing_time_ms", 0)
+            logger.info(f"Query {task_id} processed successfully in {processing_time/1000:.2f}s")
+            
+            # Update task status to completed
+            async with _tasks_lock:
+                if task_id in _background_tasks:
+                    _background_tasks[task_id]["status"] = "completed"
+                    _background_tasks[task_id]["progress"] = 100
+        else:
+            logger.error(f"Failed to store results for query {task_id}")
+            
+            # Update task status to failed
+            async with _tasks_lock:
+                if task_id in _background_tasks:
+                    _background_tasks[task_id]["status"] = "failed"
+                    _background_tasks[task_id]["error"] = "Failed to store results"
+            
+    except Exception as e:
+        logger.error(f"Error processing query {task_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        
+        # Update task status to failed
+        async with _tasks_lock:
+            if task_id in _background_tasks:
+                _background_tasks[task_id]["status"] = "failed"
+                _background_tasks[task_id]["error"] = str(e)
+        
+        # Store error result
+        error_result = {
+            "chunks": [],
+            "summary": f"Error processing query: {str(e)}",
+            "metadata": {
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+        }
+        
+        await _store_batch_result(
+            batch_id=task_id,
+            result=error_result,
+            config=config
+        )
+
+@router.post("/batch_process")
+async def batch_process_queries(
+    request: BatchQueryRequest,
+    background_tasks: BackgroundTasks = None
+) -> Dict[str, Any]:
+    """Process multiple queries in an optimized batch."""
+    start_time = time.time()
+    batch_id = str(uuid.uuid4())
+    logger.info(f"Processing batch of {len(request.queries)} queries: {batch_id}")
+    
+    try:
+        # Initialize the agent and config
+        agent = get_agent()
+        config = load_config()
+        
+        results = await process_multiple_queries_efficient(
+            queries=request.queries,
+            agent=agent,
+            stratified_data=None,  # Will load from config paths
+            chunk_batch_size=request.chunk_batch_size or config.chunk_batch_size,
+            summary_batch_size=request.summary_batch_size or config.summary_batch_size,
+            max_workers=request.max_workers or config.max_workers,
+            providers={
+                ModelOperation.EMBEDDING: config.get_provider(ModelOperation.EMBEDDING),
+                ModelOperation.CHUNK_GENERATION: config.get_provider(ModelOperation.CHUNK_GENERATION),
+                ModelOperation.SUMMARIZATION: config.get_provider(ModelOperation.SUMMARIZATION)
             }
         )
         
-        return response
+        # Log processing time
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        avg_time_per_query = round(duration_ms / len(request.queries), 2)
+        logger.info(f"Batch processed {len(request.queries)} queries in {duration_ms}ms (avg: {avg_time_per_query}ms/query)")
         
-    except ValidationError as e:
-        e.log_error(logger)
-        raise HTTPException(
-            status_code=e.status_code,
-            detail=e.to_dict()
-        )
+        # Return results with metadata
+        return {
+            "batch_id": batch_id,
+            "results": results,
+            "metadata": {
+                "total_time_ms": duration_ms,
+                "avg_time_per_query_ms": avg_time_per_query,
+                "queries_processed": len(results),
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
     except Exception as e:
-        error = ProcessingError(
-            message="Failed to start batch processing",
-            operation="initialize_batch",
-            resource=str(request.queries),
-            original_error=e
-        )
-        error.log_error(logger)
-        raise HTTPException(
-            status_code=error.status_code,
-            detail=error.to_dict()
-        )
+        logger.error(f"Error processing batch: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "batch_id": batch_id,
+            "results": [],
+            "error": str(e),
+            "metadata": {
+                "total_time_ms": round((time.time() - start_time) * 1000, 2),
+                "timestamp": datetime.now().isoformat()
+            }
+        }
 
 @router.get("/batch_status/{task_id}")
 async def get_batch_status(task_id: str) -> Dict[str, Any]:
-    """Get the status of a batch processing task.
-    
-    This endpoint handles both:
-    1. Multi-query batch tasks (task_id format: batch_{timestamp}_{pid})
-    2. Single-query batch tasks (task_id format: batch_{timestamp}_{queue_length})
-    """
+    """Get the status of a batch processing task."""
     start_time = time.time()
     try:
-        # First check background tasks (multi-query batches)
+        logger.debug(f"get_batch_status: Checking status for task_id: {task_id}")
+        logger.debug(f"_background_tasks keys: {list(_background_tasks.keys())}")
+        logger.debug(f"_batch_results keys: {list(_batch_results.keys())}")
+        logger.debug(f"_query_batch length: {len(_query_batch)}")
+        
+        # First, check background tasks (multi-query batches)
         if task_id in _background_tasks:
             task_status = _background_tasks[task_id]
+            logger.debug(f"Task {task_id} found in _background_tasks: {task_status}")
             response = {
                 "status": task_status["status"],
-                "total": task_status["total_queries"],
-                "completed": task_status["completed_queries"],
+                "total": task_status.get("total_queries"),
+                "completed": task_status.get("completed_queries"),
                 "results": task_status.get("results", []),
                 "errors": task_status.get("errors", []),
                 "duration_ms": task_status.get("duration_ms")
             }
+        # Then check single-query batch results
+        elif task_id in _batch_results:
+            result = _batch_results[task_id]
+            logger.debug(f"Task {task_id} found in _batch_results: {result}")
+            response = {
+                "status": "completed",
+                "result": result
+            }
         else:
-            # Check single-query batch results
-            if task_id in _batch_results:
-                result = _batch_results[task_id]
-                # Don't delete results immediately to prevent "not found" errors
-                # Keep them for at least 5 minutes
+            # Check if the query is still in the queue
+            position = None
+            for i, item in enumerate(_query_batch):
+                if item["id"] == task_id:
+                    position = i
+                    break
+            if position is not None:
+                logger.debug(f"Task {task_id} found in _query_batch at position {position}")
                 response = {
-                    "status": "completed",
-                    "result": result
+                    "status": "queued",
+                    "position": position,
+                    "eta_seconds": _estimate_processing_time()
                 }
             else:
-                # Check if query is still in queue
-                position = None
-                for i, item in enumerate(_query_batch):
-                    if item["id"] == task_id:
-                        position = i
-                        break
-                
-                if position is not None:
+                # Fallback: check the cache
+                cache_key = f"query_result:{task_id}"
+                cached_result = await cache.get(cache_key)
+                if cached_result:
+                    logger.debug(f"Task {task_id} retrieved from cache.")
                     response = {
-                        "status": "queued",
-                        "position": position,
-                        "eta_seconds": _estimate_processing_time()
+                        "status": "completed",
+                        "result": cached_result
                     }
                 else:
-                    # Check if the result is in the cache
-                    cache_key = f"query_result:{task_id}"
-                    cached_result = await cache.get(cache_key)
-                    if cached_result:
-                        response = {
-                            "status": "completed",
-                            "result": cached_result
-                        }
-                    else:
-                        # The task ID might be valid but processing hasn't completed yet
-                        # Check if it matches our expected batch ID format
-                        if task_id.startswith("batch_"):
-                            try:
-                                # Extract timestamp from batch ID
-                                timestamp_str = task_id.split("_")[1]
-                                timestamp = int(timestamp_str)
-                                current_time = int(time.time())
-                                
-                                # Extend the timeout period to 10 minutes (600 seconds) for better resilience
-                                # Previously was only 60 seconds which was too short
-                                if current_time - timestamp < 600:
-                                    # Check if this might be a task in progress by checking embeddings status
-                                    is_embedding_active = False
-                                    try:
-                                        async with _tasks_lock:
-                                            if _embedding_task_key in _background_tasks and _background_tasks[_embedding_task_key]["status"] == "running":
-                                                is_embedding_active = True
-                                    except Exception:
-                                        pass
-                                        
-                                    if is_embedding_active:
-                                        response = {
-                                            "status": "preprocessing",
-                                            "message": "The system is currently generating embeddings, which may affect task processing. Please try again in a few minutes.",
-                                            "estimated_wait_time": 300  # 5 minutes
-                                        }
-                                    else:
-                                        response = {
-                                            "status": "processing",
-                                            "message": "The task is being processed. Please try again in a few seconds.",
-                                            "task_id": task_id,
-                                            "created_at": datetime.fromtimestamp(timestamp, tz=pytz.UTC).isoformat()
-                                        }
+                    # Attempt to parse task_id if it follows the expected batch format
+                    if task_id.startswith("batch_"):
+                        try:
+                            parts = task_id.split("_")
+                            if len(parts) < 2:
+                                raise ValueError("Invalid batch task id format.")
+                            timestamp_str = parts[1]
+                            timestamp = int(timestamp_str)
+                            current_time = int(time.time())
+                            logger.debug(f"Extracted timestamp {timestamp} from task_id {task_id}; current_time={current_time}")
+                            if current_time - timestamp < 600:
+                                # Check if embedding generation is active
+                                is_embedding_active = False
+                                async with _tasks_lock:
+                                    if _embedding_task_key in _background_tasks and _background_tasks[_embedding_task_key]["status"] == "running":
+                                        is_embedding_active = True
+                                if is_embedding_active:
+                                    logger.debug(f"Embedding generation is active for task {task_id}")
+                                    response = {
+                                        "status": "preprocessing",
+                                        "message": "Embeddings are currently being generated. Please try again shortly.",
+                                        "estimated_wait_time": 300  # 5 minutes
+                                    }
                                 else:
-                                    # Even for old task IDs, first try to determine if it ever existed
-                                    # Check persistent storage if available
+                                    logger.debug(f"Task {task_id} is processing but not found in any storage; returning generic processing message.")
+                                    response = {
+                                        "status": "processing",
+                                        "message": "The task is being processed. Please check back soon.",
+                                        "task_id": task_id,
+                                        "created_at": datetime.fromtimestamp(timestamp, tz=pytz.UTC).isoformat()
+                                    }
+                            else:
+                                logger.debug(f"Task {task_id} has expired based on timestamp check.")
+                                # Check persistent history if available
+                                history_path = Path(Config.get_paths()['logs']) / "batch_history.json"
+                                if history_path.exists():
                                     try:
-                                        # Try checking a history file for evidence of this task
-                                        history_path = Path(Config.get_paths()['logs']) / "batch_history.json"
-                                        if history_path.exists():
-                                            try:
-                                                with open(history_path, 'r') as f:
-                                                    history = json.load(f)
-                                                    if task_id in history:
-                                                        task_info = history[task_id]
-                                                        if task_info.get("status") == "completed":
-                                                            response = {
-                                                                "status": "expired",
-                                                                "message": f"Task {task_id} was completed but results have expired. Results are only kept for 10 minutes.",
-                                                                "completed_at": task_info.get("completed_at"),
-                                                                "task_id": task_id
-                                                            }
-                                                            return response
-                                                        elif task_info.get("status") == "failed":
-                                                            response = {
-                                                                "status": "failed",
-                                                                "message": f"Task {task_id} failed: {task_info.get('error', 'Unknown error')}",
-                                                                "task_id": task_id,
-                                                                "error": task_info.get("error")
-                                                            }
-                                                            return response
-                                            except Exception as e:
-                                                logger.warning(f"Error reading batch history: {e}")
-                                    except Exception as e:
-                                        logger.warning(f"Error checking task history: {e}")
-                                    
-                                    # No record found, task truly doesn't exist or is too old
-                                    raise ValidationError(
-                                        message=f"Task {task_id} not found or has expired",
-                                        field="task_id",
-                                        value=task_id
-                                    )
-                            except (IndexError, ValueError):
+                                        with open(history_path, 'r') as f:
+                                            history = json.load(f)
+                                        if task_id in history:
+                                            task_info = history[task_id]
+                                            if task_info.get("status") == "completed":
+                                                response = {
+                                                    "status": "expired",
+                                                    "message": f"Task {task_id} was completed but results have expired. Results are only kept for 10 minutes.",
+                                                    "completed_at": task_info.get("completed_at"),
+                                                    "task_id": task_id
+                                                }
+                                                return response
+                                            elif task_info.get("status") == "failed":
+                                                response = {
+                                                    "status": "failed",
+                                                    "message": f"Task {task_id} failed: {task_info.get('error', 'Unknown error')}",
+                                                    "task_id": task_id,
+                                                    "error": task_info.get("error")
+                                                }
+                                                return response
+                                    except Exception as ex:
+                                        logger.warning(f"Error reading batch history for {task_id}: {ex}")
                                 raise ValidationError(
-                                    message=f"Invalid task ID format: {task_id}",
+                                    message=f"Task {task_id} not found or has expired",
                                     field="task_id",
                                     value=task_id
                                 )
-                        else:
+                        except (IndexError, ValueError) as ex:
                             raise ValidationError(
-                                message=f"Task {task_id} not found or has invalid format",
+                                message=f"Invalid task ID format: {task_id}. Error: {ex}",
                                 field="task_id",
                                 value=task_id
                             )
-
+                    else:
+                        raise ValidationError(
+                            message=f"Task {task_id} not found or has invalid format",
+                            field="task_id",
+                            value=task_id
+                        )
         duration_ms = round((time.time() - start_time) * 1000, 2)
+        logger.debug(f"get_batch_status for {task_id} took {duration_ms} ms with response: {response}")
         log_endpoint_call(
             logger=logger,
             endpoint=f"/batch_status/{task_id}",
@@ -1040,9 +1078,8 @@ async def get_batch_status(task_id: str) -> Dict[str, Any]:
             duration_ms=duration_ms,
             params={"task_id": task_id}
         )
-        
         return response
-        
+
     except ValidationError as e:
         e.log_error(logger)
         raise HTTPException(
@@ -1099,21 +1136,18 @@ async def process_recent_query(
                 raise ValidationError(
                     message="No example queries found in stored_queries.yaml",
                     field="stored_queries",
-                    value=None
-                )
+                    value=None)
             query = stored_queries['query']['example'][0]
         except FileNotFoundError as e:
             raise ConfigurationError(
                 message="Stored queries file not found",
                 config_key="stored_queries_path",
-                config_value=str(stored_queries_path)
-            )
+                config_value=str(stored_queries_path))
         except yaml.YAMLError as e:
             raise ConfigurationError(
                 message="Invalid YAML format in stored queries",
                 config_key="stored_queries",
-                original_error=e
-            )
+                original_error=e)
 
         # Create request object with consistent parameters
         request = QueryRequest(
@@ -1121,9 +1155,8 @@ async def process_recent_query(
             filter_date=filter_date,
             force_refresh=False,
             skip_embeddings=True,
-            skip_batching=False,  # Important: Use batch processing like process_query
-            select_board=select_board  # Add the select_board parameter
-        )
+            skip_batching=False,
+            select_board=select_board)
 
         # Log request
         log_params = {
@@ -1136,16 +1169,12 @@ async def process_recent_query(
             endpoint="/process_recent_query",
             method="GET",
             params=log_params,
-            duration_ms=None
-        )
+            duration_ms=None)
 
         # Reuse process_query endpoint logic for consistency
-        result = await process_query(
+        result = await base_query(
             request=request,
-            agent=agent,
-            data_ops=data_ops,
-            background_tasks=background_tasks
-        )
+            background_tasks=background_tasks)
 
         # Add time range information while maintaining batch processing response format
         if isinstance(result, dict) and "status" in result and result["status"] == "queued":
@@ -1562,6 +1591,7 @@ def log_endpoint_call(
 
 async def _add_to_query_batch(request: QueryRequest) -> str:
     """Add query to batch queue and return batch ID."""
+    # This function is not called anywhere in the code
     batch_id = f"batch_{int(time.time())}_{len(_query_batch)}"
     _query_batch.append({
         "id": batch_id,
@@ -1571,6 +1601,7 @@ async def _add_to_query_batch(request: QueryRequest) -> str:
 
 def _should_process_batch() -> bool:
     """Determine if batch should be processed based on size and wait time."""
+    # This function is not called anywhere in the code
     if len(_query_batch) >= _BATCH_SIZE:
         return True
     if _query_batch and (datetime.now(pytz.UTC) - _query_batch[0]["timestamp"]).total_seconds() >= _BATCH_WAIT_TIME:
@@ -1579,6 +1610,7 @@ def _should_process_batch() -> bool:
 
 def _estimate_processing_time() -> int:
     """Estimate processing time based on batch size and historical data."""
+    # This function is only used in get_batch_status but references _query_batch which is unused
     batch_size = len(_query_batch)
     avg_time_per_query = _last_batch_processing_time / _BATCH_SIZE if _last_batch_processing_time > 0 else 2
     position_in_queue = len(_query_batch) - 1
@@ -1680,289 +1712,84 @@ async def _prepare_data_if_needed(
             original_error=e
         )
 
-async def _process_query_batch(
-    agent: KnowledgeAgent,
-    data_ops: DataOperations
-) -> Dict[str, Any]:
-    """Process a batch of queries using parallel processing with enhanced reliability.
-    
-    This function:
-    1. Extracts a batch of queries from the queue with thread safety
-    2. Prepares data once for all queries (optimization)
-    3. Processes queries in parallel with individual error handling
-    4. Stores and caches results with proper error recovery
-    5. Updates timing metrics for future ETA calculations
+
+async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]], config: Union[Dict[str, Any], ModelConfig]) -> bool:
+    """Store batch processing results for later retrieval.
     
     Args:
-        agent: Knowledge agent for processing
-        data_ops: Data operations for data preparation
-        
-    Returns:
-        Dictionary of batch results
+        batch_id: Unique identifier for the batch
+        result: Either a tuple of (chunks, summary) or a dict with chunks, summary, and metadata
+        config: Either a ModelConfig object or a dictionary with configuration
     """
-    global _last_batch_processing_time
-    
-    batch_start_time = time.time()
-    batch_size = 0
-    batch = []
-    batch_ids = []
-    
     try:
-        # Get batch of queries with proper locking
-        async with _query_batch_lock:
-            while _query_batch and len(batch) < _BATCH_SIZE:
-                item = _query_batch.popleft()
-                batch.append(item["request"])
-                batch_ids.append(item["id"])
-
-        batch_size = len(batch)
-        if batch_size == 0:
-            logger.info("No queries in batch to process")
-            return {}
-
-        logger.info(f"Processing batch of {batch_size} queries")
-        
-        # Track batch processing in history
-        batch_history_updates = {
-            batch_id: {
-                "status": "processing",
-                "created_at": datetime.now(pytz.UTC).isoformat(),
-                "query": str(request.query)[:100] if hasattr(request, 'query') else "Unknown"
-            }
-            for batch_id, request in zip(batch_ids, batch)
-        }
-        await _update_batch_history(batch_history_updates)
-
-        # Build unified config from first request (optimization for similar requests)
-        config = build_unified_config(batch[0])
-        
-        # Extract providers from config for all model operations (reused across queries)
-        providers = {
-            ModelOperation.EMBEDDING: config.get_provider(ModelOperation.EMBEDDING),
-            ModelOperation.CHUNK_GENERATION: config.get_provider(ModelOperation.CHUNK_GENERATION),
-            ModelOperation.SUMMARIZATION: config.get_provider(ModelOperation.SUMMARIZATION)
-        }
-        
-        # Process requests in groups based on their force_refresh flag
-        refresh_groups = {True: [], False: []}  # Simplified dictionary initialization
-        
-        # Group requests by their force_refresh value
-        for i, req in enumerate(batch):
-            refresh_groups[req.force_refresh].append((i, req))
-        
-        results = [None] * len(batch)  # Pre-allocate results list
-        
-        # Process each group separately
-        for force_refresh, group in refresh_groups.items():
-            if not group:
-                continue
-                
-            indices, group_requests = zip(*group)
-            
-            try:
-                # First handle the special case of force_refresh=False with missing embeddings
-                if not force_refresh:
-                    await _handle_missing_embeddings(data_ops)
-                
-                # Prepare data with the appropriate force_refresh flag for this group
-                stratified_data = await _prepare_data_if_needed(
-                    config=config,
-                    data_ops=data_ops,
-                    force_refresh=force_refresh,
-                    skip_embeddings=all(req.skip_embeddings for req in group_requests)
-                )
-                
-                # Process this group's queries
-                group_results = await process_multiple_queries(
-                    queries=[req.query for req in group_requests],
-                    agent=agent,
-                    stratified_data=stratified_data,
-                    chunk_batch_size=config.get_batch_size(ModelOperation.CHUNK_GENERATION),
-                    summary_batch_size=config.get_batch_size(ModelOperation.SUMMARIZATION),
-                    providers=providers
-                )
-                
-                # Store results in the correct positions
-                for idx, result in zip(indices, group_results):
-                    results[idx] = result
-                    
-            except Exception as e:
-                logger.error(f"Error processing {force_refresh=} group: {str(e)}")
-                # Mark all queries in this group as failed
-                for idx, _ in group:
-                    results[idx] = (None, str(e))
-                    _batch_results[batch_ids[idx]] = {
-                        "error": str(e),
-                        "status": "failed",
-                        "timestamp": time.time()
-                    }
-                    batch_history_updates[batch_ids[idx]] = {
-                        "status": "failed",
-                        "error": str(e),
-                        "failed_at": datetime.now(pytz.UTC).isoformat()
-                    }
-        
-        # Check if any results are None (indicating complete failure of a group)
-        if any(r is None for r in results):
-            failed_indices = [i for i, r in enumerate(results) if r is None]
-            raise ProcessingError(
-                message=f"Batch processing failed for indices: {failed_indices}",
-                operation="process_multiple_queries"
-            )
-
-        logger.info(f"Successfully processed {len(results)} queries in batch")
-        
-        # Store results with improved error handling for individual results
-        store_tasks = [
-            _store_batch_result(batch_id, result, config) 
-            for batch_id, result in zip(batch_ids, results)
-        ]
-        storage_results = await asyncio.gather(*store_tasks, return_exceptions=True)
-        successful_stores = sum(1 for result in storage_results if result is True)
-        logger.info(f"Successfully stored {successful_stores}/{len(storage_results)} results")
-
-        # Schedule cleanup of old results (but don't wait for it)
-        asyncio.create_task(_cleanup_old_batch_results())
-
-        # Update timing metrics for ETA calculations
-        _last_batch_processing_time = time.time() - batch_start_time
-        
-        # Log batch processing statistics
-        logger.info(
-            f"Processed batch of {batch_size} queries in {_last_batch_processing_time:.2f}s " +
-            f"({_last_batch_processing_time/batch_size:.2f}s per query)"
-        )
-        
-        # Update batch history with completed tasks
-        await _update_batch_history(batch_history_updates)
-        
-        # Clean up to free memory
-        gc.collect()
-        
-        return _batch_results
-        
-    except Exception as e:
-        batch_processing_time = time.time() - batch_start_time
-        logger.error(f"Error processing batch: {str(e)}")
-        logger.error(traceback.format_exc())
-        
-        # Mark all affected queries as failed with detailed error info
-        batch_history_updates = {
-            batch_id: {
-                "status": "failed",
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "failed_at": datetime.now(pytz.UTC).isoformat()
-            }
-            for batch_id in batch_ids
-        }
-        
-        # Record failures in batch results
-        for batch_id in batch_ids:
-            _batch_results[batch_id] = {
-                "error": {
-                    "message": str(e),
-                    "type": type(e).__name__,
-                    "traceback": traceback.format_exc()
-                },
-                "status": "failed",
-                "timestamp": time.time(),
-                "processing_time": batch_processing_time
-            }
-        
-        # Update batch history with failed tasks
-        if batch_history_updates:
-            await _update_batch_history(batch_history_updates)
-        
-        # Try to free memory after error
-        gc.collect()
-        
-        # Propagate the error for proper handling
-        if isinstance(e, (APIError, ModelProviderError, ModelConfigurationError)):
-            raise
+        # Handle both tuple and dict formats for backward compatibility
+        if isinstance(result, tuple):
+            if len(result) == 2:
+                chunks, summary = result
+                metadata = {}
+            elif len(result) == 3:
+                chunks, summary, metadata = result
+            else:
+                raise ValueError(f"Invalid result tuple length: {len(result)}")
         else:
-            raise ProcessingError(
-                message=f"Batch processing failed: {str(e)}",
-                operation="process_batch",
-                resource=f"batch_size_{batch_size}",
-                original_error=e
-            )
+            # Extract from dictionary format
+            chunks = result.get("chunks", [])
+            summary = result.get("summary", "")
+            metadata = result.get("metadata", {})
 
-async def _handle_missing_embeddings(data_ops: DataOperations) -> None:
-    """Handle the case of missing embeddings without full refresh."""
-    try:
-        stratified_file = data_ops.config.stratified_data_path / 'stratified_sample.csv'
-        embeddings_path = data_ops.config.stratified_data_path / 'embeddings.npz'
-        thread_id_map_path = data_ops.config.stratified_data_path / 'thread_id_map.json'
-        
-        if all(path.exists() for path in [stratified_file, embeddings_path, thread_id_map_path]):
-            stratified_data = await data_ops._load_stratified_data()
-            if stratified_data is not None and len(stratified_data) > 0:
-                with np.load(embeddings_path) as data:
-                    embeddings = data.get('embeddings')
-                with open(thread_id_map_path, 'r') as f:
-                    thread_id_map = json.load(f)
-                
-                embedding_count = len(embeddings) if embeddings is not None else 0
-                stratified_count = len(stratified_data)
-                
-                if 0 < embedding_count < stratified_count:
-                    logger.info(f"Embedding mismatch: {embedding_count} embeddings for {stratified_count} records")
-                    await data_ops.generate_missing_embeddings(stratified_data, thread_id_map)
-                    logger.info("Generated missing embeddings without full refresh")
-    except Exception as e:
-        logger.warning(f"Error checking for embedding mismatch: {e}")
+        # Get batch_result_ttl from config
+        if isinstance(config, ModelConfig):
+            batch_result_ttl = getattr(config, 'batch_result_ttl', 300)  # Default 5 minutes
+        else:
+            # If config is a dict, get ttl from it or use default
+            batch_result_ttl = config.get('batch_result_ttl', 300)
 
-async def _store_batch_result(batch_id: str, result_tuple: tuple, config: ModelConfig) -> bool:
-    """Store an individual query result with error handling."""
-    try:
-        chunks, summary = result_tuple
-        result = {
+        # Create a result object
+        result_obj = {
+            "id": batch_id,
+            "status": "completed",
             "chunks": chunks,
             "summary": summary,
-            "config": {
-                "filter_date": config.processing_settings.get('filter_date'),
-                "sample_size": config.processing_settings.get('sample_size'),
-                "max_workers": config.processing_settings.get('max_workers')
-            },
-            "timestamp": time.time()
+            "metadata": {
+                "timestamp": time.time(),
+                "expiry": time.time() + batch_result_ttl,
+                "processing_time_ms": metadata.get("processing_time_ms"),
+                "num_chunks": len(chunks),
+                "num_relevant_strings": metadata.get("num_relevant_strings"),
+                "temporal_context": metadata.get("temporal_context"),
+                "batch_sizes": metadata.get("batch_sizes"),
+                "batching_enabled": metadata.get("batching_enabled", True)
+            }
         }
         
-        # Store in batch results
-        _batch_results[batch_id] = result
+        logger.debug(f"Storing batch result for {batch_id}")
         
-        # Also cache the result
-        cache_key = f"query_result:{batch_id}"
-        await cache.set(cache_key, result, ttl=3600)  # Cache for 1 hour
+        # Store in memory
+        _batch_results[batch_id] = result_obj
+        
+        # Schedule cleanup of old results
+        asyncio.create_task(_cleanup_old_batch_results())
         
         # Update batch history
-        batch_history_updates = {
+        await _update_batch_history({
             batch_id: {
                 "status": "completed",
-                "completed_at": datetime.now(pytz.UTC).isoformat(),
+                "timestamp": time.time(),
                 "summary_length": len(summary) if summary else 0,
-                "chunks_count": len(chunks) if chunks else 0
+                "chunks_count": len(chunks) if chunks else 0,
+                "completed_at": datetime.now(pytz.UTC).isoformat(),
+                "metadata": result_obj["metadata"]
             }
-        }
-        await _update_batch_history(batch_history_updates)
+        })
+        
+        logger.info(f"Stored batch result for {batch_id} (expires in {batch_result_ttl}s)")
         return True
+        
     except Exception as e:
-        logger.error(f"Error storing result for batch {batch_id}: {str(e)}")
-        _batch_results[batch_id] = {
-            "error": str(e),
-            "status": "failed",
-            "timestamp": time.time()
-        }
-        batch_history_updates = {
-            batch_id: {
-                "status": "failed",
-                "error": str(e),
-                "failed_at": datetime.now(pytz.UTC).isoformat()
-            }
-        }
-        await _update_batch_history(batch_history_updates)
+        logger.error(f"Error storing batch result: {str(e)}")
+        logger.error(traceback.format_exc())
         return False
-
+    
 async def _cleanup_old_batch_results():
     """Clean up old batch results that are no longer needed.
     

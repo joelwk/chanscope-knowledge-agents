@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 import threading
 from functools import lru_cache
-from config.base_settings import get_base_settings, ensure_base_paths, get_env_path
+from config.base_settings import get_base_settings, ensure_base_paths
 import copy
 
 logger = logging.getLogger(__name__)
@@ -180,6 +180,7 @@ class Config:
             'default_chunk_provider',
             'default_summary_provider',
             'embedding_batch_size',
+            'process_chunk_batch_size',
             'chunk_batch_size',
             'summary_batch_size'
         ])

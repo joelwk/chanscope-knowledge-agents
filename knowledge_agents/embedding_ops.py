@@ -582,17 +582,24 @@ async def merge_articles_and_embeddings(stratified_path: Path, embeddings_path: 
         
         if embeddings_path.exists() and thread_id_map_path.exists():
             # Load embeddings
+            logger.info(f"Loading embeddings from {embeddings_path}")
             embeddings_array, metadata = load_embeddings(embeddings_path)
             
             if embeddings_array is None:
                 logger.warning(f"Failed to load embeddings from {embeddings_path}")
                 return articles_df
             
+            # Log embeddings array details
+            logger.info(f"Successfully loaded embeddings with shape {embeddings_array.shape}")
+            
             # Load thread_id mapping
+            logger.info(f"Loading thread ID map from {thread_id_map_path}")
             thread_id_map = load_thread_id_map(thread_id_map_path)
             if thread_id_map is None:
                 logger.warning(f"Failed to load thread ID map from {thread_id_map_path}")
                 return articles_df
+            
+            logger.info(f"Successfully loaded thread ID map with {len(thread_id_map)} entries")
             
             # Check if this contains mock embeddings
             is_mock = False
@@ -608,13 +615,41 @@ async def merge_articles_and_embeddings(stratified_path: Path, embeddings_path: 
             # Track success rate
             successful_mappings = 0
             
-            for thread_id, idx in thread_id_map.items():
+            # Print sample data to help debug
+            logger.info(f"Thread ID map first 5 entries: {list(thread_id_map.items())[:5]}")
+            logger.info(f"Sample thread IDs from stratified data: {articles_df['thread_id'].head(5).tolist()}")
+            
+            # CRITICAL FIX 1: Convert thread_ids in DataFrame to strings
+            articles_df['thread_id'] = articles_df['thread_id'].astype(str)
+            
+            # CRITICAL FIX 2: Ensure thread_id_map keys are all strings
+            string_thread_id_map = {str(thread_id): idx for thread_id, idx in thread_id_map.items()}
+            
+            # Check for thread ID format discrepancies after type normalization
+            df_thread_ids = articles_df['thread_id'].tolist()  # Already strings from the fix above
+            map_thread_ids = list(string_thread_id_map.keys())  # Already strings from the fix above
+            common_ids = set(df_thread_ids).intersection(set(map_thread_ids))
+            logger.info(f"Thread ID overlap: {len(common_ids)}/{len(df_thread_ids)} ({len(common_ids)/len(df_thread_ids)*100:.1f}%)")
+            
+            # Use the string-based map for embedding assignment
+            for thread_id, idx in string_thread_id_map.items():
                 try:
                     if idx < len(embeddings_array):
+                        # Thread IDs are now both strings
                         mask = articles_df['thread_id'] == thread_id
+                        mask_count = mask.sum()
+                        
                         if mask.any():
-                            articles_df.loc[mask, 'embedding'] = [embeddings_array[idx].tolist()]
-                            articles_df.loc[mask, 'is_mock_embedding'] = is_mock
+                            # Get the embedding value
+                            embedding_value = embeddings_array[idx]
+                            
+                            # Assign the embedding to each matching row individually
+                            # This avoids the "Must have equal len keys and value" error
+                            matching_indices = articles_df.index[mask].tolist()
+                            for match_idx in matching_indices:
+                                articles_df.at[match_idx, 'embedding'] = embedding_value
+                                articles_df.at[match_idx, 'is_mock_embedding'] = is_mock
+                            
                             successful_mappings += 1
                         else:
                             logger.debug(f"Thread ID {thread_id} not found in articles dataframe")

@@ -3,13 +3,14 @@ import json
 import pandas as pd
 from scipy import spatial
 import tiktoken
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from .model_ops import KnowledgeAgent, ModelProvider, ModelOperation
 import logging
 import numpy as np
 from pathlib import Path
 import asyncio
 import traceback
+import time
 
 # Initialize logging
 logger = logging.getLogger(__name__)
@@ -25,9 +26,37 @@ async def strings_ranked_by_relatedness(
     df: pd.DataFrame,
     agent: KnowledgeAgent,
     top_n: int = 50,
-    provider: Optional[ModelProvider] = None
-) -> List[Dict[str, Any]]:
-    """Returns a list of strings sorted from most related to least."""
+    provider: Optional[ModelProvider] = None,
+    use_recursive: bool = False,
+    final_top_n: int = 10
+) -> List[Tuple[str, float, Dict[str, Any]]]:
+    """
+    Find strings most related to a query using embeddings.
+    
+    Args:
+        query: The query string to find related content for
+        df: DataFrame containing text and embeddings
+        agent: KnowledgeAgent instance for embedding generation
+        top_n: Number of top results to return
+        provider: Optional model provider to use for embeddings
+        use_recursive: Whether to use recursive refinement (default: False)
+        final_top_n: Final number of results if using recursive approach
+        
+    Returns:
+        List of tuples containing (text, similarity_score, metadata)
+    """
+    # If recursive approach is requested, delegate to that function
+    if use_recursive:
+        return await recursive_strings_ranked_by_relatedness(
+            query=query,
+            df=df,
+            agent=agent,
+            final_top_n=final_top_n,
+            initial_top_n=top_n,
+            provider=provider
+        )
+    
+    # Original implementation for non-recursive approach
     try:
         query_embedding_response = await agent.embedding_request(
             text=query,
@@ -195,14 +224,13 @@ async def strings_ranked_by_relatedness(
         results = []
         for i, idx in enumerate(top_df_indices):
             sim_score = similarities[top_similarity_indices[i]]
-            results.append({
-                "text_clean": df.iloc[idx]["text_clean"],
+            results.append((df.iloc[idx]["text_clean"], float(sim_score), {
                 "thread_id": str(df.iloc[idx]["thread_id"]),
                 "posted_date_time": str(df.iloc[idx]["posted_date_time"]),
                 "similarity_score": float(sim_score)
-            })
+            }))
             
-        return results
+        return results[:final_top_n]
         
     except Exception as e:
         logger.error(f"Error ranking strings by relatedness: {e}")
@@ -313,17 +341,15 @@ def create_chunks(text: str, n: int, tokenizer=None) -> List[Dict[str, Any]]:
         if len(chunk_text) >= 20:  # Basic length check
             chunks.append({
                 "text": chunk_text,
-                "token_count": current_length
-            })
+                "token_count": current_length})
     return chunks
 
 async def retrieve_unique_strings(
     query: str,
     library_df: pd.DataFrame,
     agent: KnowledgeAgent,
-    required_count: int = 5,  # Default to 5 chunks for better context
-    provider: Optional[ModelProvider] = None
-) -> List[Dict[str, Any]]:
+    required_count: int = 10,  # Default to 5 chunks for better context
+    provider: Optional[ModelProvider] = None) -> List[Dict[str, Any]]:
     """Retrieve unique strings from the library based on query relevance."""
     try:
         # Get initial ranked strings
@@ -332,8 +358,7 @@ async def retrieve_unique_strings(
             df=library_df,
             agent=agent,
             top_n=required_count * 4,  # Get 4x more than needed to account for filtering
-            provider=provider
-        )
+            provider=provider)
 
         # Filter and deduplicate results
         seen_texts = set()
@@ -341,7 +366,7 @@ async def retrieve_unique_strings(
 
         for item in ranked_strings:
             # Extract text from dictionary result
-            text = item["text_clean"]
+            text = item[0]
             
             if text not in seen_texts and is_valid_chunk(text):
                 seen_texts.add(text)
@@ -361,17 +386,204 @@ async def retrieve_unique_strings(
         traceback.print_exc()
         return []  # Return empty list on error instead of raising
 
-async def process_multiple_queries(
+async def process_query(
+    query: str,
+    agent: KnowledgeAgent,
+    library_df: pd.DataFrame,
+    config: Optional[Any] = None,
+    provider_map: Optional[Dict[str, ModelProvider]] = None,
+    use_batching: bool = True
+) -> Dict[str, Any]:
+    """Process a query with configurable batching.
+    
+    Args:
+        query: The user query string
+        agent: KnowledgeAgent instance
+        library_df: DataFrame containing stratified data with embeddings
+        config: Optional configuration object
+        provider_map: Optional mapping of operation types to providers
+        use_batching: Whether to use batch processing (if False, processes one item at a time)
+        
+    Returns:
+        Dict containing chunks and summary
+    """
+    try:
+        start_time = time.time()
+        logger.info(f"Processing query: {query[:50]}... (batching: {use_batching})")
+        
+        # Set default providers if not specified
+        if provider_map is None:
+            provider_map = {
+                ModelOperation.EMBEDDING: None,  # Use default from config
+                ModelOperation.CHUNK_GENERATION: None,
+                ModelOperation.SUMMARIZATION: None
+            }
+            
+        # Get batch sizes from config or use defaults
+        if config:
+            # Get batch sizes from config with reasonable defaults
+            embedding_batch_size = getattr(config, 'embedding_batch_size', 25)
+            chunk_batch_size = getattr(config, 'chunk_batch_size', 25)
+            summary_batch_size = getattr(config, 'summary_batch_size', 25)
+            
+            logger.info(f"Using batch sizes from config - Embedding: {embedding_batch_size}, " +
+                       f"Chunk: {chunk_batch_size}, Summary: {summary_batch_size}")
+        else:
+            # Default batch sizes if no config provided
+            embedding_batch_size = 25
+            chunk_batch_size = 25
+            summary_batch_size = 25
+            logger.info(f"No config provided, using default batch sizes - " +
+                       f"Embedding: {embedding_batch_size}, Chunk: {chunk_batch_size}, Summary: {summary_batch_size}")
+            
+        # Step 1: Find relevant strings using embedding search
+        strings = await retrieve_unique_strings(
+            query=query,
+            library_df=library_df,
+            agent=agent,
+            required_count=min(10, len(library_df)),
+            provider=provider_map.get(ModelOperation.EMBEDDING)
+        )
+        
+        # Skip processing if no relevant content
+        if not strings:
+            logger.warning("No relevant content found for query")
+            return {"chunks": [], "summary": "No relevant content found."}
+        
+        logger.info(f"Found {len(strings)} relevant strings for query")
+        
+        # Step 2: Extract text content from strings for processing
+        # Handle both tuple format (from strings_ranked_by_relatedness) and dictionary format
+        texts = []
+        for chunk in strings:
+            if isinstance(chunk, tuple):
+                # If it's a tuple (text, score, metadata), use the first element (text)
+                texts.append(chunk[0])
+            elif isinstance(chunk, dict) and "text_clean" in chunk:
+                # If it's a dictionary with text_clean key, use that
+                texts.append(chunk["text_clean"])
+            else:
+                logger.warning(f"Unexpected chunk format: {type(chunk)}")
+                continue
+        
+        if not texts:
+            logger.warning("No valid texts extracted from chunks")
+            return {"chunks": [], "summary": "No valid texts found."}
+        
+        # Step 3: Process chunks (with or without batching)
+        logger.info(f"Generating chunks for {len(texts)} texts using batch size {chunk_batch_size}")
+        
+        if use_batching:
+            # Process using batching
+            chunk_results = await agent.generate_chunks_batch(
+                contents=texts,
+                provider=provider_map.get(ModelOperation.CHUNK_GENERATION),
+                chunk_batch_size=chunk_batch_size
+            )
+        else:
+            # Process one by one (for debugging or specific cases)
+            chunk_results = []
+            for content in texts:
+                result = await agent.generate_chunks(
+                    content=content,
+                    provider=provider_map.get(ModelOperation.CHUNK_GENERATION)
+                )
+                chunk_results.append(result)
+        
+        # Step 4: Prepare chunks with metadata for summary
+        processed_chunks = []
+        for string, result in zip(strings, chunk_results):
+            if result:
+                # Extract metadata based on the format of string
+                if isinstance(string, tuple):
+                    # Tuple format (text, score, metadata)
+                    metadata = string[2]
+                    processed_chunks.append({
+                        "thread_id": metadata.get("thread_id", "unknown"),
+                        "posted_date_time": metadata.get("posted_date_time", "unknown"),
+                        "analysis": result
+                    })
+                elif isinstance(string, dict):
+                    # Dictionary format
+                    processed_chunks.append({
+                        "thread_id": string.get("thread_id", "unknown"),
+                        "posted_date_time": string.get("posted_date_time", "unknown"),
+                        "analysis": result
+                    })
+        
+        if not processed_chunks:
+            logger.warning("No valid chunks generated from processing")
+            return {"chunks": [], "summary": "No valid chunks generated."}
+            
+        logger.info(f"Generated {len(processed_chunks)} processed chunks")
+        
+        # Calculate temporal context from processed chunks
+        dates = pd.to_datetime([r["posted_date_time"] for r in processed_chunks], utc=True, errors='coerce')
+        valid_dates = dates[~pd.isna(dates)]
+        
+        temporal_context = {
+            "start_date": valid_dates.min().strftime("%Y-%m-%d") if not valid_dates.empty else "Unknown",
+            "end_date": valid_dates.max().strftime("%Y-%m-%d") if not valid_dates.empty else "Unknown"
+        }
+        
+        # Step 5: Generate summary (with or without batching)
+        logger.info(f"Generating summary for {len(processed_chunks)} chunks with batch size {summary_batch_size}")
+        
+        if use_batching:
+            # Generate summary using batching
+            summaries = await agent.generate_summaries_batch(
+                queries=[query],
+                results_list=[json.dumps(processed_chunks, indent=2)],
+                contexts=[None],  # Add contexts parameter
+                temporal_contexts=[temporal_context],
+                provider=provider_map.get(ModelOperation.SUMMARIZATION),
+                summary_batch_size=summary_batch_size
+            )
+            summary = summaries[0] if summaries else "Failed to generate summary."
+        else:
+            # Generate summary without batching (one at a time)
+            summary = await agent.generate_summary(
+                query=query,
+                results=json.dumps(processed_chunks, indent=2),
+                temporal_context=temporal_context,
+                provider=provider_map.get(ModelOperation.SUMMARIZATION)
+            )
+        
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        logger.info(f"Query processed in {duration_ms}ms (batching: {use_batching})")
+        
+        return {
+            "chunks": processed_chunks, 
+            "summary": summary,
+            "metadata": {
+                "processing_time_ms": duration_ms,
+                "num_relevant_strings": len(strings),
+                "num_processed_chunks": len(processed_chunks),
+                "temporal_context": temporal_context,
+                "batch_sizes": {
+                    "embedding": embedding_batch_size,
+                    "chunk": chunk_batch_size,
+                    "summary": summary_batch_size
+                },
+                "batching_enabled": use_batching
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in process_query: {str(e)}")
+        traceback.print_exc()
+        return {"chunks": [], "summary": f"Error during processing: {str(e)}"}
+
+async def process_multiple_queries_efficient(
     queries: List[str],
     agent: KnowledgeAgent,
     stratified_data: Optional[pd.DataFrame] = None,
     stratified_path: Optional[str] = None,
-    chunk_batch_size: int = 20,
-    summary_batch_size: int = 20,
+    chunk_batch_size: int = 10,
+    summary_batch_size: int = 5,
     max_workers: Optional[int] = None,
-    providers: Optional[Dict[ModelOperation, ModelProvider]] = None
-) -> List[Tuple[List[Dict[str, Any]], str]]:
-    """Process multiple queries in parallel using asyncio for improved performance.
+    providers: Optional[Dict[ModelOperation, ModelProvider]] = None) -> List[Dict[str, Any]]:
+    """Process multiple queries efficiently using optimized batching.
 
     Args:
         queries: List of queries to process
@@ -382,8 +594,14 @@ async def process_multiple_queries(
         summary_batch_size: Batch size for summary generation
         max_workers: Maximum number of worker threads
         providers: Dictionary mapping operations to model providers
+        
+    Returns:
+        List of results for each query
     """
     try:
+        start_time = time.time()
+        logger.info(f"Processing {len(queries)} queries with efficient batching")
+        
         if providers is None:
             providers = {}
             
@@ -405,96 +623,42 @@ async def process_multiple_queries(
                     embeddings_path,
                     thread_id_map_path
                 )
+                logger.info(f"Loaded stratified data with {len(library_df)} records")
             except Exception as e:
                 logger.error(f"Error loading stratified data: {e}")
-                raise ValueError("Failed to load stratified data")
+                raise ValueError(f"Failed to load stratified data: {str(e)}")
 
         if library_df.empty:
             raise ValueError("Stratified dataset is empty")
 
-        # Extract providers
-        embedding_provider = providers.get(ModelOperation.EMBEDDING)
-        chunk_provider = providers.get(ModelOperation.CHUNK_GENERATION)
-        summary_provider = providers.get(ModelOperation.SUMMARIZATION)
-
-        # Define async function to process a single query
-        async def process_single_query(query):
-            try:
-                # Get relevant strings for this query
-                strings = await retrieve_unique_strings(
-                    query,
-                    library_df,
-                    agent,
-                    required_count=min(50, len(library_df)),
-                    provider=embedding_provider
-                )
+        # Create a mock config object with batch sizes
+        class BatchConfig:
+            def __init__(self, chunk_size, summary_size):
+                self.chunk_batch_size = chunk_size
+                self.summary_batch_size = summary_size
                 
-                if not strings:
-                    return ([], "No relevant content found.")
-                    
-                # Get texts for chunk generation
-                texts = [chunk["text_clean"] for chunk in strings]
-                
-                # Generate chunks for this query
-                chunk_results_raw = await agent.generate_chunks_batch(
-                    contents=texts,
-                    provider=chunk_provider,
-                    chunk_batch_size=chunk_batch_size
-                )
-                
-                # Combine results with metadata
-                chunk_results = []
-                for chunk, result in zip(strings, chunk_results_raw):
-                    if result:
-                        chunk_results.append({
-                            "thread_id": chunk["thread_id"],
-                            "posted_date_time": chunk["posted_date_time"],
-                            "analysis": result
-                        })
-                        
-                # If no valid chunks were generated, return empty results
-                if not chunk_results:
-                    return ([], "No valid chunks generated.")
-                    
-                # Prepare for summary generation
-                dates = pd.to_datetime([r["posted_date_time"] for r in chunk_results], utc=True, errors='coerce')
-                
-                # Handle missing or invalid dates
-                valid_dates = dates[~pd.isna(dates)]
-                if len(valid_dates) == 0:
-                    temporal_context = {
-                        "start_date": "Unknown",
-                        "end_date": "Unknown"
-                    }
-                else:
-                    temporal_context = {
-                        "start_date": valid_dates.min().strftime("%Y-%m-%d"),
-                        "end_date": valid_dates.max().strftime("%Y-%m-%d")
-                    }
-                
-                # Generate summary
-                summary_input = json.dumps(chunk_results, indent=2)
-                summary = await agent.generate_summary(
-                    query=query,
-                    results=summary_input,
-                    temporal_context=temporal_context,
-                    provider=summary_provider
-                )
-                
-                return (chunk_results, summary or "Failed to generate summary.")
-            except Exception as e:
-                logger.error(f"Error processing single query: {e}")
-                traceback.print_exc()
-                return ([], f"Error during processing: {str(e)}")
+        config = BatchConfig(chunk_batch_size, summary_batch_size)
         
-        # Process all queries concurrently with controlled concurrency
-        max_concurrent = min(10, len(queries))  # Limit concurrency to 10 or fewer
+        # Process queries in parallel with controlled concurrency
+        max_concurrent = min(max_workers or 5, len(queries))
         semaphore = asyncio.Semaphore(max_concurrent)
         
         async def process_with_semaphore(query):
             async with semaphore:
-                return await process_single_query(query)
+                return await process_query(  # Updated to use process_query instead of process_query_efficient
+                    query=query,
+                    agent=agent,
+                    library_df=library_df,
+                    config=config,
+                    provider_map={
+                        ModelOperation.EMBEDDING: providers.get(ModelOperation.EMBEDDING),
+                        ModelOperation.CHUNK_GENERATION: providers.get(ModelOperation.CHUNK_GENERATION),
+                        ModelOperation.SUMMARIZATION: providers.get(ModelOperation.SUMMARIZATION)
+                    },
+                    use_batching=True  # Explicitly specify that we're using batching
+                )
         
+        # Process all queries concurrently with controlled parallelism
         tasks = [process_with_semaphore(query) for query in queries]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
@@ -503,17 +667,24 @@ async def process_multiple_queries(
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 logger.error(f"Error processing query {i}: {str(result)}")
-                processed_results.append(([], f"Error: {str(result)}"))
+                processed_results.append({
+                    "chunks": [],
+                    "summary": f"Error: {str(result)}",
+                    "error": str(result)
+                })
             else:
                 processed_results.append(result)
+        
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        logger.info(f"Processed {len(queries)} queries in {duration_ms}ms (avg: {duration_ms/len(queries):.2f}ms per query)")
         
         return processed_results
 
     except Exception as e:
-        logger.error(f"Error in process_multiple_queries: {e}")
+        logger.error(f"Error in process_multiple_queries_efficient: {e}")
         traceback.print_exc()
         # Return empty results for all queries
-        return [([], f"Error: {str(e)}") for _ in range(len(queries))]
+        return [{"chunks": [], "summary": f"Error: {str(e)}"} for _ in range(len(queries))]
 
 async def get_query_matches(df: pd.DataFrame, query: str, agent: KnowledgeAgent, 
                          top_n: int = 10, 
@@ -628,3 +799,200 @@ async def get_query_matches(df: pd.DataFrame, query: str, agent: KnowledgeAgent,
         logger.error(f"Error in semantic search: {e}")
         traceback.print_exc()
         return []
+
+async def recursive_strings_ranked_by_relatedness(
+    query: str,
+    df: pd.DataFrame,
+    agent: KnowledgeAgent,
+    final_top_n: int = 10,
+    initial_top_n: int = 50,
+    reduction_factor: float = 0.5,
+    min_similarity_threshold: float = 0.5,
+    max_iterations: int = 3,
+    provider: Optional[ModelProvider] = None
+) -> List[Tuple[str, float, Dict[str, Any]]]:
+    """
+    Recursively refine content relatedness to a query for higher specificity.
+    
+    This function performs multiple passes of similarity ranking, progressively
+    narrowing down the most relevant content by re-ranking at each step.
+    
+    Args:
+        query: The query string to find related content for
+        df: DataFrame containing text and embeddings
+        agent: KnowledgeAgent instance for embedding generation
+        final_top_n: Final number of results to return (default: 10)
+        initial_top_n: Initial number of results to consider (default: 50)
+        reduction_factor: Factor to reduce results by in each iteration (default: 0.5)
+        min_similarity_threshold: Minimum similarity score to consider (default: 0.5)
+        max_iterations: Maximum number of refinement iterations (default: 3)
+        provider: Optional model provider to use for embeddings
+        
+    Returns:
+        List of tuples containing (text, similarity_score, metadata)
+    """
+    # Validate inputs
+    if df.empty:
+        logger.warning("Empty dataframe provided to recursive_strings_ranked_by_relatedness")
+        return []
+    
+    if final_top_n <= 0:
+        logger.warning(f"Invalid final_top_n: {final_top_n}, using default of 10")
+        final_top_n = 10
+    
+    # Initial retrieval with larger top_n
+    current_top_n = initial_top_n
+    current_results = await strings_ranked_by_relatedness(
+        query=query,
+        df=df,
+        agent=agent,
+        top_n=current_top_n,
+        provider=provider
+    )
+    
+    # If we don't have enough results or already at target size, return early
+    if len(current_results) <= final_top_n:
+        logger.info(f"Initial retrieval returned {len(current_results)} results, which is <= final_top_n ({final_top_n})")
+        return current_results
+    
+    # Track iterations for logging and limiting
+    iteration = 1
+    
+    # Create a smaller dataframe with just the top results for refinement
+    while len(current_results) > final_top_n and iteration < max_iterations:
+        logger.info(f"Refinement iteration {iteration}: Refining from {len(current_results)} to {final_top_n} results")
+        
+        # Extract texts and metadata from current results
+        texts = [item[0] for item in current_results]
+        scores = [item[1] for item in current_results]
+        metadata = [item[2] for item in current_results]
+        
+        # Create a temporary dataframe with just these results
+        temp_df = pd.DataFrame({
+            'text': texts,
+            'score': scores
+        })
+        
+        # Add metadata columns if available
+        for i, meta in enumerate(metadata):
+            for key, value in meta.items():
+                if key not in temp_df.columns:
+                    temp_df[key] = None
+                temp_df.at[i, key] = value
+        
+        # Re-embed these texts for more precise comparison
+        # This is optional but can help with refinement quality
+        temp_embeddings = await _get_embeddings_for_texts(texts, agent, provider)
+        temp_df['embedding'] = temp_embeddings
+        
+        # Calculate next target size (using reduction factor)
+        next_top_n = max(final_top_n, int(len(current_results) * reduction_factor))
+        
+        # Re-rank with the refined set
+        current_results = await _rank_by_similarity(
+            query=query,
+            df=temp_df,
+            agent=agent,
+            top_n=next_top_n,
+            provider=provider
+        )
+        
+        iteration += 1
+    
+    # Final filtering by similarity threshold
+    final_results = [
+        result for result in current_results 
+        if result[1] >= min_similarity_threshold
+    ]
+    
+    logger.info(f"Recursive relatedness retrieval complete: {len(final_results)} results after {iteration} iterations")
+    return final_results[:final_top_n]
+
+async def _get_embeddings_for_texts(
+    texts: List[str],
+    agent: KnowledgeAgent,
+    provider: Optional[ModelProvider] = None
+) -> List[np.ndarray]:
+    """
+    Generate embeddings for a list of texts.
+    
+    Args:
+        texts: List of text strings to embed
+        agent: KnowledgeAgent instance for embedding generation
+        provider: Optional model provider to use
+        
+    Returns:
+        List of embedding vectors
+    """
+    embeddings = []
+    batch_size = 20  # Process in batches to avoid memory issues
+    
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i+batch_size]
+        batch_embeddings = await agent.get_embeddings(
+            texts=batch,
+            provider=provider
+        )
+        embeddings.extend(batch_embeddings)
+    
+    return embeddings
+
+async def _rank_by_similarity(
+    query: str,
+    df: pd.DataFrame,
+    agent: KnowledgeAgent,
+    top_n: int = 10,
+    provider: Optional[ModelProvider] = None
+) -> List[Tuple[str, float, Dict[str, Any]]]:
+    """
+    Rank texts by similarity to query using cosine similarity.
+    
+    Args:
+        query: Query string to compare against
+        df: DataFrame with text and embedding columns
+        agent: KnowledgeAgent for embedding generation
+        top_n: Number of top results to return
+        provider: Optional model provider to use
+        
+    Returns:
+        List of (text, similarity_score, metadata) tuples
+    """
+    # Generate query embedding
+    query_embedding = await agent.get_embeddings(
+        texts=[query],
+        provider=provider
+    )
+    
+    if not query_embedding or len(query_embedding) == 0:
+        logger.error("Failed to generate query embedding")
+        return []
+    
+    # Extract embeddings from dataframe
+    embeddings = np.array(df['embedding'].tolist())
+    
+    # Calculate similarities using cosine distance
+    similarities = 1 - spatial.distance.cdist(
+        [query_embedding[0]], 
+        embeddings, 
+        metric='cosine'
+    )[0]
+    
+    # Get indices of top results
+    top_indices = np.argsort(similarities)[-top_n:][::-1]
+    
+    # Build result tuples with metadata
+    results = []
+    for idx in top_indices:
+        row = df.iloc[idx]
+        text = row['text']
+        score = float(similarities[idx])
+        
+        # Extract metadata (all columns except text and embedding)
+        metadata = {}
+        for col in df.columns:
+            if col not in ['text', 'embedding']:
+                metadata[col] = row[col]
+        
+        results.append((text, score, metadata))
+    
+    return results

@@ -26,7 +26,7 @@ from .data_ops import (
     DataConfig, 
     DataOperations
 )
-from .inference_ops import process_multiple_queries
+from .inference_ops import process_multiple_queries_efficient as process_multiple_queries
 from .embedding_ops import get_agent
 from api.errors import ProcessingError  # Add this import for error handling
 
