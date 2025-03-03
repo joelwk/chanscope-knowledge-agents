@@ -8,7 +8,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, List, Tuple
 from collections import deque
 
 import hashlib
@@ -37,22 +37,18 @@ from knowledge_agents.embedding_ops import get_agent, merge_articles_and_embeddi
 from knowledge_agents.data_processing.cloud_handler import S3Handler
 from knowledge_agents.data_ops import DataConfig, DataOperations
 from knowledge_agents.inference_ops import process_multiple_queries_efficient, process_query
-from knowledge_agents.run import run_inference
+from knowledge_agents.errors import ProcessingError
 
 from config.base_settings import get_base_settings
 from config.settings import Config
 from config.config_utils import (
     QueryRequest,
     BatchQueryRequest,
-    build_model_config,
-    QueryResponse,
-    build_unified_config)
+    build_model_config)
 
 from config.logging_config import get_logger
 from api.models import HealthResponse, StratificationResponse, log_endpoint_call
 from api.cache import CACHE_HITS, CACHE_MISSES, CACHE_ERRORS, cache
-
-from api.errors import ProcessingError
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -152,42 +148,10 @@ class ConfigurationError(APIError):
             details=details
         )
 
-# Wrapper function to replace direct calls to _run_inference_async
-async def _run_inference_async(
-    query: str,
-    data_config: ModelConfig,
-    agent: KnowledgeAgent,
-    force_refresh: bool = False,
-    skip_embeddings: bool = False
-):
-    """
-    Wrapper function to call run_inference from knowledge_agents.run
-    
-    Args:
-        query: The query to process
-        data_config: Configuration for data processing
-        agent: KnowledgeAgent instance to use for processing
-        force_refresh: Whether to force refresh the data
-        skip_embeddings: Whether to skip embedding generation
-        
-    Returns:
-        Tuple[List[Dict[str, Any]], str]: Chunks and summary
-    """
-    # Call run_inference which will internally call the original _run_inference_async
-    result = run_inference(
-        query=query,
-        config=data_config,
-        agent=agent,
-        force_refresh=force_refresh,
-        skip_embeddings=skip_embeddings
-    )
-    
-    # If run_inference returned a coroutine (Future), await it
-    if asyncio.isfuture(result) or asyncio.iscoroutine(result):
-        return await result
-    
-    # Otherwise, return the result directly
-    return result
+# Import run_inference lazily to avoid circular import
+def get_run_inference():
+    from knowledge_agents.run import run_inference
+    return run_inference
 
 # Dependency for DataOperations
 async def get_data_ops() -> DataOperations:
@@ -692,17 +656,22 @@ async def base_query(
                     }
                 
                 # Process query
+                # First ensure data is ready if needed
+                if request.force_refresh or not await data_ops.is_data_ready(skip_embeddings=request.skip_embeddings):
+                    await data_ops.ensure_data_ready(
+                        force_refresh=request.force_refresh,
+                        skip_embeddings=request.skip_embeddings
+                    )
+                
+                # Load the stratified data
+                library_df = await data_ops.load_stratified_data()
+                
+                # Now process the query with the loaded data
                 result = await process_query(
                     query=request.query,
                     agent=agent,
-                    library_df=await _prepare_data_if_needed(
-                        config=config,
-                        data_ops=data_ops,
-                        force_refresh=request.force_refresh,
-                        skip_embeddings=request.skip_embeddings
-                    ),
-                    config=config,
-                    use_batching=True
+                    library_df=library_df,
+                    config=config
                 )
                 
                 # Store result
@@ -815,17 +784,22 @@ async def _process_single_query(
             }
         
         # Process the query
+        # First ensure data is ready if needed
+        if force_refresh or not await data_ops.is_data_ready(skip_embeddings=skip_embeddings):
+            await data_ops.ensure_data_ready(
+                force_refresh=force_refresh,
+                skip_embeddings=skip_embeddings
+            )
+        
+        # Load the stratified data
+        library_df = await data_ops.load_stratified_data()
+        
+        # Now process the query with the loaded data
         result = await process_query(
             query=query,
             agent=agent,
-            library_df=await _prepare_data_if_needed(
-                config=config,
-                data_ops=data_ops,
-                force_refresh=force_refresh,
-                skip_embeddings=skip_embeddings
-            ),
-            config=config,
-            use_batching=use_batching
+            library_df=library_df,
+            config=config
         )
         
         # Store the result directly (no need to unpack)
@@ -891,13 +865,33 @@ async def batch_process_queries(
     
     try:
         # Initialize the agent and config
-        agent = get_agent()
+        agent = await get_agent()
         config = load_config()
+        
+        # Initialize data operations
+        data_ops = DataOperations(DataConfig.from_config())
+        
+        # Prepare data using the Chanscope approach
+        # This ensures stratified data is available before processing
+        stratified_data = await _prepare_data_if_needed(
+            config=config,
+            data_ops=data_ops,
+            force_refresh=request.force_refresh,
+            skip_embeddings=request.skip_embeddings
+        )
+        
+        if stratified_data is None or stratified_data.empty:
+            raise ProcessingError(
+                message="Failed to prepare stratified data for batch processing",
+                operation="batch_process"
+            )
+            
+        logger.info(f"Using stratified data with {len(stratified_data)} records for batch processing")
         
         results = await process_multiple_queries_efficient(
             queries=request.queries,
             agent=agent,
-            stratified_data=None,  # Will load from config paths
+            stratified_data=stratified_data,  # Pass the prepared stratified data directly
             chunk_batch_size=request.chunk_batch_size or config.chunk_batch_size,
             summary_batch_size=request.summary_batch_size or config.summary_batch_size,
             max_workers=request.max_workers or config.max_workers,
@@ -1430,9 +1424,17 @@ async def cache_health() -> Dict[str, Any]:
     """Check health of the in-memory cache."""
     try:
         # Get cache metrics from simple counters
-        hits = CACHE_HITS.value
-        misses = CACHE_MISSES.value
-        errors = CACHE_ERRORS.value
+        # Handle both SimpleCounter class and global variable implementations
+        if hasattr(CACHE_HITS, 'get_value'):
+            hits = CACHE_HITS.get_value()
+            misses = CACHE_MISSES.get_value()
+            errors = CACHE_ERRORS.get_value()
+        else:
+            # Fall back to direct access for the simplified test implementation
+            hits = CACHE_HITS
+            misses = CACHE_MISSES
+            errors = CACHE_ERRORS
+        
         total_requests = hits + misses
         
         cache_status = {
@@ -1624,10 +1626,17 @@ async def _prepare_data_if_needed(
 ) -> pd.DataFrame:
     """Prepare data for inference with enhanced reliability and performance.
     
-    This function:
-    1. Ensures that necessary data is loaded and ready for inference
-    2. Handles data refresh based on configuration parameters
-    3. Manages embedding generation if needed
+    This function implements the Chanscope approach for data preparation:
+    
+    For force_refresh=True:
+    - Verify that complete_data.csv exists and is updated with latest S3 data
+    - Create a new stratified sample and generate new embeddings
+    - Search embeddings for related chunks
+    
+    For force_refresh=False:
+    - Check if complete_data.csv exists (but don't verify updates)
+    - Use existing stratified data and embeddings
+    - If data doesn't exist, proceed as if force_refresh=True
     
     Args:
         config: Model configuration with processing settings
@@ -1646,20 +1655,67 @@ async def _prepare_data_if_needed(
     try:
         logger.info(f"Preparing data (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})")
         
-        # Check if data needs refreshing based on config and force flag
+        # Step 1: Check data freshness to determine if update is needed
         data_freshness_check = await data_ops.check_data_freshness()
         
-        # Only refresh if force_refresh is True or data is actually not fresh
-        # Critical fix: ensure force_refresh is properly respected
-        if force_refresh:
-            logger.info("Force refresh requested, ensuring data ready with full refresh")
-            await data_ops.ensure_data_ready(force_refresh=True)
-        else:
-            logger.info("Using existing data (force_refresh=false), ensuring minimal data preparation")
-            # Pass force_refresh=False to ensure_data_ready to respect the flag
-            await data_ops.ensure_data_ready(force_refresh=False)
+        # Get paths for validation
+        complete_data_path = data_ops.config.root_data_path / "complete_data.csv"
+        stratified_path = data_ops.config.stratified_data_path / "stratified_sample.csv"
+        embeddings_path = data_ops.config.stratified_data_path / "embeddings.npz"
         
-        # Load stratified data
+        # Case A: force_refresh=True - Follow Chanscope approach for forced refresh
+        if force_refresh:
+            logger.info("Force refresh requested, implementing Chanscope forced refresh approach")
+            
+            # Check if complete_data.csv exists and is up-to-date with S3
+            # Only refresh if it doesn't exist or isn't current
+            if not complete_data_path.exists():
+                logger.info("Complete data file doesn't exist, fetching from source")
+                needs_data_update = True
+            else:
+                # Check if data is current with S3
+                is_current = await data_ops._is_data_up_to_date_with_s3()
+                needs_data_update = not is_current
+                logger.info(f"Complete data exists, is current with S3: {is_current}")
+            
+            # If data needs update, use ensure_data_ready with force_refresh=True
+            # to properly fetch and process according to the Chanscope approach
+            if needs_data_update:
+                logger.info("Data needs update, performing complete refresh")
+                await data_ops.ensure_data_ready(force_refresh=True, skip_embeddings=skip_embeddings)
+            else:
+                logger.info("Complete data is current, performing stratification and embedding refresh only")
+                # Even if data is current, with force_refresh=True we still refresh stratification and embeddings
+                # Create new stratified sample
+                await data_ops._create_stratified_dataset()
+                
+                # Generate new embeddings unless explicitly skipped
+                if not skip_embeddings:
+                    await data_ops.generate_embeddings(force_refresh=True)
+        
+        # Case B: force_refresh=False - Follow Chanscope approach for regular processing
+        else:
+            logger.info("Using existing data (force_refresh=false), checking data existence")
+            
+            # Check if complete_data.csv exists
+            if not complete_data_path.exists():
+                logger.info("Complete data file doesn't exist, proceeding as if force_refresh=True")
+                # If it doesn't exist, proceed as if force_refresh=True 
+                await data_ops.ensure_data_ready(force_refresh=True, skip_embeddings=skip_embeddings)
+            else:
+                logger.info("Complete data exists, checking stratified data and embeddings")
+                
+                # Check if stratified data exists
+                if not stratified_path.exists():
+                    logger.info("Stratified data doesn't exist, creating it")
+                    await data_ops._create_stratified_dataset()
+                
+                # Check if embeddings exist and generate if needed (unless skipped)
+                if not skip_embeddings and not embeddings_path.exists():
+                    logger.info("Embeddings don't exist, generating them")
+                    await data_ops.generate_embeddings(force_refresh=False)
+        
+        # Load stratified data for use in inference
         stratified_data = await data_ops._load_stratified_data()
         
         # Check data validity
@@ -1670,8 +1726,8 @@ async def _prepare_data_if_needed(
             )
         
         data_rows = len(stratified_data)
-        logger.info(f"Data preparation complete: {data_rows} rows available " +
-                   f"(took {round((time.time() - start_time) * 1000, 2)}ms)")
+        processing_time = round((time.time() - start_time) * 1000, 2)
+        logger.info(f"Data preparation complete: {data_rows} rows available (took {processing_time}ms)")
         
         # Return data for use in inference
         return stratified_data
@@ -1692,23 +1748,10 @@ async def _prepare_data_if_needed(
             original_error=e
         )
     except Exception as e:
-        logger.error(f"Error preparing data: {str(e)}")
-        logger.error(traceback.format_exc())
-        
-        # Try to provide more context based on exception type
-        if "embedding" in str(e).lower():
-            error_message = f"Embedding generation failed: {str(e)}"
-            operation = "embedding_generation"
-        elif "stratif" in str(e).lower():
-            error_message = f"Data stratification failed: {str(e)}"
-            operation = "data_stratification"
-        else:
-            error_message = f"Error preparing data: {str(e)}"
-            operation = "data_preparation"
-            
+        logger.error(f"Error during data preparation: {str(e)}", exc_info=True)
         raise ProcessingError(
-            message=error_message,
-            operation=operation,
+            message=f"Data preparation failed: {str(e)}",
+            operation="data_preparation",
             original_error=e
         )
 

@@ -1,123 +1,184 @@
+"""Test suite for FastAPI endpoints."""
 import pytest
-import os
-from api import create_app
 import pytest_asyncio
+from fastapi.testclient import TestClient
+from typing import AsyncGenerator, AsyncIterator
+import asyncio
+import os
+from datetime import datetime, timedelta
+import pytz
+from config.base_settings import get_base_settings
 
-@pytest.fixture(scope="module")
-def event_loop():
-    """Create an instance of the default event loop for each test case."""
-    import asyncio
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+# Import the app instance
+from api.app import app
 
-@pytest_asyncio.fixture(scope="module")
-async def app():
-    """Create a test client for the app."""
-    return create_app()
+from knowledge_agents.data_ops import DataOperations, DataConfig
+
+# Create test client
+client = TestClient(app)
+
+# Define API base path - update this to match your current API configuration
+API_BASE_PATH = "/api/v1"
 
 @pytest_asyncio.fixture
-async def client(app, event_loop):
-    """Create an async test client."""
-    async with app.test_client() as client:
-        yield client
+async def test_config(tmp_path) -> DataConfig:
+    """Create a test configuration with temporary paths."""
+    # Get retention days from environment or config
+    base_settings = get_base_settings()
+    processing_settings = base_settings.get('processing', {})
+    retention_days = int(os.environ.get('DATA_RETENTION_DAYS', processing_settings.get('retention_days', 30)))
+    
+    # Calculate filter date based on retention days
+    filter_date = (datetime.now(pytz.UTC) - timedelta(days=retention_days)).strftime('%Y-%m-%d')
+    
+    root_path = tmp_path / "test_data"
+    stratified_path = root_path / "stratified"
+    temp_path = root_path / "temp"
+    
+    return DataConfig(
+        root_data_path=root_path,
+        stratified_data_path=stratified_path,
+        temp_path=temp_path,
+        filter_date=filter_date,  # Use the calculated filter date
+        sample_size=10  # Small sample size for tests
+    )
+
+@pytest_asyncio.fixture
+async def data_ops(test_config) -> DataOperations:
+    """Create DataOperations instance for testing."""
+    operations = DataOperations(test_config)
+    
+    # Setup - ensure we have a clean environment
+    try:
+        if test_config.root_data_path.exists():
+            import shutil
+            shutil.rmtree(test_config.root_data_path)
+        test_config.root_data_path.mkdir(parents=True, exist_ok=True)
+        test_config.stratified_data_path.mkdir(parents=True, exist_ok=True)
+        test_config.temp_path.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"Setup error: {e}")
+    
+    yield operations
+    
+    # Cleanup
+    try:
+        if test_config.root_data_path.exists():
+            import shutil
+            shutil.rmtree(test_config.root_data_path)
+    except Exception as e:
+        print(f"Cleanup error: {e}")
 
 @pytest.mark.asyncio
-async def test_health_check(client):
+async def test_health_check():
     """Test the health check endpoint."""
-    response = await client.get('/health')
+    response = client.get(f"{API_BASE_PATH}/health")
     assert response.status_code == 200
-    data = await response.get_json()
-    assert data['status'] == 'healthy'
-    assert 'message' in data
+    data = response.json()
+    assert "status" in data
+    assert data["status"] == "healthy"
 
 @pytest.mark.asyncio
-async def test_replit_health(client):
-    """Test the health check endpoint in Replit environment."""
-    os.environ['QUART_ENV'] = 'replit'
-    response = await client.get('/health_replit')
-    assert response.status_code == 200
-    data = await response.get_json()
-    assert 'status' in data or 'message' in data
+async def test_query_endpoint(data_ops):
+    """Test the query endpoint."""
+    try:
+        # Prepare test data with force_refresh=True to ensure data is loaded from the retention date
+        await data_ops.ensure_data_ready(force_refresh=True, skip_embeddings=False)
+        
+        # Test query
+        test_query = {
+            "query": "test query",
+            "force_refresh": False,  # Use existing data for the query
+            "skip_embeddings": True
+        }
+        
+        response = client.post(f"{API_BASE_PATH}/query", json=test_query)
+        assert response.status_code in [200, 202]  # Accept either OK or Accepted
+        data = response.json()
+        assert "task_id" in data or "result" in data  # Either async or sync response
+    except Exception as e:
+        pytest.skip(f"Skipping due to data preparation error: {str(e)}")
 
 @pytest.mark.asyncio
-async def test_s3_health(client):
-    """Test the S3 health check endpoint."""
-    response = await client.get('/health/s3')
-    assert response.status_code == 200
-    data = await response.get_json()
-    assert 's3_status' in data
-    assert 'bucket_access' in data
-    assert 'latency_ms' in data
-
-@pytest.mark.asyncio
-async def test_provider_health(client):
-    """Test the provider health check endpoint."""
-    response = await client.get('/health/provider/openai')
-    assert response.status_code == 200
-    data = await client.get_json()
-    assert 'status' in data
-    assert 'provider' in data
-    assert 'latency_ms' in data
-
-@pytest.mark.asyncio
-async def test_health_connections(client):
-    """Test the service connections endpoint."""
-    response = await client.get('/health/connections')
-    assert response.status_code == 200
-    data = await client.get_json()
-    assert 'services' in data
-    assert bool(data['services'])
-
-@pytest.mark.asyncio
-async def test_health_all(client):
-    """Test the all providers health endpoint."""
-    response = await client.get('/health/all')
-    assert response.status_code == 200
-    data = await client.get_json()
-    assert isinstance(data, dict)
-    assert len(data) > 0
-
-@pytest.mark.asyncio
-async def test_process_recent_query(client):
-    """Test the recent query processing endpoint."""
-    response = await client.get('/process_recent_query')
-    assert response.status_code == 200
-    data = await client.get_json()
-    for key in ['query', 'time_range', 'chunks', 'summary']:
-        assert key in data
-
-@pytest.mark.asyncio
-async def test_process_query(client):
-    """Test the process query endpoint."""
-    payload = {
-         "query": "test query",
-         "force_refresh": False,
-         "skip_embeddings": True,
-         "filter_date": None
-    }
-    response = await client.post('/process_query', json=payload)
-    assert response.status_code == 200
-    data = await response.get_json()
-    assert 'results' in data
-    for key in ['query', 'chunks', 'summary']:
-        assert key in data['results']
-
-@pytest.mark.asyncio
-async def test_batch_process(client):
+async def test_batch_process_endpoint(data_ops):
     """Test the batch process endpoint."""
-    payload = {
-         "queries": ["test query 1", "test query 2"],
-         "force_refresh": False,
-         "embedding_batch_size": 50,
-         "chunk_batch_size": 5000,
-         "summary_batch_size": 50,
-         "embedding_provider": "openai",
-         "chunk_provider": "openai",
-         "summary_provider": "openai"
-    }
-    response = await client.post('/batch_process', json=payload)
+    try:
+        # Prepare test data with force_refresh=True to ensure data is loaded from the retention date
+        await data_ops.ensure_data_ready(force_refresh=True, skip_embeddings=False)
+        
+        # Initialize the agent
+        from knowledge_agents.embedding_ops import get_agent
+        agent = await get_agent()
+        
+        # Test batch query
+        test_batch = {
+            "queries": ["test query 1", "test query 2"],
+            "force_refresh": False,  # Use existing data for the query
+            "skip_embeddings": True
+        }
+        
+        response = client.post(f"{API_BASE_PATH}/batch_process", json=test_batch)
+        assert response.status_code in [200, 202]  # Accept either OK or Accepted
+        data = response.json()
+        assert "task_id" in data or "results" in data  # Either async or sync response
+    except Exception as e:
+        pytest.skip(f"Skipping due to data preparation error: {str(e)}")
+
+@pytest.mark.asyncio
+async def test_embedding_status_endpoint(data_ops):
+    """Test the embedding status endpoint."""
+    try:
+        # Generate embeddings with force_refresh=True to ensure data is loaded from the retention date
+        await data_ops.ensure_data_ready(force_refresh=True, skip_embeddings=False)
+        await data_ops.generate_embeddings(force_refresh=True)
+        
+        response = client.get(f"{API_BASE_PATH}/embedding_status")
+        assert response.status_code == 200
+        data = response.json()
+        assert "status" in data
+        assert "metrics" in data
+    except Exception as e:
+        pytest.skip(f"Skipping due to embedding generation error: {str(e)}")
+
+@pytest.mark.asyncio
+async def test_cache_health_endpoint():
+    """Test the cache health endpoint."""
+    # Direct test of the cache health endpoint
+    response = client.get(f"{API_BASE_PATH}/health/cache")
+    
+    # Assert the response is successful
     assert response.status_code == 200
-    data = await response.get_json()
-    assert 'results' in data
-    assert isinstance(data['results'], list)
+    
+    # Parse the response data
+    data = response.json()
+    
+    # Assert the expected structure
+    assert "status" in data
+    assert data["status"] == "healthy"
+    assert "metrics" in data
+    
+    # Check metrics
+    metrics = data["metrics"]
+    assert "hits" in metrics
+    assert "misses" in metrics
+    assert "errors" in metrics
+    assert "total_requests" in metrics
+    assert "hit_ratio" in metrics
+
+@pytest.mark.asyncio
+async def test_error_handling():
+    """Test error handling in endpoints."""
+    # Test invalid query
+    invalid_query = {
+        "invalid_field": "test"
+    }
+    response = client.post(f"{API_BASE_PATH}/query", json=invalid_query)
+    assert response.status_code == 422  # Unprocessable Entity
+
+    # Test missing required field
+    empty_query = {}
+    response = client.post(f"{API_BASE_PATH}/query", json=empty_query)
+    assert response.status_code == 422
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "-s"])

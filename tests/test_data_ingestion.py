@@ -1,9 +1,6 @@
 """Test suite for data ingestion functionality."""
 import pytest
-import asyncio
 import pandas as pd
-import numpy as np
-import json
 from pathlib import Path
 import shutil
 import logging
@@ -13,10 +10,7 @@ import pytz
 from knowledge_agents.data_ops import (
     DataConfig,
     DataOperations,
-    DataStateManager,
 )
-from knowledge_agents.embedding_ops import get_relevant_content
-from knowledge_agents.model_ops import ModelProvider
 from config.settings import Config
 
 # Setup logging
@@ -46,148 +40,130 @@ TEST_DATA = {
 def test_config(tmp_path):
     """Create a test configuration with temporary paths."""
     # Get settings from Config
-    paths = Config.get_paths()
     processing_settings = Config.get_processing_settings()
     sample_settings = Config.get_sample_settings()
+    column_settings = Config.get_column_settings()
+    
+    # Create base paths
+    root_path = tmp_path / "root"
+    stratified_path = root_path / "stratified"
+    temp_path = root_path / "temp"
+    
+    # Create directories
+    root_path.mkdir(parents=True, exist_ok=True)
+    stratified_path.mkdir(parents=True, exist_ok=True)
+    temp_path.mkdir(parents=True, exist_ok=True)
     
     return DataConfig(
-        root_path=tmp_path / "root",
-        all_data_path=tmp_path / "data" / "all_data.csv",
-        stratified_data_path=tmp_path / "data" / "stratified",
-        filter_date=processing_settings['filter_date'],
+        root_data_path=root_path,
+        stratified_data_path=stratified_path,
+        temp_path=temp_path,
+        filter_date=processing_settings.get('filter_date'),
         sample_size=sample_settings['default_sample_size'],
-        time_column=processing_settings['time_column'],
-        strata_column=processing_settings['strata_column']
+        time_column=column_settings.get('time_column', 'posted_date_time'),
+        strata_column=column_settings.get('strata_column', 'thread_id')
     )
+
+@pytest.fixture
+def test_data_ops(test_config):
+    """Setup DataOperations with test configuration."""
+    # Remove async from the fixture definition
+    data_ops = DataOperations(test_config)
+    yield data_ops
+    # Cleanup
+    try:
+        if test_config.root_data_path.exists():
+            shutil.rmtree(test_config.root_data_path)
+    except Exception as e:
+        logger.warning(f"Cleanup failed: {e}")
 
 @pytest.fixture
 def setup_test_data(test_config):
     """Setup test data and directory structure."""
-    # Create directories
-    test_config.root_path.mkdir(parents=True, exist_ok=True)
-    test_config.all_data_path.parent.mkdir(parents=True, exist_ok=True)
-    test_config.stratified_data_path.mkdir(parents=True, exist_ok=True)
-
     # Create test DataFrame
     df = pd.DataFrame(TEST_DATA)
     
-    # Save test data
-    df.to_csv(test_config.all_data_path, index=False)
+    # Save test data to complete data file
+    complete_data_path = test_config.root_data_path / "complete_data.csv"
+    df.to_csv(complete_data_path, index=False)
     
     yield test_config
     
-    # Cleanup
-    shutil.rmtree(test_config.root_path)
+    # Cleanup handled by test_data_ops fixture
 
 @pytest.mark.asyncio
-async def test_initial_data_preparation(setup_test_data):
+async def test_initial_data_load(test_data_ops, setup_test_data):
     """Test initial data preparation with force_refresh=True."""
-    config = setup_test_data
-    operations = DataOperations(config)
+    # Arrange
+    operations = test_data_ops
     
-    # Test initial preparation
-    result = await operations.prepare_data(force_refresh=True)
-    assert "completed successfully" in result.lower()
+    # Act
+    await operations.ensure_data_ready(force_refresh=True)
     
-    # Verify files were created
-    assert (config.stratified_data_path / "stratified_sample.csv").exists()
+    # Assert
+    complete_data_path = operations.config.root_data_path / "complete_data.csv"
+    stratified_path = operations.config.stratified_data_path / "stratified_sample.csv"
     
-    # Verify state was updated
-    state_manager = DataStateManager(config)
-    last_update = state_manager.get_last_update()
-    assert last_update is not None
+    assert complete_data_path.exists(), "Complete data file should exist after test"
+    assert stratified_path.exists(), "Stratified data file should exist after test"
+    
+    # Verify data content
+    stratified_data = pd.read_csv(stratified_path)
+    assert not stratified_data.empty, "Stratified data should not be empty"
+    assert 'thread_id' in stratified_data.columns, "Stratified data should contain thread_id column"
 
 @pytest.mark.asyncio
-async def test_incremental_update(setup_test_data):
-    """Test incremental update with force_refresh=False."""
-    config = setup_test_data
-    operations = DataOperations(config)
+async def test_force_refresh_true(test_data_ops, setup_test_data):
+    """Test data refresh with force_refresh=True."""
+    # Arrange
+    operations = test_data_ops
     
-    # Initial setup
-    await operations.prepare_data(force_refresh=True)
-    initial_state = DataStateManager(config).get_last_update()
+    # First load
+    await operations.ensure_data_ready(force_refresh=False)
+    initial_mtime = operations.config.stratified_data_path.stat().st_mtime
     
-    # Add new data
-    new_data = pd.DataFrame({
-        'thread_id': ['4', '5'],
-        'posted_date_time': [
-            (datetime.now(pytz.UTC) + timedelta(hours=1)).isoformat(),
-            (datetime.now(pytz.UTC) + timedelta(hours=2)).isoformat()
-        ],
-        'text_clean': ['New content 1', 'New content 2'],
-        'posted_comment': ['New comment 1', 'New comment 2']
-    })
+    # Act
+    await operations.ensure_data_ready(force_refresh=True)
     
-    # Append new data to existing file
-    new_data.to_csv(config.all_data_path, mode='a', header=False, index=False)
-    
-    # Run incremental update
-    result = await operations.prepare_data(force_refresh=False)
-    assert "incremental update" in result.lower()
-    
-    # Verify state was updated
-    new_state = DataStateManager(config).get_last_update()
-    assert new_state > initial_state
+    # Assert
+    new_mtime = operations.config.stratified_data_path.stat().st_mtime
+    assert new_mtime > initial_mtime, "Stratified data should be modified when force_refresh=true"
 
 @pytest.mark.asyncio
-async def test_data_state_management(setup_test_data):
-    """Test data state management functionality."""
-    config = setup_test_data
-    state_manager = DataStateManager(config)
+async def test_force_refresh_false(test_data_ops, setup_test_data):
+    """Test data handling with force_refresh=False."""
+    # Arrange
+    operations = test_data_ops
     
-    # Test initial state
-    assert state_manager.get_last_update() is None
+    # Act
+    await operations.ensure_data_ready(force_refresh=False)
     
-    # Test state update
-    state_manager.update_state(100)
-    last_update = state_manager.get_last_update()
-    assert last_update is not None
-    
-    # Test state persistence
-    new_state_manager = DataStateManager(config)
-    assert new_state_manager.get_last_update() == last_update
+    # Assert
+    complete_data_path = operations.config.root_data_path / "complete_data.csv"
+    assert complete_data_path.exists(), "Complete data should be created if it didn't exist"
 
 @pytest.mark.asyncio
-async def test_error_handling(setup_test_data):
-    """Test error handling in data operations."""
-    config = setup_test_data
-    operations = DataOperations(config)
+async def test_embedding_generation(test_data_ops, setup_test_data):
+    """Test embedding generation process."""
+    # Arrange
+    operations = test_data_ops
     
-    # Test invalid data handling
-    invalid_data = pd.DataFrame({
-        'wrong_column': ['test']
-    })
-    invalid_data.to_csv(config.all_data_path, index=False)
+    # Act
+    await operations.ensure_data_ready(force_refresh=True)
+    await operations.generate_embeddings(force_refresh=True)
     
-    with pytest.raises(Exception):
-        await operations.prepare_data(force_refresh=True)
-
-@pytest.mark.asyncio
-async def test_scheduled_update(setup_test_data):
-    """Test scheduled update functionality."""
-    config = setup_test_data
-    operations = DataOperations(config)
+    # Assert
+    embeddings_path = operations.config.stratified_data_path / "embeddings.npz"
+    status_path = operations.config.stratified_data_path / "embedding_status.csv"
     
-    # Initial setup
-    await operations.prepare_data(force_refresh=True)
-    initial_state = DataStateManager(config).get_last_update()
+    assert embeddings_path.exists(), "Embeddings file should exist after test"
+    assert status_path.exists(), "Embedding status file should exist after test"
     
-    # Simulate scheduled update with new data
-    new_data = pd.DataFrame({
-        'thread_id': ['6'],
-        'posted_date_time': [(datetime.now(pytz.UTC) + timedelta(hours=3)).isoformat()],
-        'text_clean': ['Scheduled update content'],
-        'posted_comment': ['Scheduled comment']
-    })
-    new_data.to_csv(config.all_data_path, mode='a', header=False, index=False)
-    
-    # Run scheduled update
-    result = await operations.prepare_data(force_refresh=False)
-    assert "completed successfully" in result.lower()
-    
-    # Verify state was updated
-    new_state = DataStateManager(config).get_last_update()
-    assert new_state > initial_state
+    # Verify embedding status content
+    status_df = pd.read_csv(status_path)
+    assert not status_df.empty, "Embedding status should not be empty"
+    assert 'thread_id' in status_df.columns, "Status should contain thread_id column"
+    assert 'has_embedding' in status_df.columns, "Status should contain has_embedding column"
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"]) 

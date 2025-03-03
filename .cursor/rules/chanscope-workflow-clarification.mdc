@@ -1,0 +1,51 @@
+---
+description: Clarifies recommended workflows for testing and deployment to avoid confusion.
+globs: */docker-compose*.yml, */scripts/run_*tests.sh
+alwaysApply: false
+---
+# Chanscope Workflow Clarification
+
+This rule explicitly clarifies recommended workflows for testing and deployment, ensuring clarity and maintainability.
+
+## Recommended Workflow
+
+### 1. Testing Workflow (Recommended)
+
+Run tests in isolation using the dedicated testing compose file:
+
+```bash
+docker-compose -f deployment/docker-compose.test.yml build
+docker-compose -f deployment/docker-compose.test.yml up
+```
+
+- Ensures isolated test data and resources.
+- Optimized environment variables and resource allocation for testing.
+
+### 2. Production Deployment (Tests Disabled)
+
+Deploy your application without running tests at startup:
+
+```bash
+docker-compose -f deployment/docker-compose.yml build
+docker-compose -f deployment/docker-compose.yml up -d
+```
+
+- Ensures stable, predictable startup behavior.
+- Avoids resource contention and data integrity risks.
+
+### 3. Integrated Test and Deploy (Advanced, Optional)
+
+Running tests directly in the production compose file (`docker-compose.yml`) with `RUN_TESTS_ON_STARTUP=true` is possible but should be reserved for staging or pre-production environments only:
+
+```bash
+docker-compose -f deployment/docker-compose.yml build
+docker-compose -f deployment/docker-compose.yml up -d -e RUN_TESTS_ON_STARTUP=true
+```
+
+- Requires careful handling of resource contention and data isolation.
+- Not recommended for live production environments.
+
+## Decision Guidance
+
+- Clearly document and communicate your chosen workflow within your team.
+- Regularly review and update these guidelines as your project evolves.

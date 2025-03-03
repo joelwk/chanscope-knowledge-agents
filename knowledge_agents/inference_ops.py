@@ -609,11 +609,25 @@ async def process_multiple_queries_efficient(
         library_df = stratified_data
         if library_df is None:
             if not stratified_path:
+                logger.error("Neither stratified_data nor stratified_path was provided")
                 raise ValueError("Either stratified_data or stratified_path must be provided")
             
             stratified_file = Path(stratified_path) / 'stratified_sample.csv'
             embeddings_path = Path(stratified_path) / 'embeddings.npz'
             thread_id_map_path = Path(stratified_path) / 'thread_id_map.json'
+            
+            # Check if files exist before attempting to load
+            if not stratified_file.exists():
+                logger.error(f"Stratified file not found at {stratified_file}")
+                raise FileNotFoundError(f"Stratified file not found at {stratified_file}")
+                
+            if not embeddings_path.exists():
+                logger.error(f"Embeddings file not found at {embeddings_path}")
+                raise FileNotFoundError(f"Embeddings file not found at {embeddings_path}")
+                
+            if not thread_id_map_path.exists():
+                logger.error(f"Thread ID map file not found at {thread_id_map_path}")
+                raise FileNotFoundError(f"Thread ID map file not found at {thread_id_map_path}")
             
             try:
                 # Load and merge stratified data with embeddings
@@ -626,10 +640,32 @@ async def process_multiple_queries_efficient(
                 logger.info(f"Loaded stratified data with {len(library_df)} records")
             except Exception as e:
                 logger.error(f"Error loading stratified data: {e}")
+                logger.error(traceback.format_exc())
                 raise ValueError(f"Failed to load stratified data: {str(e)}")
 
-        if library_df.empty:
-            raise ValueError("Stratified dataset is empty")
+        if library_df is None or library_df.empty:
+            logger.error("Stratified dataset is empty or None")
+            raise ValueError("Stratified dataset is empty or None")
+            
+        # Validate that the DataFrame has the required columns
+        required_columns = ['text_clean', 'thread_id', 'posted_date_time']
+        missing_columns = [col for col in required_columns if col not in library_df.columns]
+        if missing_columns:
+            logger.error(f"Stratified data is missing required columns: {missing_columns}")
+            raise ValueError(f"Stratified data is missing required columns: {missing_columns}")
+            
+        # Check for embeddings
+        if 'embedding' not in library_df.columns:
+            logger.error("Stratified data does not contain embeddings")
+            raise ValueError("Stratified data does not contain embeddings")
+            
+        # Check embedding validity
+        embedding_count = library_df['embedding'].notna().sum()
+        if embedding_count == 0:
+            logger.error("No valid embeddings found in stratified data")
+            raise ValueError("No valid embeddings found in stratified data")
+            
+        logger.info(f"Using stratified data with {len(library_df)} records and {embedding_count} embeddings")
 
         # Create a mock config object with batch sizes
         class BatchConfig:

@@ -3,20 +3,59 @@ import pandas as pd
 import logging
 import warnings
 from datetime import datetime
+from pathlib import Path
+
+# Import centralized logging configuration
+from config.logging_config import get_logger
+
+# Create a logger using the centralized configuration
+logger = get_logger('knowledge_agents.utils')
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-def setup_logging(log_level=logging.INFO, log_file='generic_log.log'):
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(log_file, mode='a')
-        ]
-    )
+def get_logger(name, level=logging.INFO):
+    """Get a logger with the specified name and level.
     
-setup_logging(log_file='utility_func.log')
+    This is a wrapper around the centralized logging configuration.
+    
+    Args:
+        name: The name of the logger
+        level: The logging level
+        
+    Returns:
+        A configured logger instance
+    """
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    return logger
+
+def parse_date(date_str, default_format="%Y-%m-%d %H:%M:%S"):
+    """Parse a date string into a datetime object."""
+    if isinstance(date_str, datetime):
+        return date_str
+    
+    if not date_str:
+        return None
+        
+    formats = [
+        default_format,
+        "%Y-%m-%d %H:%M:%S%z",
+        "%Y-%m-%d %H:%M:%S.%f%z",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%m/%d/%Y",
+        "%d/%m/%Y"
+    ]
+    
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+    
+    logger.warning(f"Could not parse date: {date_str}")
+    return None
 
 def safe_str_to_date(date_str, format="%Y-%m-%d %H:%M:%S"):
     try:
@@ -24,7 +63,7 @@ def safe_str_to_date(date_str, format="%Y-%m-%d %H:%M:%S"):
             return date_str
         return datetime.strptime(date_str, format)
     except (ValueError, TypeError) as e:
-        print(f"Error converting '{date_str}' to date format '{format}':", e)
+        logger.error(f"Error converting '{date_str}' to date format '{format}': {e}")
         return None
 
 def within_date_range(date, start_date, end_date):

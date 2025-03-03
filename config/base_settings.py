@@ -101,8 +101,8 @@ def get_base_settings() -> Dict[str, Any]:
             's3_bucket_models': os.getenv('S3_BUCKET_MODELS', 'models').strip()
         },
         'processing': {
-            'processing_chunk_size': int(os.getenv('PROCESSING_CHUNK_SIZE', '5000')),
-            'stratification_chunk_size': int(os.getenv('STRATIFICATION_CHUNK_SIZE', '1000')),
+            'processing_chunk_size': int(os.getenv('PROCESSING_CHUNK_SIZE', '10000')),
+            'stratification_chunk_size': int(os.getenv('STRATIFICATION_CHUNK_SIZE', '5000')),
             'padding_enabled': os.getenv('PADDING_ENABLED', 'false').lower() == 'true',
             'contraction_mapping_enabled': os.getenv('CONTRACTION_MAPPING_ENABLED', 'false').lower() == 'true',
             'non_alpha_numeric_enabled': os.getenv('NON_ALPHA_NUMERIC_ENABLED', 'false').lower() == 'true',
@@ -111,7 +111,10 @@ def get_base_settings() -> Dict[str, Any]:
             'cache_enabled': os.getenv('CACHE_ENABLED', 'true').lower() == 'true',
             'retention_days': int(os.getenv('DATA_RETENTION_DAYS', '30')),
             'filter_date': os.getenv('FILTER_DATE'),
-            'select_board': os.getenv('SELECT_BOARD')
+            'select_board': os.getenv('SELECT_BOARD'),
+            'use_batching': os.getenv('USE_BATCHING', 'true').lower() == 'true',
+            'cache_ttl': int(os.getenv('CACHE_TTL', '3600')),
+            'batch_size': int(os.getenv('BATCH_SIZE', '64'))
         },
         'sample': {
             'max_sample_size': 100000,

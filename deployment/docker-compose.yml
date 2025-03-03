@@ -1,13 +1,18 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+version: '3.8'
+
 services:
   app:
     build:
       context: ..
       dockerfile: deployment/Dockerfile
     volumes:
+      # Configuration files
       - type: bind
         source: ../.env
         target: /app/.env
         read_only: true
+      # Application code
       - type: bind
         source: ../api
         target: /app/api
@@ -21,11 +26,17 @@ services:
         target: /app/knowledge_agents
         read_only: true
       - type: volume
-        source: poetry_cache
-        target: /home/nobody/.cache/pypoetry
-      - type: volume
         source: app_data
         target: /app/data
+        read_only: false
+      - type: bind
+        source: ../tests
+        target: /app/tests
+        read_only: true
+      # Persistent volumes
+      - type: volume
+        source: poetry_cache
+        target: /home/nobody/.cache/pypoetry
       - type: volume
         source: app_logs
         target: /app/logs
@@ -36,24 +47,43 @@ services:
     env_file:
       - ../.env
     environment:
+      # Docker environment
       - DOCKER_ENV=true
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - FASTAPI_ENV=production
       - FASTAPI_DEBUG=false
-      - SETUP_TIMEOUT=120
-      - INIT_WAIT_TIME=300
-      - API_WORKERS=4  # Set number of worker processes
       
-      # API Paths
-      - API_BASE_PATH=/api/v1
-      - API_BASE_URL=http://localhost/api/v1
+      # Data management settings
+      - DATA_RETENTION_DAYS=14
+      - ENABLE_DATA_SCHEDULER=true
+      - DATA_UPDATE_INTERVAL=3600
+      - AUTO_CHECK_DATA=false
+      
+      # API configuration
+      - API_PORT=80
+      - HOST=0.0.0.0
+      - API_WORKERS=4
+      - LOG_LEVEL=info
+      
+      # Test execution control (disabled by default in production)
+      # To enable integrated test and deploy workflow, uncomment the line below
+      # OR use one of these commands:
+      #   Linux/macOS: docker-compose -f deployment/docker-compose.yml -e RUN_TESTS_ON_STARTUP=true up -d
+      #   Windows PowerShell: $env:COMPOSE_RUN_TESTS_ON_STARTUP="true"; docker-compose -f deployment/docker-compose.yml up -d
+      #   Windows CMD: set COMPOSE_RUN_TESTS_ON_STARTUP=true && docker-compose -f deployment/docker-compose.yml up -d
+      # - RUN_TESTS_ON_STARTUP=true
+      - TEST_TYPE=all
+      
+      # Advanced test configuration
+      # - ABORT_ON_TEST_FAILURE=false  # Set to true to abort deployment if tests fail
+      # - TEST_RESULTS_DIR=/app/test_results  # Directory to store test results
       
       # System Configuration
       - TZ=UTC
-      - PYTHONOPTIMIZE=2  # Enable Python optimizations
-      - PYTHONASYNCIODEBUG=0  # Disable async debug for better performance
-      - PYTHONWARNINGS=ignore  # Reduce logging overhead
+      - PYTHONOPTIMIZE=2
+      - PYTHONASYNCIODEBUG=0
+      - PYTHONWARNINGS=ignore
     ports:
       - "80:80"
     networks:
@@ -64,8 +94,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost/api/v1/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 120s
     restart: unless-stopped
     stop_grace_period: 30s
     ulimits:
@@ -95,8 +125,8 @@ networks:
     ipam:
       driver: default
       config:
-        - subnet: 172.18.0.0/16
-          gateway: 172.18.0.1
+        - subnet: 172.19.0.0/16
+          gateway: 172.19.0.1
     labels:
       environment: production
 

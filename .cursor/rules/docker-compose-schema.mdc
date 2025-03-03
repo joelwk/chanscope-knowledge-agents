@@ -1,0 +1,107 @@
+---
+description: This addresses the specific linter errors in your Docker Compose files by providing guidance on proper schema usage, particularly focusing on adding version declarations that will resolve the errors.
+globs: 
+alwaysApply: false
+---
+# Docker Compose Schema Rules
+
+This file provides guidelines for fixing linter errors in Docker Compose files and ensuring proper Docker Compose schema usage.
+
+## Description
+
+These rules address common linter errors in Docker Compose files, specifically focusing on schema validation issues detected in the project's Docker Compose configurations.
+
+## File Patterns
+
+```
+**/docker-compose*.yml
+```
+
+## Docker Compose Schema Requirements
+
+When working with Docker Compose files, ensure the following:
+
+### 1. Version Declaration
+
+All Docker Compose files must begin with a version declaration:
+
+```yaml
+services:
+  # Services defined here
+```
+
+The missing version declaration is likely causing the current linter errors about top-level properties not being allowed.
+
+### 2. Top-Level Keys
+
+For Docker Compose v3.x, the following top-level keys are valid:
+- `version`
+- `services`
+- `networks`
+- `volumes`
+- `configs`
+- `secrets`
+
+### 3. Service Configuration
+
+Each service must have valid properties according to the Docker Compose schema. Common required properties include:
+- `image` or `build`
+- `container_name` (optional but recommended)
+- `volumes` (if needed)
+- `environment` or `env_file`
+- `networks` (if using custom networks)
+
+### 4. Schema Updates for Test Configuration
+
+In `docker-compose.test.yml`, fix these specific issues:
+
+1. Add version declaration at the top:
+   ```yaml
+   version: '3.8'
+   services:
+     chanscope-test:
+       # Existing configuration
+   ```
+
+2. Keep the `networks` and `volumes` sections as they are valid in properly versioned files.
+
+### 5. Linter Compatibility
+
+If using Docker Compose extension files (e.g., for testing), consider using one of these approaches:
+
+1. For Docker Compose overrides:
+   ```
+   docker-compose -f docker-compose.yml -f docker-compose.test.yml up
+   ```
+
+2. For standalone test configuration, ensure it has all required schema elements.
+
+### 6. Common Fixes for Linter Errors
+
+For the specific errors in `docker-compose.test.yml`:
+
+```
+Err | Property services is not allowed.
+Err | Property networks is not allowed.
+Err | Property volumes is not allowed.
+```
+
+These are all resolved by adding the version declaration at the top of the file. Without a version, the linter cannot determine which schema to validate against.
+
+## Schema Validation Process
+
+When fixing Docker Compose linter errors:
+
+1. Start by adding the appropriate version declaration
+2. Validate that all top-level keys are allowed for that version
+3. Ensure service configurations comply with the schema
+4. Test the compose file with `docker-compose config` to validate syntax
+5. If part of a multi-file setup, test with all relevant compose files
+
+## Docker Compose Version Selection Guidelines
+
+- Use version `'3.8'` or newer for modern Docker implementations
+- Use version `'2.4'` if requiring older Docker compatibilities
+- Avoid version `'1'` as it is deprecated
+
+Selecting the appropriate version ensures compatibility with your Docker environment while providing access to the features your application requires.

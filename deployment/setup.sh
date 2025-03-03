@@ -1,13 +1,26 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# Read custom environment variables related to startup behavior
+RUN_TESTS_ON_STARTUP=${RUN_TESTS_ON_STARTUP:-false}
+TEST_TYPE=${TEST_TYPE:-all}
+AUTO_CHECK_DATA=${AUTO_CHECK_DATA:-true}
+ABORT_ON_TEST_FAILURE=${ABORT_ON_TEST_FAILURE:-false}
+TEST_RESULTS_DIR=${TEST_RESULTS_DIR:-"$PWD/test_results"}
+
+# Define colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
 # Determine if we're in a Replit environment
 if [ -n "$REPL_ID" ] || [ "$REPLIT_ENV" = "replit" ] || [ "$REPLIT_ENV" = "true" ] || [ "$REPLIT_ENV" = "production" ]; then
     IS_REPLIT=true
-    echo "Detected Replit environment (REPL_ID: $REPL_ID, REPL_SLUG: $REPL_SLUG)"
+    echo -e "${YELLOW}Detected Replit environment (REPL_ID: $REPL_ID, REPL_SLUG: $REPL_SLUG)${NC}"
 else
     IS_REPLIT=false
-    echo "Not in Replit environment, assuming Docker or local"
+    echo -e "${YELLOW}Not in Replit environment, assuming Docker or local${NC}"
 fi
 
 # Determine application root directory based on environment
@@ -15,27 +28,37 @@ if [ "$IS_REPLIT" = true ]; then
     # In Replit, use the workspace directory
     APP_ROOT="$PWD"
     DATA_DIR="$APP_ROOT/data"
-    echo "Running in Replit environment. App root: $APP_ROOT"
+    LOGS_DIR="$APP_ROOT/logs"
+    TEMP_DIR="$APP_ROOT/temp_files"
+    echo -e "${YELLOW}Running in Replit environment. App root: $APP_ROOT${NC}"
 else
     # In Docker or local, use /app if it exists and is writable, otherwise use current directory
     if [ -d "/app" ] && [ -w "/app" ]; then
         APP_ROOT="/app"
         DATA_DIR="/app/data"
-        echo "Running in Docker environment. App root: $APP_ROOT"
+        LOGS_DIR="/app/logs"
+        TEMP_DIR="/app/temp_files"
+        echo -e "${YELLOW}Running in Docker environment. App root: $APP_ROOT${NC}"
     else
         APP_ROOT="$PWD"
         DATA_DIR="$APP_ROOT/data"
-        echo "Running in local environment. App root: $APP_ROOT"
+        LOGS_DIR="$APP_ROOT/logs"
+        TEMP_DIR="$APP_ROOT/temp_files"
+        echo -e "${YELLOW}Running in local environment. App root: $APP_ROOT${NC}"
     fi
 fi
 
 cd "$APP_ROOT"
-echo "Changed to directory: $(pwd)"
+echo -e "${YELLOW}Changed to directory: $(pwd)${NC}"
+# Ensure PYTHONPATH includes the app directory
+
+export PYTHONPATH="$APP_ROOT:$PYTHONPATH"
+echo -e "${YELLOW}PYTHONPATH set to: $PYTHONPATH${NC}"
 
 # Function to clean environment variables
 clean_env_vars() {
     env_file="$1"
-    echo "Loading environment variables from $env_file..."
+    echo -e "${YELLOW}Loading environment variables from $env_file...${NC}"
     
     while IFS= read -r line || [ -n "$line" ]; do
         if [[ -n "$line" && ! "$line" =~ ^# ]]; then
@@ -93,6 +116,11 @@ export API_PORT="${API_PORT:-80}"
 export HOST="${HOST:-0.0.0.0}"
 export API_WORKERS="${API_WORKERS:-4}"
 export WORKER_ID="Spawn1"
+# Data scheduler settings with sensible defaults
+export ENABLE_DATA_SCHEDULER="${ENABLE_DATA_SCHEDULER:-true}"
+export DATA_UPDATE_INTERVAL="${DATA_UPDATE_INTERVAL:-3600}"  # Default: 1 hour in seconds
+# Data retention settings
+export DATA_RETENTION_DAYS="${DATA_RETENTION_DAYS:-30}"  # Default: 30 days retention
 
 # Set Replit-specific environment variables if in Replit
 if [ "$IS_REPLIT" = true ]; then
@@ -137,9 +165,27 @@ echo "S3_BUCKET=${S3_BUCKET}"
 echo "AWS_ACCESS_KEY_ID is set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo "yes" || echo "no")"
 echo "AWS_SECRET_ACCESS_KEY is set: $([ -n "$AWS_SECRET_ACCESS_KEY" ] && echo "yes" || echo "no")"
 
-# Create data directory if it doesn't exist
-echo "Creating data directory: $DATA_DIR"
-mkdir -p "$DATA_DIR"
+# Create necessary directories with proper permissions
+mkdir -p "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}"
+mkdir -p "${DATA_DIR}/stratified" "${DATA_DIR}/shared"
+
+# Export the logs directory as an environment variable
+export LOGS_DIR="${LOGS_DIR}"
+echo -e "${YELLOW}LOGS_DIR set to: $LOGS_DIR${NC}"
+
+# Set proper permissions for data directories
+# If running as root, change ownership to nobody:nogroup (65534:65534)
+if [ "$(id -u)" = "0" ]; then
+    echo -e "${YELLOW}Running as root, setting permissions for nobody:nogroup${NC}"
+    
+    # Set permissions recursively
+    chown -R 65534:65534 "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}" || echo -e "${YELLOW}Warning: Could not set ownership, continuing anyway${NC}"
+    chmod -R 775 "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}" || echo -e "${YELLOW}Warning: Could not set permissions, continuing anyway${NC}"
+else
+    # If not running as root, ensure we at least have write permissions
+    echo -e "${YELLOW}Not running as root, setting permissions for current user${NC}"
+    chmod -R 775 "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}" || echo -e "${YELLOW}Warning: Could not set permissions, continuing anyway${NC}"
+fi
 
 # Clean up any stale initialization markers
 echo "Cleaning up any stale initialization markers..."
@@ -149,22 +195,207 @@ rm -f "$DATA_DIR/.worker.lock"
 rm -f "$DATA_DIR/.worker.lock."*
 rm -f "$DATA_DIR/.primary_worker"
 
+# Create logs directory
+mkdir -p "$DATA_DIR/logs"
+SCHEDULER_LOG="$DATA_DIR/logs/scheduler.log"
+
 # Create setup complete marker
 echo "Creating setup complete marker"
 touch "$DATA_DIR/.setup_complete"
 echo "Setup completed successfully"
 
+# Define data directories
+STRATIFIED_DIR="${DATA_DIR}/stratified"
+COMPLETE_DATA_FILE="${DATA_DIR}/complete_data.csv"
+EMBEDDINGS_DIR="${DATA_DIR}/embeddings"
+
+# Create required directories
+mkdir -p "${STRATIFIED_DIR}"
+mkdir -p "${EMBEDDINGS_DIR}"
+mkdir -p "${LOGS_DIR}"
+mkdir -p "${TEMP_DIR}"
+touch "${SCHEDULER_LOG}"
+
+# Check and create necessary file ownership
+echo "Setting appropriate permissions on data directories..."
+if [ "$(id -u)" = "0" ]; then
+    # If running as root, change ownership to nobody:nogroup (65534:65534)
+    chown -R 65534:65534 "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}" || true
+    chmod -R 775 "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}" || true
+else
+    # If not running as root, ensure we at least have write permissions
+    chmod -R 775 "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}" || true
+fi
+
+# Run the log fix script to ensure logs are properly consolidated
+echo -e "${YELLOW}Running log fix script to consolidate logs...${NC}"
+if [ -f "$APP_ROOT/scripts/fix_log_locations.py" ]; then
+    python "$APP_ROOT/scripts/fix_log_locations.py"
+    echo -e "${GREEN}Log consolidation completed.${NC}"
+else
+    echo -e "${YELLOW}Log fix script not found, skipping log consolidation.${NC}"
+fi
+
+# Function to check if data needs to be refreshed based on Chanscope approach rules
+check_data_status() {
+    echo "Checking data status according to Chanscope approach..."
+    
+    # If force refresh is enabled, always return need for refresh
+    if [ "$FORCE_DATA_REFRESH" = "true" ]; then
+        echo "Force data refresh is enabled, will refresh data regardless of current status."
+        return 1
+    fi
+    
+    # Check if complete_data.csv exists
+    if [ ! -f "$COMPLETE_DATA_FILE" ]; then
+        echo "Complete data file not found, data ingestion required."
+        return 1
+    fi
+    
+    # Check if embeddings exist
+    if [ -z "$(ls -A $EMBEDDINGS_DIR 2>/dev/null)" ]; then
+        echo "Embeddings not found, embedding generation required."
+        return 1
+    fi
+    
+    # Check if data is too old (based on file modification time and DATA_RETENTION_DAYS)
+    if [ -n "$DATA_RETENTION_DAYS" ]; then
+        # Get file modification time in seconds since epoch
+        file_time=$(stat -c %Y "$COMPLETE_DATA_FILE" 2>/dev/null || stat -f %m "$COMPLETE_DATA_FILE" 2>/dev/null)
+        current_time=$(date +%s)
+        max_age_seconds=$((DATA_RETENTION_DAYS * 24 * 60 * 60))
+        
+        if (( current_time - file_time > max_age_seconds )); then
+            echo "Complete data file is older than $DATA_RETENTION_DAYS days, refresh required."
+            return 1
+        fi
+    fi
+    
+    echo "Data is up-to-date according to Chanscope approach rules."
+    return 0
+}
+
+# Function to run tests and handle results
+run_tests() {
+    local test_type="$1"
+    local timestamp=$(date +"%Y%m%d_%H%M%S")
+    local test_log_file="${TEST_RESULTS_DIR}/chanscope_tests_${timestamp}.log"
+    local test_json_file="${TEST_RESULTS_DIR}/chanscope_validation_${timestamp}.json"
+    
+    # Create test results directory if it doesn't exist
+    mkdir -p "${TEST_RESULTS_DIR}"
+    
+    # Set the appropriate test argument
+    if [ "$test_type" = "all" ]; then
+        TEST_ARG="--all"
+    else
+        TEST_ARG="--${test_type}"
+    fi
+    
+    echo -e "${YELLOW}Running tests with argument: $TEST_ARG${NC}"
+    echo -e "${YELLOW}Test results will be saved to: $test_log_file${NC}"
+    
+    # Run the tests
+    if [ -f "$APP_ROOT/scripts/run_tests.sh" ]; then
+        echo -e "${YELLOW}Starting test execution at $(date)${NC}" | tee -a "$test_log_file"
+        bash "$APP_ROOT/scripts/run_tests.sh" "$TEST_ARG" 2>&1 | tee -a "$test_log_file"
+        TEST_EXIT_CODE=${PIPESTATUS[0]}
+        
+        if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo -e "${GREEN}All tests passed successfully!${NC}" | tee -a "$test_log_file"
+            # Create a simple JSON result file
+            cat > "$test_json_file" << EOF
+{
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "test_type": "$test_type",
+  "status": "success",
+  "exit_code": $TEST_EXIT_CODE,
+  "environment": "$([ "$IS_REPLIT" = true ] && echo "replit" || echo "docker")",
+  "message": "All tests passed successfully"
+}
+EOF
+        else
+            echo -e "${RED}Some tests failed with exit code: $TEST_EXIT_CODE${NC}" | tee -a "$test_log_file"
+            # Create a simple JSON result file
+            cat > "$test_json_file" << EOF
+{
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "test_type": "$test_type",
+  "status": "failure",
+  "exit_code": $TEST_EXIT_CODE,
+  "environment": "$([ "$IS_REPLIT" = true ] && echo "replit" || echo "docker")",
+  "message": "Tests failed with exit code $TEST_EXIT_CODE"
+}
+EOF
+            
+            # Abort if configured to do so
+            if [ "$ABORT_ON_TEST_FAILURE" = "true" ]; then
+                echo -e "${RED}Aborting startup due to test failures (ABORT_ON_TEST_FAILURE=true)${NC}" | tee -a "$test_log_file"
+                exit $TEST_EXIT_CODE
+            fi
+        fi
+    else
+        echo -e "${RED}Test script not found: $APP_ROOT/scripts/run_tests.sh${NC}"
+        return 1
+    fi
+    
+    echo -e "${YELLOW}Tests completed at $(date), continuing with normal startup...${NC}" | tee -a "$test_log_file"
+    return $TEST_EXIT_CODE
+}
+
+# Run tests if enabled
+if [ "$RUN_TESTS_ON_STARTUP" = "true" ] || [ "$TEST_MODE" = "true" ]; then
+    echo -e "${YELLOW}Test execution on startup is enabled.${NC}"
+    run_tests "$TEST_TYPE"
+fi
+
+# Check data status and run initial data update if needed
+if [ "$AUTO_CHECK_DATA" = "true" ]; then
+    if ! check_data_status; then
+        echo -e "${YELLOW}Data refresh needed. Running initial data update...${NC}"
+        cd "${APP_ROOT}" && poetry run python scripts/scheduled_update.py >> "${SCHEDULER_LOG}" 2>&1
+        echo -e "${GREEN}Initial data update completed.${NC}"
+    else
+        echo -e "${GREEN}Using existing data as it's up-to-date.${NC}"
+    fi
+fi
+
+# Start data scheduler in the background if enabled
+if [ "$ENABLE_DATA_SCHEDULER" = "true" ]; then
+    echo -e "${YELLOW}Starting data scheduler in the background...${NC}"
+    
+    # Create the scheduler script with proper interval
+    cat > "$APP_ROOT/scripts/run_scheduler.sh" << EOF
+#!/bin/bash
+echo "Starting data scheduler with update interval: ${DATA_UPDATE_INTERVAL} seconds"
+while true; do
+    echo "[\$(date)] Running scheduled data update..." >> "${SCHEDULER_LOG}" 2>&1
+    cd "${APP_ROOT}" && poetry run python scripts/scheduled_update.py >> "${SCHEDULER_LOG}" 2>&1
+    echo "[\$(date)] Scheduled update completed, sleeping for ${DATA_UPDATE_INTERVAL} seconds" >> "${SCHEDULER_LOG}" 2>&1
+    sleep ${DATA_UPDATE_INTERVAL}
+done
+EOF
+    
+    chmod +x "$APP_ROOT/scripts/run_scheduler.sh"
+    
+    # Start the scheduler in the background
+    nohup "$APP_ROOT/scripts/run_scheduler.sh" >> "${SCHEDULER_LOG}" 2>&1 &
+    SCHEDULER_PID=$!
+    echo -e "${GREEN}Data scheduler started with PID: $SCHEDULER_PID${NC}"
+    echo $SCHEDULER_PID > "$DATA_DIR/.scheduler_pid"
+fi
+
 # Start the FastAPI application using Uvicorn with appropriate configuration
-echo "Starting FastAPI application..."
-echo "Host: $HOST, Port: $API_PORT, Workers: $API_WORKERS, Log level: $LOG_LEVEL"
-echo "Environment: $ENVIRONMENT, Replit: $IS_REPLIT"
+echo -e "${YELLOW}Starting FastAPI application...${NC}"
+echo -e "${YELLOW}Host: $HOST, Port: $API_PORT, Workers: $API_WORKERS, Log level: $LOG_LEVEL${NC}"
+echo -e "${YELLOW}Environment: $ENVIRONMENT, Replit: $IS_REPLIT${NC}"
 
 # In Replit, use the app instance from api/app.py which has Replit-specific configurations
 if [ "$IS_REPLIT" = true ]; then
-    echo "Starting with Replit-specific configuration"
+    echo -e "${YELLOW}Starting with Replit-specific configuration${NC}"
     exec poetry run python -m uvicorn api.app:app --host "$HOST" --port "$API_PORT" --log-level "$LOG_LEVEL"
 else
     # In Docker/local, use the standard approach
-    echo "Starting with standard configuration"
+    echo -e "${YELLOW}Starting with standard configuration${NC}"
     exec uvicorn api:app --host "$HOST" --port "$API_PORT" --workers "$API_WORKERS" --log-level "$LOG_LEVEL"
 fi

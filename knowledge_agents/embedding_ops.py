@@ -14,7 +14,7 @@ from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Tuple, Union, Awaitable
-from filelock import FileLock
+from filelock import FileLock, Timeout
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 import hashlib
 
@@ -294,7 +294,10 @@ async def get_relevant_content(
     batch_size: int = 100,
     provider: Optional[ModelProvider] = None,
     force_refresh: bool = False,
-    progress_callback: Optional[Callable[[int, int], Union[None, Awaitable[None]]]] = None) -> None:
+    progress_callback: Optional[Callable[[int, int], Union[None, Awaitable[None]]]] = None,
+    stratified_path: Optional[Path] = None,
+    embeddings_path: Optional[Path] = None,
+    thread_id_map_path: Optional[Path] = None) -> None:
     """Generate embeddings for articles in the stratified dataset.
     
     This function uses a file-based locking mechanism to prevent multiple workers
@@ -306,6 +309,9 @@ async def get_relevant_content(
         provider: Model provider to use for embeddings
         force_refresh: Whether to regenerate embeddings even if they exist
         progress_callback: Callback function for progress updates, can be async or sync
+        stratified_path: Path to the stratified sample CSV file
+        embeddings_path: Path to save the embeddings NPZ file
+        thread_id_map_path: Path to save the thread ID map JSON file
     """
     try:
         # Initialize paths and lock file
@@ -315,9 +321,23 @@ async def get_relevant_content(
         # Use consistent path structure that matches DataProcessor
         stratified_dir = data_dir / 'stratified'
         stratified_dir.mkdir(parents=True, exist_ok=True)
-        stratified_path = stratified_dir / 'stratified_sample.csv'
-        embeddings_path = stratified_dir / 'embeddings.npz'
-        thread_id_map_path = stratified_dir / 'thread_id_map.json'
+        
+        # Use provided paths if available, otherwise use default paths
+        if stratified_path is None:
+            stratified_path = stratified_dir / 'stratified_sample.csv'
+        if embeddings_path is None:
+            embeddings_path = stratified_dir / 'embeddings.npz'
+        if thread_id_map_path is None:
+            thread_id_map_path = stratified_dir / 'thread_id_map.json'
+            
+        # Ensure parent directories exist
+        stratified_path.parent.mkdir(parents=True, exist_ok=True)
+        embeddings_path.parent.mkdir(parents=True, exist_ok=True)
+        thread_id_map_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Using stratified_path: {stratified_path}")
+        logger.info(f"Using embeddings_path: {embeddings_path}")
+        logger.info(f"Using thread_id_map_path: {thread_id_map_path}")
         
         lock_file = embeddings_path.with_suffix('.lock')
         
@@ -463,8 +483,21 @@ async def get_relevant_content(
                                         json.dump(thread_id_map, f)
                                     
                                     # Move files to final destination atomically
-                                    shutil.move(str(temp_embeddings_path), str(embeddings_path))
-                                    shutil.move(str(temp_thread_id_map_path), str(thread_id_map_path))
+                                    try:
+                                        shutil.move(str(temp_embeddings_path), str(embeddings_path))
+                                        shutil.move(str(temp_thread_id_map_path), str(thread_id_map_path))
+                                    except (OSError, PermissionError) as e:
+                                        logger.warning(f"Move operation failed: {e}. Falling back to copy.")
+                                        try:
+                                            shutil.copy2(str(temp_embeddings_path), str(embeddings_path))
+                                            shutil.copy2(str(temp_thread_id_map_path), str(thread_id_map_path))
+                                        except PermissionError as pe:
+                                            logger.warning(f"Copy with metadata failed: {pe}. Using simple file copy.")
+                                            # Use simple file copy without metadata preservation
+                                            with open(temp_embeddings_path, 'rb') as src, open(embeddings_path, 'wb') as dst:
+                                                dst.write(src.read())
+                                            with open(temp_thread_id_map_path, 'r') as src, open(thread_id_map_path, 'w') as dst:
+                                                dst.write(src.read())
                                     
                                     logger.info(f"Saved embeddings ({embeddings_array.shape}) and thread_id map to {embeddings_path}")
                                 
@@ -533,8 +566,21 @@ async def get_relevant_content(
                                 json.dump(thread_id_map, f)
                             
                             # Move files to final destination atomically
-                            shutil.move(str(temp_embeddings_path), str(embeddings_path))
-                            shutil.move(str(temp_thread_id_map_path), str(thread_id_map_path))
+                            try:
+                                shutil.move(str(temp_embeddings_path), str(embeddings_path))
+                                shutil.move(str(temp_thread_id_map_path), str(thread_id_map_path))
+                            except (OSError, PermissionError) as e:
+                                logger.warning(f"Move operation failed: {e}. Falling back to copy.")
+                                try:
+                                    shutil.copy2(str(temp_embeddings_path), str(embeddings_path))
+                                    shutil.copy2(str(temp_thread_id_map_path), str(thread_id_map_path))
+                                except PermissionError as pe:
+                                    logger.warning(f"Copy with metadata failed: {pe}. Using simple file copy.")
+                                    # Use simple file copy without metadata preservation
+                                    with open(temp_embeddings_path, 'rb') as src, open(embeddings_path, 'wb') as dst:
+                                        dst.write(src.read())
+                                    with open(temp_thread_id_map_path, 'r') as src, open(thread_id_map_path, 'w') as dst:
+                                        dst.write(src.read())
                             
                             logger.info(f"Saved mock embeddings ({embeddings_array.shape}) and thread_id map to {embeddings_path}")
                         finally:
@@ -628,10 +674,60 @@ async def merge_articles_and_embeddings(stratified_path: Path, embeddings_path: 
             # Check for thread ID format discrepancies after type normalization
             df_thread_ids = articles_df['thread_id'].tolist()  # Already strings from the fix above
             map_thread_ids = list(string_thread_id_map.keys())  # Already strings from the fix above
-            common_ids = set(df_thread_ids).intersection(set(map_thread_ids))
-            logger.info(f"Thread ID overlap: {len(common_ids)}/{len(df_thread_ids)} ({len(common_ids)/len(df_thread_ids)*100:.1f}%)")
             
-            # Use the string-based map for embedding assignment
+            # Log more detailed information about thread IDs
+            logger.info(f"First 5 thread IDs in DataFrame: {df_thread_ids[:5]}")
+            logger.info(f"First 5 thread IDs in map: {map_thread_ids[:5]}")
+            
+            # Check for any format differences
+            if df_thread_ids and map_thread_ids:
+                logger.info(f"Example DataFrame thread ID format: '{df_thread_ids[0]}' (type: {type(df_thread_ids[0]).__name__})")
+                logger.info(f"Example map thread ID format: '{map_thread_ids[0]}' (type: {type(map_thread_ids[0]).__name__})")
+                
+                # Check for numeric vs string format differences
+                df_numeric = all(tid.isdigit() for tid in df_thread_ids[:5])
+                map_numeric = all(tid.isdigit() for tid in map_thread_ids[:5])
+                logger.info(f"DataFrame thread IDs are numeric: {df_numeric}")
+                logger.info(f"Map thread IDs are numeric: {map_numeric}")
+                
+                # Check for "thread_" prefix in map keys but not in DataFrame
+                if map_thread_ids and df_thread_ids:
+                    has_thread_prefix = any(tid.startswith('thread_') for tid in map_thread_ids[:5])
+                    if has_thread_prefix and df_numeric:
+                        logger.info("Detected 'thread_' prefix in embeddings but not in DataFrame. Attempting to fix...")
+                        # Create a new mapping with the prefix removed
+                        fixed_thread_id_map = {}
+                        for tid, idx in string_thread_id_map.items():
+                            if tid.startswith('thread_'):
+                                # Extract the numeric part after "thread_"
+                                numeric_part = tid[7:]  # Skip "thread_" prefix
+                                fixed_thread_id_map[numeric_part] = idx
+                            else:
+                                fixed_thread_id_map[tid] = idx
+                        
+                        # Replace the original mapping with the fixed one
+                        string_thread_id_map = fixed_thread_id_map
+                        logger.info(f"Created fixed thread ID map with {len(string_thread_id_map)} entries")
+                        logger.info(f"Fixed map sample: {list(string_thread_id_map.items())[:5]}")
+                    
+                    # Handle reverse case: DataFrame has "thread_" prefix but map doesn't
+                    df_has_thread_prefix = any(tid.startswith('thread_') for tid in df_thread_ids[:5])
+                    if df_has_thread_prefix and map_numeric:
+                        logger.info("Detected 'thread_' prefix in DataFrame but not in embeddings. Attempting to fix...")
+                        # Add prefix to map keys
+                        fixed_thread_id_map = {}
+                        for tid, idx in string_thread_id_map.items():
+                            if not tid.startswith('thread_'):
+                                fixed_thread_id_map[f"thread_{tid}"] = idx
+                            else:
+                                fixed_thread_id_map[tid] = idx
+                        
+                        # Replace the original mapping with the fixed one
+                        string_thread_id_map = fixed_thread_id_map
+                        logger.info(f"Created fixed thread ID map with {len(string_thread_id_map)} entries")
+                        logger.info(f"Fixed map sample: {list(string_thread_id_map.items())[:5]}")
+            
+            # Try to merge embeddings with articles
             for thread_id, idx in string_thread_id_map.items():
                 try:
                     if idx < len(embeddings_array):
@@ -773,9 +869,17 @@ async def process_sub_batch(
         embedding_dim = 3072  # Match OpenAI's text-embedding-3-large dimension
         batch_results = []
         
+        # Log sample thread IDs for debugging
+        sample_thread_ids = [article.thread_id for article in articles[:5]] if len(articles) > 0 else []
+        logger.info(f"Sample thread_ids in generate_mock_embeddings: {sample_thread_ids}")
+        logger.info(f"Thread ID types: {[type(article.thread_id).__name__ for article in articles[:5]]}")
+        
         for article in articles:
+            # Ensure thread_id is a string
+            thread_id_str = str(article.thread_id)
+            
             # Generate a deterministic seed from the article ID
-            seed = int(hashlib.md5(article.thread_id.encode()).hexdigest(), 16) % (2**32)
+            seed = int(hashlib.md5(thread_id_str.encode()).hexdigest(), 16) % (2**32)
             np.random.seed(seed)
             
             # Generate mock embedding (normalized for realistic values)
@@ -783,7 +887,7 @@ async def process_sub_batch(
             mock_embedding = mock_embedding / np.linalg.norm(mock_embedding)
             
             batch_results.append((
-                article.thread_id, 
+                thread_id_str,  # Use the string version of thread_id
                 article.posted_date_time, 
                 article.text_clean, 
                 mock_embedding.tolist()
@@ -1083,3 +1187,9 @@ async def generate_embeddings(
         logger.error(f"Error generating embeddings: {e}")
         logger.error(traceback.format_exc())
         raise
+
+def _mark_embeddings_complete(self):
+    """Mark the embeddings as complete by creating a flag file."""
+    data_dir = self.config.root_data_path
+    flag_path = data_dir / ".embeddings_complete"
+    flag_path.touch()

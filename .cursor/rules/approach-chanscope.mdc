@@ -1,0 +1,137 @@
+---
+description: This rule establishes a complete and robust pipeline for the Chanscope application by ensuring that data is ingested, stratified, and embedded on startup, and that queries are processed consistently—refreshing data when forced and using pre-processed data otherwise—while preserving context, maintaining transparency, and enforcing rigorous error handling in line with Cursor best practices.
+globs: 
+alwaysApply: false
+---
+# Chanscope Rules
+
+These rules define the operational and data-processing guidelines for the Chanscope application. They integrate best practices from Cursor context rules with a clearly defined orchestration for data ingestion, sampling, embedding generation, and query processing.
+
+---
+
+## 1. Data Processing Orchestration
+
+### On Application Start
+- **Data Ingestion:**
+  - Ingest data from S3 starting from _DATA_RETENTION_DAYS_ ago up to the current date and time.
+  - Save the ingested data to `complete_data.csv`.
+
+- **Data Preparation:**
+  - **Stratification:** Sample the complete dataset using stratification (via `sampler.py`).
+  - **Embedding Generation:** Create embeddings from the stratified data using `embedding_ops.py`.
+
+---
+
+## 2. Query Processing Behavior
+
+The application's behavior when processing a query depends on the `force_refresh` flag:
+
+### Case A: `force_refresh=true`
+- **Data Verification:**
+  - Verify that `complete_data.csv` exists.
+  - Check that it is updated with the latest S3 data.
+  - If it exists and is current, _do not refresh_ the complete data file.
+- **Processing Pipeline:**
+  1. **Stratified Sampling:** Create a new stratified sample using `sampler.py`.
+  2. **Embedding Refresh:** Generate new embeddings using `embedding_ops.py`.
+  3. **Query Search:** Use the input query to search the embeddings (via `inference_ops.py`) for related chunks.
+  4. **Chunk Summarization:** Send each related chunk to the chunk LLM for summarization using `model_ops.py`.
+  5. **Final Summarization:** Combine the chunk summaries and the original query, then use the summary LLM (guided by `prompt.yaml`) to produce a final summary.
+- **Result:**
+  - Return a response containing the related chunks, final summary, and metadata (generated from the prompt instructions).
+
+### Case B: `force_refresh=false`
+- **Data Verification:**
+  - Check if `complete_data.csv` exists.
+    - If it exists, _do not verify updates_ or refresh the file.
+    - If it does not exist, proceed as if `force_refresh=true`.
+- **Processing Pipeline:**
+  1. **Existing Data Use:** Do **not** create a new stratified sample.
+  2. **No Embedding Refresh:** Do **not** generate new embeddings.
+  3. **Query Search:** Use the existing embeddings to locate related chunks via `inference_ops.py`.
+  4. **Chunk Summarization:** Process each chunk through the chunk LLM for summarization using `model_ops.py`.
+  5. **Final Summarization:** Combine the chunk summaries with the original query and generate a final summary as per `prompt.yaml`.
+- **Result:**
+  - Return the final response with chunks, summary, and metadata.
+
+---
+
+## 3. Expected Generative Pipeline Behavior
+
+When executing a query (via the `./query` endpoint), the pipeline behaves as follows:
+
+1. **Data Preparedness:**
+   - Ensure that stratified data and embeddings are available from the initial ingestion and processing.
+2. **Query Execution:**
+   - Use the input query to search the embeddings (using `inference_ops.py`) for related strings (chunks).
+3. **Chunk Processing:**
+   - Send each related string (chunk) to the chunk LLM for summarization (via `model_ops.py`).
+4. **Final Aggregation:**
+   - Submit the collection of chunk summaries and the original query to the summary LLM, following the instructions in `prompt.yaml`.
+5. **Response Generation:**
+   - Return a result that includes the individual chunks, the final summary, and metadata detailing the process.
+
+---
+
+## 4. Integration with Cursor Context Rules
+
+In addition to the operational guidelines above, the following Cursor context rules apply:
+
+- **Context Preservation:**  
+  All processing steps—from data ingestion through query response—must maintain context to ensure coherent operations and responses.
+
+- **Clarity and Transparency:**  
+  Each stage (ingestion, sampling, embedding generation, query search, summarization) must be clearly documented and logged. Errors must be reported with sufficient detail to facilitate debugging.
+
+- **Robust Error Handling:**  
+  Comprehensive logging and error-checking should be applied at every step to ensure that failures are caught and addressed appropriately.
+
+- **Consistency:**  
+  The same processing rules should be enforced irrespective of query parameters. Whether `force_refresh` is true or false, the decision-making process (and logging thereof) must remain consistent.
+
+- **Efficiency:**  
+  Data processing and query response times should be optimized through careful orchestration, reducing unnecessary reprocessing when data is current.
+
+---
+
+## 5. Testing and Validation Framework
+
+To ensure the Chanscope approach is correctly implemented, a comprehensive testing framework validates the following behaviors:
+
+### 5.1 Critical Test Cases
+1. **Initial Data Load Test**: 
+   - Verify that on startup, data is properly ingested from S3
+   - Confirm that stratification is performed correctly
+   - Validate that embedding generation can be deferred when needed
+
+2. **Embedding Generation Test**:
+   - Verify embeddings can be generated as a separate process
+   - Ensure embedding quality and correctness for query processing
+
+3. **Incremental Processing Test**:
+   - When `force_refresh=false` is specified, confirm existing data is used
+   - Validate no unnecessary regeneration of embeddings occurs
+   - Ensure the query processing pipeline functions correctly with existing data
+
+4. **Force Refresh Test**:
+   - When `force_refresh=true` is specified, confirm data is re-stratified
+   - Verify embeddings are regenerated
+   - Validate the complete pipeline functions correctly with fresh data
+
+### 5.2 Testing Environments
+Tests run consistently across all deployment environments:
+- **Local Environment**: For development testing
+- **Docker Environment**: For containerized validation
+- **Replit Environment**: For cloud deployment validation
+
+### 5.3 Test Result Documentation
+All tests generate comprehensive logs and structured output files:
+- Detailed log files with timestamps and process information
+- JSON-formatted test results for programmatic analysis
+- Clearly documented test results for troubleshooting
+
+---
+
+## Conclusion
+
+These rules ensure that the Chanscope application follows a rigorous and transparent data-processing orchestration and generative pipeline. By incorporating these guidelines with the foundational Cursor context rules, the system achieves clarity, consistency, and robustness in its operations.

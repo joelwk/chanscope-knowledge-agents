@@ -28,7 +28,7 @@ from .data_ops import (
 )
 from .inference_ops import process_multiple_queries_efficient as process_multiple_queries
 from .embedding_ops import get_agent
-from api.errors import ProcessingError  # Add this import for error handling
+from .errors import ProcessingError
 
 # Configuration imports
 from config.config_utils import (
@@ -36,6 +36,10 @@ from config.config_utils import (
     validate_model_config,
 )
 from config.logging_config import get_logger
+
+# Import the existing cache implementation
+# Make sure the data/shared directory is in the Python path
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), ''))
 from api.cache import cache, CACHE_HITS, CACHE_MISSES, CACHE_ERRORS
 
 # Setup logging using centralized configuration

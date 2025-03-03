@@ -1,5 +1,5 @@
 ---
-description: 
+description: This file defines the operational rules for the Chanscope stack, integrating Cursor’s context guidelines with specific orchestration steps. It describes the complete data processing pipeline—from S3 ingestion and data stratification to embedding generation and query summarization. The rules emphasize context preservation, transparent processing, and robust error handling throughout the generative query pipeline.
 globs: 
 alwaysApply: false
 ---

@@ -77,6 +77,10 @@ class BatchQueryRequest(BaseModel):
     summary_batch_size: Optional[int] = Field(None, description="Batch size for summary generation")
     max_workers: Optional[int] = Field(None, description="Maximum number of workers for parallel processing")
     
+    # Data refresh options
+    force_refresh: bool = Field(False, description="Force refresh the data cache before processing")
+    skip_embeddings: bool = Field(False, description="Skip embedding generation when refreshing data")
+    
     # Skip cache option
     skip_cache: bool = Field(False, description="Skip cache lookup for queries")
 

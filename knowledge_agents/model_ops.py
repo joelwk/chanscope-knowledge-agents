@@ -202,7 +202,13 @@ class ModelConfig:
             ModelOperation.CHUNK_GENERATION: self.default_chunk_provider,
             ModelOperation.SUMMARIZATION: self.default_summary_provider
         }
-        return ModelProvider(provider_map[operation])
+        
+        # If the provider is None, use a default (OPENAI)
+        provider_value = provider_map[operation]
+        if provider_value is None:
+            return ModelProvider.OPENAI
+            
+        return ModelProvider(provider_value)
 
     def get_batch_size(self, operation: ModelOperation) -> int:
         """Get the configured batch size for a given operation."""
@@ -903,7 +909,7 @@ class KnowledgeAgent:
             
         if not temporal_contexts:
             temporal_contexts = [None] * len(queries)
-            
+        
         # Process in batches
         results = []
         total_batches = (len(queries) + batch_size - 1) // batch_size
@@ -1057,6 +1063,10 @@ class KnowledgeAgent:
     ) -> EmbeddingResponse:
         """Request embeddings from the specified provider with batching support."""
         async with self._embedding_lock:
+            # Check if mock embeddings are explicitly requested via environment variable
+            use_mock_embeddings = os.getenv('USE_MOCK_EMBEDDINGS', '').lower() in ('true', 'yes', '1')
+            mock_provider = os.getenv('DEFAULT_EMBEDDING_PROVIDER', '').lower() == 'mock'
+            
             config = self._validate_config()
             provider = provider or self._get_default_provider(ModelOperation.EMBEDDING)
             batch_size = batch_size or config.embedding_batch_size
@@ -1094,24 +1104,9 @@ class KnowledgeAgent:
             else:
                 raise ValueError(f"Unsupported text input type: {type(text)}")
 
-            # Check if the provider is configured
-            try:
-                # If provider is not in clients or the value is None, generate mock embeddings
-                if provider.value not in self._clients or self._clients.get(provider.value) is None:
-                    logger.warning(f"Provider {provider} not configured, generating mock embeddings")
-                    mock_embeddings = generate_mock_embeddings(texts_to_process)
-                    return EmbeddingResponse(
-                        embedding=mock_embeddings if len(mock_embeddings) > 1 else mock_embeddings[0],
-                        model="mock-embedding-model",
-                        usage={"prompt_tokens": 0, "total_tokens": 0}
-                    )
-
-                # Continue with normal flow if provider is configured
-                client = await self._get_client(provider)
-                model = self._get_model_name(provider, ModelOperation.EMBEDDING)
-            except Exception as e:
-                logger.warning(f"Failed to get client for provider {provider}: {str(e)}")
-                # Generate mock embeddings as fallback
+            # If mock embeddings are explicitly requested, generate them immediately
+            if use_mock_embeddings or mock_provider:
+                logger.info(f"Generating mock embeddings for {len(texts_to_process)} texts (USE_MOCK_EMBEDDINGS={use_mock_embeddings}, mock_provider={mock_provider})")
                 mock_embeddings = generate_mock_embeddings(texts_to_process)
                 return EmbeddingResponse(
                     embedding=mock_embeddings if len(mock_embeddings) > 1 else mock_embeddings[0],
@@ -1120,6 +1115,9 @@ class KnowledgeAgent:
                 )
 
             try:
+                client = await self._get_client(provider)
+                model = self._get_model_name(provider, ModelOperation.EMBEDDING)
+
                 # Get token counts for validation with robust tiktoken handling
                 try:
                     encoding = tiktoken.get_encoding("cl100k_base")
@@ -1191,9 +1189,21 @@ class KnowledgeAgent:
         Raises:
             ValueError: If the specified operation is unknown
         """
+        # Check if mock embeddings are explicitly requested via environment variable
+        use_mock_embeddings = os.getenv('USE_MOCK_EMBEDDINGS', '').lower() in ('true', 'yes', '1')
+        if use_mock_embeddings and operation == ModelOperation.EMBEDDING:
+            logger.info("Using mock embeddings as requested by USE_MOCK_EMBEDDINGS environment variable")
+            # Return a provider that will trigger mock embeddings
+            return ModelProvider.OPENAI  # This will be handled in embedding_request with mock embeddings
+            
         # Try to get provider based on operation
         if operation == ModelOperation.EMBEDDING:
-            provider = ModelProvider.from_str(Config.get_default_embedding_provider())
+            provider_str = Config.get_default_embedding_provider()
+            # Check if provider is explicitly set to 'mock'
+            if provider_str.lower() == 'mock':
+                logger.info("Mock embedding provider explicitly configured")
+                return ModelProvider.OPENAI  # This will be handled in embedding_request with mock embeddings
+            provider = ModelProvider.from_str(provider_str)
         elif operation == ModelOperation.CHUNK_GENERATION:
             provider = ModelProvider.from_str(Config.get_default_chunk_provider())
         elif operation == ModelOperation.SUMMARIZATION:

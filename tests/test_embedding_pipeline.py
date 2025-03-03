@@ -56,8 +56,9 @@ def create_sample_data(size: int = 100) -> pd.DataFrame:
     data = []
     for i in range(size):
         posted_time = current_time - timedelta(hours=i)
+        # Use numeric thread IDs to match the format in the actual data
         data.append({
-            'thread_id': f'thread_{i}',
+            'thread_id': str(10000000 + i),  # Numeric thread ID as string
             'posted_date_time': posted_time.isoformat(),
             'text_clean': f'This is test text for thread {i}',
             'posted_comment': f'Original comment for thread {i}'

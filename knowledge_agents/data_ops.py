@@ -1,29 +1,30 @@
 import os
-import gc
 import json
-import time
-import pytz
-import asyncio
-import logging
-import traceback
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-from typing import List, Dict, Optional, Callable, Union, Awaitable, Tuple, Any
-from dataclasses import dataclass
+import logging
+import asyncio
+import tempfile
+import time
+import uuid
+import hashlib
+import shutil
+import pytz
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional, List, Dict, Any, Union, Callable, Awaitable, Tuple
+from dataclasses import dataclass
 from filelock import FileLock, Timeout
-import hashlib
 
 from .data_processing.cloud_handler import load_all_csv_data_from_s3, S3Handler
-from .data_processing.dialog_processor import process_references
+from .data_processing.dialog_processor import ReferenceProcessor, process_references
 from .data_processing.sampler import Sampler
-from .embedding_ops import get_relevant_content, load_embeddings, load_thread_id_map
-from .model_ops import ModelProvider, ModelOperation, ModelConfig
+from .embedding_ops import merge_articles_and_embeddings, get_relevant_content, load_embeddings, load_thread_id_map
+from .utils import parse_date, get_logger
+from .config import ChanScopeConfig
 from config.settings import Config
 from config.base_settings import get_base_settings
-from config.logging_config import get_logger
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -303,19 +304,9 @@ class DataProcessor:
             raise
             
     def _mark_update_complete(self):
-        """Mark the data update as complete by creating a flag file."""
-        try:
-            flag_path = Path("data") / ".update_complete"
-            flag_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Write flag with timestamp
-            with open(flag_path, 'w') as f:
-                f.write(datetime.now(pytz.UTC).isoformat())
-                
-            logger.info("Data update marked as complete")
-            
-        except Exception as e:
-            logger.warning(f"Error writing update flag: {e}")
+        """Mark the update as complete by creating a flag file."""
+        flag_path = self.config.root_data_path / ".update_complete"
+        flag_path.touch()
 
 
 class DataOperations:
@@ -549,7 +540,10 @@ class DataOperations:
                                 await get_relevant_content(
                                     batch_size=25,  # Smaller batch size for better progress reporting
                                     force_refresh=force_refresh,
-                                    progress_callback=progress_callback
+                                    progress_callback=progress_callback,
+                                    stratified_path=self.config.stratified_data_path / 'stratified_sample.csv',
+                                    embeddings_path=self.config.stratified_data_path / 'embeddings.npz',
+                                    thread_id_map_path=self.config.stratified_data_path / 'thread_id_map.json'
                                 )
                                 
                                 # Verify generated embeddings
@@ -574,9 +568,15 @@ class DataOperations:
                                     embedding_dim = 3072  # Match OpenAI's text-embedding-3-large dimension
                                     thread_ids = df['thread_id'].astype(str).tolist()
                                     
+                                    # Log sample thread IDs for debugging
+                                    logger.info(f"Sample thread IDs for mock embeddings: {thread_ids[:5]}")
+                                    
                                     # Generate mock embeddings
                                     mock_embeddings = []
                                     for thread_id in thread_ids:
+                                        # Ensure thread_id is a string
+                                        thread_id = str(thread_id)
+                                        
                                         # Create a deterministic seed from thread_id
                                         seed = int(hashlib.md5(thread_id.encode()).hexdigest(), 16) % (2**32)
                                         np.random.seed(seed)
@@ -589,11 +589,14 @@ class DataOperations:
                                     # Convert to numpy array
                                     embeddings_array = np.array(mock_embeddings, dtype=np.float32)
                                     
-                                    # Create thread_id mapping
-                                    thread_id_map = {tid: idx for idx, tid in enumerate(thread_ids)}
+                                    # Create thread_id mapping - use the actual thread_ids from the DataFrame
+                                    # Ensure all keys are strings
+                                    thread_id_map = {str(tid): idx for idx, tid in enumerate(thread_ids)}
+                                    
+                                    # Log thread_id_map sample for debugging
+                                    logger.info(f"Sample thread_id_map entries: {list(thread_id_map.items())[:5]}")
                                     
                                     # Save embeddings and mapping
-                                    import tempfile
                                     import shutil
                                     
                                     temp_dir = tempfile.mkdtemp()
@@ -602,8 +605,14 @@ class DataOperations:
                                         temp_embeddings_path = Path(temp_dir) / "embeddings.npz"
                                         temp_thread_id_map_path = Path(temp_dir) / "thread_id_map.json"
                                         
-                                        # Create parent directory if needed
-                                        self.config.stratified_data_path.mkdir(parents=True, exist_ok=True)
+                                        # Create parent directory if needed and ensure it has proper permissions
+                                        try:
+                                            self.config.stratified_data_path.mkdir(parents=True, exist_ok=True)
+                                            # Try to make the directory writable if it exists
+                                            if self.config.stratified_data_path.exists():
+                                                os.chmod(str(self.config.stratified_data_path), 0o777)
+                                        except Exception as dir_error:
+                                            logger.warning(f"Error ensuring directory permissions: {dir_error}")
                                         
                                         # Save embeddings array
                                         metadata = {
@@ -622,11 +631,32 @@ class DataOperations:
                                         with open(temp_thread_id_map_path, 'w') as f:
                                             json.dump(thread_id_map, f)
                                         
-                                        # Move files to final destination atomically
-                                        shutil.move(str(temp_embeddings_path), str(embeddings_path))
-                                        shutil.move(str(temp_thread_id_map_path), str(thread_id_map_path))
-                                        
-                                        logger.info(f"Saved mock embeddings ({embeddings_array.shape}) and thread_id map to {embeddings_path}")
+                                        # Move files to final destination atomically with better error handling
+                                        try:
+                                            # Check if destination files exist and try to make them writable
+                                            if embeddings_path.exists():
+                                                os.chmod(str(embeddings_path), 0o666)
+                                            if thread_id_map_path.exists():
+                                                os.chmod(str(thread_id_map_path), 0o666)
+                                                
+                                            # Move the files
+                                            shutil.move(str(temp_embeddings_path), str(embeddings_path))
+                                            shutil.move(str(temp_thread_id_map_path), str(thread_id_map_path))
+                                            
+                                            logger.info(f"Saved mock embeddings ({embeddings_array.shape}) and thread_id map to {embeddings_path}")
+                                        except PermissionError as perm_error:
+                                            logger.error(f"Permission error moving files: {perm_error}")
+                                            # Try copying instead of moving as a fallback
+                                            try:
+                                                shutil.copy2(str(temp_embeddings_path), str(embeddings_path))
+                                                shutil.copy2(str(temp_thread_id_map_path), str(thread_id_map_path))
+                                                logger.info(f"Copied mock embeddings ({embeddings_array.shape}) and thread_id map to {embeddings_path}")
+                                            except Exception as copy_error:
+                                                logger.error(f"Error copying files: {copy_error}")
+                                                raise
+                                        except Exception as move_error:
+                                            logger.error(f"Error moving files: {move_error}")
+                                            raise
                                     
                                     finally:
                                         # Clean up temporary directory
@@ -670,13 +700,15 @@ class DataOperations:
         force_refresh: bool = False, 
         timeout: int = 300,
         max_workers: Optional[int] = None,
-        progress_callback: Optional[Callable] = None
+        progress_callback: Optional[Callable] = None,
+        skip_embeddings: bool = False
     ) -> bool:
-        """Ensures all data is ready for the knowledge agent based on the force_refresh parameter.
+        """Ensures all data is ready for the knowledge agent based on the Chanscope approach.
         
         For force_refresh=True:
         - Check if complete_data.csv is up-to-date with S3, only refresh if not up-to-date
-        - Always create new stratified sample and embeddings
+        - Always create new stratified sample
+        - Generate embeddings unless skip_embeddings=True
         
         For force_refresh=False:
         - Only check if complete_data.csv exists, not whether it's fresh
@@ -687,21 +719,23 @@ class DataOperations:
             timeout: Maximum seconds to wait for initialization to complete
             max_workers: Maximum number of workers to use for parallel processing
             progress_callback: Callback function to report progress
+            skip_embeddings: Whether to skip embedding generation step
             
         Returns:
             True if data is ready, False otherwise
         """
-        logger.info(f"Ensuring data readiness (force_refresh={force_refresh})")
+        logger.info(f"Ensuring data readiness (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})")
         
-        # Create data directory if it doesn't exist
-        data_dir = Path("data")
-        data_dir.mkdir(parents=True, exist_ok=True)
+        # Create data directories if they don't exist
+        self.config.root_data_path.mkdir(parents=True, exist_ok=True)
+        self.config.stratified_data_path.mkdir(parents=True, exist_ok=True)
+        self.config.temp_path.mkdir(parents=True, exist_ok=True)
         
-        # Initialize marker files
-        completion_marker = data_dir / '.initialization_complete'
-        state_file = data_dir / '.initialization_state'
-        in_progress_marker = data_dir / '.initialization_in_progress'
-        lock_file = data_dir / '.initialization_lock'
+        # Initialize marker files using configured paths
+        completion_marker = self.config.root_data_path / '.initialization_complete'
+        state_file = self.config.root_data_path / '.initialization_state'
+        in_progress_marker = self.config.root_data_path / '.initialization_in_progress'
+        lock_file = self.config.root_data_path / '.initialization_lock'
         
         # Generate a unique worker ID
         import random
@@ -711,7 +745,7 @@ class DataOperations:
         random_id = random.randint(1000, 9999)
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         worker_id = f"{hostname}-{pid}-{timestamp}-{random_id}"
-        worker_marker = data_dir / f'.worker_{worker_id}_in_progress'
+        worker_marker = self.config.root_data_path / f'.worker_{worker_id}_in_progress'
 
         lock = None
         try:
@@ -793,15 +827,53 @@ class DataOperations:
                     if needs_embeddings_update or (data_updated and force_refresh):
                         logger.info("Updating embeddings")
                         try:
-                            await self._update_embeddings(force_refresh=True, max_workers=max_workers, progress_callback=progress_callback)
+                            if not skip_embeddings:
+                                await self._update_embeddings(force_refresh=True, max_workers=max_workers, progress_callback=progress_callback)
+                            else:
+                                logger.info("Skipping embedding generation as requested (skip_embeddings=True)")
+                                # Delete existing embeddings if skip_embeddings=True to comply with Chanscope approach
+                                embeddings_path = self.config.stratified_data_path / 'embeddings.npz'
+                                thread_id_map_path = self.config.stratified_data_path / 'thread_id_map.json'
+                                
+                                if embeddings_path.exists():
+                                    logger.info("Removing existing embeddings as skip_embeddings=True")
+                                    try:
+                                        embeddings_path.unlink()
+                                    except Exception as e:
+                                        logger.warning(f"Error removing embeddings file: {e}")
+                                
+                                if thread_id_map_path.exists():
+                                    logger.info("Removing existing thread ID map as skip_embeddings=True")
+                                    try:
+                                        thread_id_map_path.unlink()
+                                    except Exception as e:
+                                        logger.warning(f"Error removing thread ID map file: {e}")
                         except Exception as e:
                             logger.error(f"Error during embedding update: {e}")
                             raise
                     else:
                         logger.info("Embeddings are up-to-date, skipping update")
+                        # If skip_embeddings=True, also remove existing embeddings in this case
+                        if skip_embeddings:
+                            embeddings_path = self.config.stratified_data_path / 'embeddings.npz'
+                            thread_id_map_path = self.config.stratified_data_path / 'thread_id_map.json'
+                            
+                            if embeddings_path.exists():
+                                logger.info("Removing existing embeddings as skip_embeddings=True")
+                                try:
+                                    embeddings_path.unlink()
+                                except Exception as e:
+                                    logger.warning(f"Error removing embeddings file: {e}")
+                            
+                            if thread_id_map_path.exists():
+                                logger.info("Removing existing thread ID map as skip_embeddings=True")
+                                try:
+                                    thread_id_map_path.unlink()
+                                except Exception as e:
+                                    logger.warning(f"Error removing thread ID map file: {e}")
                     
                     # Mark update as complete
-                    self._mark_update_complete()
+                    await self._mark_update_complete()
                     
                     # Clean up markers before returning
                     try:
@@ -1249,16 +1321,44 @@ class DataOperations:
                         if with_emb == 0:
                             self._logger.error("No valid embeddings were merged with the data")
                             if total > 0 and valid_embedding_count > 0:
-                                self._logger.warning("Thread IDs in embeddings do not match those in the DataFrame. Check if they use the same ID format.")
+                                self._logger.warning("Thread IDs in embeddings do not match those in the DataFrame. Attempting to fix format mismatch...")
+                                
                                 # Debug: Show a sample of thread IDs from both sources
                                 df_thread_ids = set(df['thread_id'].astype(str).values[:10])
                                 emb_thread_ids = set(list(thread_id_map.keys())[:10])
                                 self._logger.info(f"DataFrame thread_id sample: {df_thread_ids}")
                                 self._logger.info(f"Embedding thread_id sample: {emb_thread_ids}")
                                 
-                                # Add at least one embedding for debugging
-                                self._logger.info("Adding a dummy embedding to first row for debugging")
-                                df.loc[0, 'embedding'] = [0.1, 0.2, 0.3]
+                                # Try different thread ID formats
+                                # 1. Try with 'thread_' prefix if embeddings use that format
+                                if any('thread_' in tid for tid in emb_thread_ids):
+                                    self._logger.info("Trying to match with 'thread_' prefix...")
+                                    df['temp_thread_id'] = 'thread_' + df['thread_id'].astype(str)
+                                    df['embedding'] = df['temp_thread_id'].map(embedding_dict)
+                                    df.drop('temp_thread_id', axis=1, inplace=True)
+                                
+                                # 2. Try without 'thread_' prefix if DataFrame uses numeric IDs
+                                elif any('thread_' in tid for tid in emb_thread_ids) and df_thread_ids.issubset(set(str(i) for i in range(10000))):
+                                    self._logger.info("Trying to match by removing 'thread_' prefix...")
+                                    # Create a new mapping without the 'thread_' prefix
+                                    numeric_embedding_dict = {}
+                                    for tid, emb in embedding_dict.items():
+                                        if tid.startswith('thread_'):
+                                            numeric_tid = tid.replace('thread_', '')
+                                            numeric_embedding_dict[numeric_tid] = emb
+                                    
+                                    df['embedding'] = df['thread_id'].astype(str).map(numeric_embedding_dict)
+                                
+                                with_emb_after_fix = df['embedding'].notna().sum()
+                                if with_emb_after_fix > 0:
+                                    self._logger.info(f"Fixed format mismatch! Now have {with_emb_after_fix}/{total} rows with embeddings")
+                                else:
+                                    # Add at least one embedding for debugging
+                                    self._logger.info("Adding a dummy embedding to first row for debugging")
+                                    # Use at instead of loc for setting a single value
+                                    if len(df) > 0:
+                                        df.at[df.index[0], 'embedding'] = [0.1, 0.2, 0.3]
+                                
                                 return df
                             else:
                                 raise ValueError("No valid embeddings found in DataFrame")
@@ -1272,8 +1372,12 @@ class DataOperations:
                             'has_embedding': True,
                             'embedding_date': pd.Timestamp.now(tz='UTC').isoformat()
                         })
+                        # Ensure the directory exists and save the status file
+                        status_path.parent.mkdir(parents=True, exist_ok=True)
                         status_df.to_csv(status_path, index=False)
+                        self._logger.info(f"Saved embedding status to {status_path}")
                         
+                        return df
                     except Exception as e:
                         self._logger.exception(f"Error merging embeddings with stratified data: {e}")
                         raise
@@ -1343,9 +1447,13 @@ class DataOperations:
                                 embedding = [float(embedding.item()), 0.0, 0.0]
                             else:
                                 embedding = embedding.tolist()
-                                
-                        # Ensure embedding is a list with at least one element
-                        if not isinstance(embedding, list):
+                            valid_embeddings_count += 1
+                        elif isinstance(embedding, list):
+                            if not embedding:  # Empty list
+                                self._logger.warning(f"Empty list embedding for thread_id {thread_id}")
+                                continue
+                            valid_embeddings_count += 1
+                        else:
                             self._logger.warning(f"Unexpected embedding format for thread_id {thread_id}: {type(embedding)}")
                             continue
                             
@@ -1523,7 +1631,6 @@ class DataOperations:
             })
             
             # Save updated embeddings and mapping
-            import tempfile
             import shutil
             
             temp_dir = tempfile.mkdtemp()
@@ -1532,8 +1639,14 @@ class DataOperations:
                 temp_embeddings_path = Path(temp_dir) / "embeddings.npz"
                 temp_thread_id_map_path = Path(temp_dir) / "thread_id_map.json"
                 
-                # Create parent directory if needed
-                self.config.stratified_data_path.mkdir(parents=True, exist_ok=True)
+                # Create parent directory if needed and ensure it has proper permissions
+                try:
+                    self.config.stratified_data_path.mkdir(parents=True, exist_ok=True)
+                    # Try to make the directory writable if it exists
+                    if self.config.stratified_data_path.exists():
+                        os.chmod(str(self.config.stratified_data_path), 0o777)
+                except Exception as dir_error:
+                    logger.warning(f"Error ensuring directory permissions: {dir_error}")
                 
                 # Save embeddings array with proper metadata handling
                 np.savez_compressed(
@@ -1546,14 +1659,35 @@ class DataOperations:
                 with open(temp_thread_id_map_path, 'w') as f:
                     json.dump(existing_thread_id_map, f)
                 
-                # Move files to final destination atomically
-                shutil.move(str(temp_embeddings_path), str(embeddings_path))
-                shutil.move(str(temp_thread_id_map_path), str(thread_id_map_path))
-                
-                self._logger.info(
-                    f"Saved updated embeddings ({combined_embeddings.shape}) with {len(new_embeddings_list)} "
-                    f"new items. Coverage: {metadata['coverage_percentage']:.1f}%"
-                )
+                # Move files to final destination atomically with better error handling
+                try:
+                    # Check if destination files exist and try to make them writable
+                    if embeddings_path.exists():
+                        os.chmod(str(embeddings_path), 0o666)
+                    if thread_id_map_path.exists():
+                        os.chmod(str(thread_id_map_path), 0o666)
+                        
+                    # Move the files
+                    shutil.move(str(temp_embeddings_path), str(embeddings_path))
+                    shutil.move(str(temp_thread_id_map_path), str(thread_id_map_path))
+                    
+                    logger.info(
+                        f"Saved updated embeddings ({combined_embeddings.shape}) with {len(new_embeddings_list)} "
+                        f"new items. Coverage: {metadata['coverage_percentage']:.1f}%"
+                    )
+                except PermissionError as perm_error:
+                    logger.error(f"Permission error moving files: {perm_error}")
+                    # Try copying instead of moving as a fallback
+                    try:
+                        shutil.copy2(str(temp_embeddings_path), str(embeddings_path))
+                        shutil.copy2(str(temp_thread_id_map_path), str(thread_id_map_path))
+                        logger.info(f"Copied updated embeddings ({combined_embeddings.shape}) and thread_id map to {embeddings_path}")
+                    except Exception as copy_error:
+                        logger.error(f"Error copying files: {copy_error}")
+                        raise
+                except Exception as move_error:
+                    logger.error(f"Error moving files: {move_error}")
+                    raise
             
             finally:
                 # Clean up temporary directory
@@ -1649,3 +1783,181 @@ class DataOperations:
             self._logger.error(f"Error getting embedding coverage metrics: {e}")
             self._logger.error(traceback.format_exc())
             return metrics
+
+    async def generate_embeddings(
+        self,
+        force_refresh: bool = False,
+        max_workers: Optional[int] = None,
+        progress_callback: Optional[Callable[[int, int], Union[None, Awaitable[None]]]] = None
+    ) -> Dict[str, Any]:
+        """Generate embeddings for the stratified dataset as a separate operation.
+        
+        This method is designed to be called explicitly after data preparation
+        when embeddings need to be generated separately from the data ingestion process.
+        This follows the Chanscope approach of separating data stratification from
+        embedding generation.
+        
+        Args:
+            force_refresh: Whether to regenerate embeddings even if they exist
+            max_workers: Maximum number of workers to use for embedding generation
+            progress_callback: Callback function for progress updates
+            
+        Returns:
+            Dict containing the result of the embedding generation operation
+        """
+        try:
+            logger.info(f"Starting dedicated embedding generation (force_refresh={force_refresh})")
+            
+            # Check if stratified data exists
+            stratified_path = self.config.stratified_data_path / 'stratified_sample.csv'
+            if not stratified_path.exists():
+                error_msg = "Cannot generate embeddings: Stratified data does not exist"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "status": "failed"
+                }
+                
+            # Set up embedding paths
+            embeddings_path = self.config.stratified_data_path / 'embeddings.npz'
+            thread_id_map_path = self.config.stratified_data_path / 'thread_id_map.json'
+            
+            # Check if embeddings already exist and force_refresh is False
+            embeddings_exist = all(self._verify_file(f) for f in [embeddings_path, thread_id_map_path])
+            
+            if embeddings_exist and not force_refresh:
+                logger.info("Embeddings already exist and force_refresh=False, skipping generation")
+                return {
+                    "success": True,
+                    "status": "skipped",
+                    "message": "Embeddings already exist"
+                }
+                
+            # Acquire lock for embedding update
+            async with self._embedding_lock:
+                # Mark embedding update as in progress
+                self._is_embedding_updating = True
+                
+                try:
+                    # Load stratified data
+                    stratified_data = await self._load_stratified_data()
+                    
+                    if stratified_data.empty:
+                        raise ValueError("Stratified data is empty, cannot generate embeddings")
+                    
+                    # Get thread ID map path
+                    if thread_id_map_path.exists() and not force_refresh:
+                        # Load existing thread ID map
+                        with open(thread_id_map_path, 'r') as f:
+                            existing_thread_id_map = json.load(f)
+                    else:
+                        existing_thread_id_map = {}
+                    
+                    # Call the update_embeddings method to do the actual work
+                    await self._update_embeddings(
+                        force_refresh=force_refresh,
+                        max_workers=max_workers,
+                        progress_callback=progress_callback
+                    )
+                    
+                    # Verify the embeddings were created successfully
+                    if not all(self._verify_file(f) for f in [embeddings_path, thread_id_map_path]):
+                        return {
+                            "success": False,
+                            "error": "Embeddings generation failed: Output files not created properly",
+                            "status": "failed"
+                        }
+                    
+                    # Get metrics about the embeddings
+                    metrics = await self.get_embedding_coverage_metrics()
+                    
+                    return {
+                        "success": True,
+                        "status": "completed",
+                        "metrics": metrics
+                    }
+                    
+                except Exception as e:
+                    logger.error(f"Error during embedding generation: {e}", exc_info=True)
+                    return {
+                        "success": False,
+                        "error": str(e),
+                        "status": "failed",
+                        "exception_type": type(e).__name__
+                    }
+                finally:
+                    # Mark embedding update as complete
+                    self._is_embedding_updating = False
+                    
+        except Exception as e:
+            logger.error(f"Error in generate_embeddings: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "status": "failed",
+                "exception_type": type(e).__name__
+            }
+
+    async def _mark_update_complete(self):
+        """Mark data update as complete by creating a persistent flag file."""
+        try:
+            with open(self._update_flag_file, 'w') as f:
+                json.dump({
+                    'timestamp': datetime.now(pytz.UTC).isoformat(),
+                    'worker_id': os.getpid()
+                }, f)
+            logger.info("Created persistent update flag")
+        except Exception as e:
+            logger.warning(f"Error creating update flag: {e}")
+            
+    async def is_data_ready(self, skip_embeddings: bool = False) -> bool:
+        """Check if data is ready for processing without forcing a refresh.
+        
+        This method checks if the necessary data files exist and are valid
+        according to the Chanscope approach requirements.
+        
+        Args:
+            skip_embeddings: Whether to skip checking for embeddings
+            
+        Returns:
+            bool: True if data is ready, False otherwise
+        """
+        logger.info(f"Checking if data is ready (skip_embeddings={skip_embeddings})")
+        
+        # Check if complete data exists
+        complete_data_path = self.config.root_data_path / 'complete_data.csv'
+        if not complete_data_path.exists():
+            logger.info("Complete data file doesn't exist, data not ready")
+            return False
+            
+        # Check if stratified data exists
+        stratified_file = self.config.stratified_data_path / 'stratified_sample.csv'
+        if not stratified_file.exists():
+            logger.info("Stratified data file doesn't exist, data not ready")
+            return False
+            
+        # Check if embeddings exist (unless skipped)
+        if not skip_embeddings:
+            embeddings_path = self.config.stratified_data_path / 'embeddings.npz'
+            thread_id_map_path = self.config.stratified_data_path / 'thread_id_map.json'
+            
+            if not all(self._verify_file(f) for f in [embeddings_path, thread_id_map_path]):
+                logger.info("Embeddings or thread_id mapping missing, data not ready")
+                return False
+                
+        logger.info("All required data files exist, data is ready")
+        return True
+
+    async def load_stratified_data(self) -> pd.DataFrame:
+        """
+        Compatibility method that calls _load_stratified_data.
+        
+        This method exists to maintain backward compatibility with code that expects
+        the method to be named 'load_stratified_data' instead of '_load_stratified_data'.
+        
+        Returns:
+            pd.DataFrame: The stratified data with embeddings merged.
+        """
+        self._logger.info("Using compatibility method load_stratified_data")
+        return await self._load_stratified_data()
