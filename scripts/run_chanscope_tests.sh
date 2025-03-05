@@ -74,7 +74,7 @@ log "- Operating system: $(uname -a)"
 # Run the comprehensive validation script
 log "Running comprehensive Chanscope validation"
 VALIDATION_OUTPUT="${RESULTS_DIR}/chanscope_validation_${ENV_TYPE}_${TIMESTAMP}.json"
-run_test "Comprehensive Validation" "cd ${APP_ROOT} && python scripts/validate_chanscope_approach.py --output ${VALIDATION_OUTPUT}"
+run_test "Comprehensive Validation" "cd ${APP_ROOT} && poetry run python scripts/validate_chanscope_approach.py --output ${VALIDATION_OUTPUT}"
 VALIDATION_STATUS=$?
 
 # Run the individual test script
@@ -84,7 +84,7 @@ INDIVIDUAL_STATUS=$?
 
 # Test scheduled update
 log "Testing scheduled update"
-run_test "Scheduled Update" "cd ${APP_ROOT} && python scripts/scheduled_update.py --run_once"
+run_test "Scheduled Update" "cd ${APP_ROOT} && poetry run python scripts/scheduled_update.py --run_once"
 SCHEDULED_STATUS=$?
 
 # Print summary

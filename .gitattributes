@@ -1,13 +1,26 @@
 # Set default behavior to automatically normalize line endings
 * text=auto
 
-# Force bash scripts to use LF
+# Explicitly declare text files to be normalized with LF
 *.sh text eol=lf
-.env* text eol=lf
+*.py text eol=lf
+*.md text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+*.env* text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
 
 # Keep Windows batch files with CRLF
 *.{cmd,[cC][mM][dD]} text eol=crlf
 *.{bat,[bB][aA][tT]} text eol=crlf
-*.ps1 text eol=crlf 
+*.ps1 text eol=crlf
+
+# Binary files that should not be modified
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.pdf binary 

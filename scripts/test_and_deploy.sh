@@ -2,7 +2,7 @@
 set -e
 
 # Script to run tests and then deploy the application
-# This demonstrates the integrated test and deploy workflow
+# This script uses run_tests.sh to run tests and then deploys if tests pass
 
 # Define colors for output
 GREEN='\033[0;32m'
@@ -17,14 +17,17 @@ show_usage() {
     echo "Options:"
     echo "  --separate       Run tests and deployment as separate steps (default)"
     echo "  --integrated     Use integrated test and deploy workflow"
+    echo "  --env=<environment>  Specify environment for testing: local, docker, or replit"
     echo "  --help           Show this help message"
     echo ""
     echo "Example:"
     echo "  $0 --integrated"
+    echo "  $0 --env=docker"
 }
 
 # Default values
 WORKFLOW="separate"
+ENVIRONMENT="docker"  # Default to Docker for deployment
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -35,6 +38,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --integrated)
             WORKFLOW="integrated"
+            shift
+            ;;
+        --env=*)
+            ENVIRONMENT="${1#*=}"
             shift
             ;;
         --help)
@@ -58,14 +65,20 @@ cd "$PROJECT_ROOT"
 
 echo -e "${YELLOW}Starting Knowledge Agent test and deploy workflow...${NC}"
 echo -e "${YELLOW}Workflow mode: ${WORKFLOW}${NC}"
+echo -e "${YELLOW}Test environment: ${ENVIRONMENT}${NC}"
 
 if [ "$WORKFLOW" = "separate" ]; then
     # Separate test and deploy workflow
     echo -e "${YELLOW}Step 1: Running tests...${NC}"
     
-    # Build and run tests
-    docker-compose -f deployment/docker-compose.test.yml build
-    docker-compose -f deployment/docker-compose.test.yml up
+    # Run tests using the new run_tests.sh script
+    if [ "$ENVIRONMENT" = "docker" ]; then
+        # For Docker, we need to build and run the tests
+        "$SCRIPT_DIR/run_tests.sh" --env=docker
+    else
+        # For other environments, just run the tests
+        "$SCRIPT_DIR/run_tests.sh" --env="$ENVIRONMENT"
+    fi
     
     # Check if tests passed
     TEST_EXIT_CODE=$?

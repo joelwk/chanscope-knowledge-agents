@@ -1,9 +1,6 @@
 """Configuration settings module."""
-import os
 import logging
-from pathlib import Path
 from typing import Optional, Dict, Any
-import threading
 from functools import lru_cache
 from config.base_settings import get_base_settings, ensure_base_paths
 import copy

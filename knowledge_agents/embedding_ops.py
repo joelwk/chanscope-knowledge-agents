@@ -1,14 +1,15 @@
 import os
-import gc
 import json
 import time
+import shutil
+import random
 import asyncio
 import logging
 import traceback
-import shutil
-import tempfile
 import numpy as np
 import pandas as pd
+import gc
+import tempfile
 import pytz
 from tqdm import tqdm
 from datetime import datetime
@@ -342,8 +343,6 @@ async def get_relevant_content(
         lock_file = embeddings_path.with_suffix('.lock')
         
         # Get a unique worker ID based on PID, timestamp, and random component
-        import random
-        import time
         pid = os.getpid()
         timestamp = int(time.time())
         random_component = random.randint(1000, 9999)
@@ -371,11 +370,41 @@ async def get_relevant_content(
         # Check if another worker is already processing
         worker_markers = list(data_dir.glob('.worker_*_in_progress'))
         if worker_markers and not force_refresh:
-            other_workers = [m.name for m in worker_markers if m.name != f'.worker_{worker_id}_in_progress']
+            other_workers = [m for m in worker_markers if m.name != f'.worker_{worker_id}_in_progress']
             if other_workers:
-                logger.info(f"Another worker is already processing: {other_workers[0]}. Skipping embedding generation.")
-                return
-        
+                # Check if the worker marker is stale (older than 30 minutes)
+                current_time = time.time()
+                stale_markers = []
+                active_markers = []
+                
+                for marker in other_workers:
+                    try:
+                        marker_time = marker.stat().st_mtime
+                        marker_age_minutes = (current_time - marker_time) / 60
+                        
+                        if marker_age_minutes > 30:  # Consider markers older than 30 minutes as stale
+                            stale_markers.append(marker)
+                        else:
+                            active_markers.append(marker)
+                    except Exception as e:
+                        logger.warning(f"Error checking marker age for {marker}: {e}")
+                        active_markers.append(marker)  # Assume it's active if we can't check
+                
+                # Remove stale markers
+                for marker in stale_markers:
+                    try:
+                        logger.warning(f"Removing stale worker marker: {marker.name} (age: {(current_time - marker.stat().st_mtime) / 60:.1f} minutes)")
+                        marker.unlink()
+                    except Exception as e:
+                        logger.warning(f"Error removing stale marker {marker}: {e}")
+                
+                # If there are still active markers, skip embedding generation
+                if active_markers:
+                    logger.info(f"Another worker is already processing: {active_markers[0].name}. Skipping embedding generation.")
+                    return
+                else:
+                    logger.info(f"Removed {len(stale_markers)} stale worker markers. Proceeding with embedding generation.")
+            
         # Create worker marker
         worker_marker.touch()
         logger.info(f"Worker {worker_id} starting embedding generation")
@@ -1187,9 +1216,3 @@ async def generate_embeddings(
         logger.error(f"Error generating embeddings: {e}")
         logger.error(traceback.format_exc())
         raise
-
-def _mark_embeddings_complete(self):
-    """Mark the embeddings as complete by creating a flag file."""
-    data_dir = self.config.root_data_path
-    flag_path = data_dir / ".embeddings_complete"
-    flag_path.touch()

@@ -5,27 +5,66 @@ alwaysApply: false
 ---
 # Chanscope Testing Rules
 
+## Test Suite Organization
+
+### 1. Core Test Categories
+
+Tests must be organized to validate all key components of the Chanscope approach:
+
+- **Data Ingestion Tests:**  
+  Verify S3 data fetching, retention logic, and initial data load (e.g., `test_data_ingestion.py`).
+
+- **Data Stratification Tests:**  
+  Validate sampling algorithms and data representation accuracy.
+
+- **Embedding Generation Tests:**  
+  Ensure proper embedding creation, storage, and consistency (e.g., `test_embedding_pipeline.py`).
+
+- **Query Processing Tests:**  
+  Validate both forced refresh and standard modes:
+  - **Force Refresh Mode:** Ensure data freshness, re-stratification, and regeneration of embeddings.
+  - **Standard Mode:** Verify that existing embeddings are used and fallback logic is applied if necessary.
+
+- **API Availability Tests:**  
+  Verify API endpoints remain responsive even during data initialization, with appropriate status indicators.
+
+- **End-to-End Tests:**  
+  Validate the complete Chanscope approach implementation (e.g., `test_chanscope_approach.py`).
+
+- **Component Integration Tests:**  
+  Validate integration between data ingestion, stratification, embedding generation, search, chunk retrieval, and final summarization.
+
+- **Startup Data Loading Tests:**  
+  Verify health check behavior, initialization state detection, and progress monitoring during data loading delays.
+
+### 2. Test Script Requirements
+
+All test scripts must:
+
+- Be executable in isolated environments (Docker, local, or Replit).
+- Include proper setup and teardown routines to avoid interference.
+- Generate clear, structured logs and output.
+- Return appropriate exit codes for CI/CD integration.
+
+### 3. Cross-Platform Compatibility
+
+Test scripts must be designed for use across multiple platforms:
+
+- **Linux/macOS:**  
+  Use standard bash scripts (e.g., `*.sh`).
+
+- **Windows:**  
+  Provide PowerShell equivalents or ensure compatibility by:
+  - Using backslashes for file paths.
+  - Replacing bash-specific commands with PowerShell equivalents.
+  - Handling line endings (CRLF vs LF) properly.
+  - Adapting Docker commands to Windows path conventions (e.g., `C:/path` vs `/c/path`).
+
+---
+
+# Chanscope Testing Rules
 
 This document outlines the guidelines for testing the Chanscope application, ensuring that test implementation aligns with the core Chanscope approach. It covers the data processing pipeline, query behavior, deployment processes, and more.
-
----
-
-## Description
-
-These rules define the requirements and best practices for testing the Chanscope application. They address unit, integration, performance, and security testing, ensuring that each test validates a specific part of the Chanscope approach while being executable in various environments (local, Docker, Replit).
-
----
-
-## File Patterns
-
-The following glob patterns determine the files to which these rules apply:
-
-```
-**/tests/**/*.py
-**/scripts/run_*tests.sh
-**/scripts/validate_chanscope_approach.py
-```
-
 
 ---
 
@@ -86,15 +125,15 @@ Test scripts must be designed for use across multiple platforms:
 
 ---
 
-## Test Execution Framework
+## Updated Test Execution Framework
 
 ### 1. Standard Test Execution
 
-Use the `run_tests.sh` script to execute tests locally:
+The testing framework provides a unified approach across all environments. Use the `run_tests.sh` script as the main entry point:
 
 ```bash
-# Run all tests
-scripts/run_tests.sh --all
+# Run all tests (auto-detects environment)
+scripts/run_tests.sh
 
 # Run specific test categories
 scripts/run_tests.sh --data-ingestion
@@ -102,50 +141,84 @@ scripts/run_tests.sh --embedding
 scripts/run_tests.sh --endpoints
 scripts/run_tests.sh --chanscope-approach
 
+# Specify environment explicitly
+scripts/run_tests.sh --env=local
+scripts/run_tests.sh --env=docker
+scripts/run_tests.sh --env=replit
+
 # Display help and options
 scripts/run_tests.sh --help
 ```
 
-### 2. Docker-Based Testing
+### 2. Environment-Specific Scripts
 
-For containerized testing, use the dedicated test Docker configuration:
+The framework includes dedicated scripts for each environment:
+
+- **`local_tests.sh`**: Handles local environment setup and test execution
+- **`docker_tests.sh`**: Manages Docker-specific configuration and container execution
+- **`replit_tests.sh`**: Addresses Replit environment constraints and configuration
+
+These scripts are called by `run_tests.sh` based on environment detection or explicit specification.
+
+### 3. Docker-Based Testing
+
+For containerized testing, you can either:
+
+1. Use the main test runner with Docker environment:
+   ```bash
+   scripts/run_tests.sh --env=docker
+   ```
+
+2. Or use the dedicated Docker Compose configuration directly:
+   ```bash
+   # From project root
+   docker-compose -f deployment/docker-compose.test.yml build
+   docker-compose -f deployment/docker-compose.test.yml up
+   ```
+
+### 4. Test and Deploy Workflow
+
+The `test_and_deploy.sh` script provides an integrated workflow:
 
 ```bash
-# Navigate to deployment directory
-cd deployment
+# Run tests and deploy as separate steps
+scripts/test_and_deploy.sh
 
-# Run all tests in Docker
-docker-compose -f docker-compose.test.yml build
-docker-compose -f docker-compose.test.yml up
+# Specify environment for testing
+scripts/test_and_deploy.sh --env=docker
 
-# From project root (alternative)
-docker-compose -f deployment/docker-compose.test.yml build
-docker-compose -f deployment/docker-compose.test.yml up
+# Use integrated test and deploy workflow
+scripts/test_and_deploy.sh --integrated
 ```
 
-### 3. Test Configuration Settings
+### 5. Test Configuration Settings
 
-The following environment variables control test behavior:
+Test configuration is centralized in `.env.test` with environment-specific sections:
 
 ```bash
-# Enable test mode
-TEST_MODE=true                    # Enable test-specific configurations
-USE_MOCK_DATA=true                # Use mock data instead of real S3 data
-USE_MOCK_EMBEDDINGS=true          # Use mock embeddings instead of calling real APIs
+# Shared configuration (all environments)
+TEST_MODE=true
+USE_MOCK_DATA=true
+USE_MOCK_EMBEDDINGS=true
+AUTO_CHECK_DATA=true
+TEST_TYPE=all
 
-# Test execution options
-AUTO_CHECK_DATA=true              # Enable data checking during tests
-RUN_TESTS_ON_STARTUP=true         # Run tests during container startup
-TEST_TYPE=all                     # Specify which tests to run
+# Environment-specific configuration
+[local]
+API_WORKERS=2
+PROCESSING_CHUNK_SIZE=2500
+# ...other local settings
+
+[docker]
+API_WORKERS=4
+PROCESSING_CHUNK_SIZE=5000
+# ...other Docker settings
+
+[replit]
+API_WORKERS=1
+PROCESSING_CHUNK_SIZE=1000
+# ...other Replit settings
 ```
-
-**Considerations:**
-
-- **Resource Contention:** Running tests with application startup may compete for resources.
-- **Data Integrity Risks:** Lack of isolation may lead to data modification or corruption.
-- **Debugging Complexity:** Combining startup and testing can complicate troubleshooting.
-
-**Recommendation:** Prefer dedicated testing environments using `docker-compose.test.yml` for isolated testing.
 
 ---
 
@@ -159,13 +232,15 @@ Tests must ensure that on startup:
 - Data is properly stratified.
 - Embeddings are generated as expected.
 
-Example (pseudo-code):
+Example (from `test_chanscope_approach.py`):
 
 ```python
-def test_initial_data_load():
-    # Arrange: Prepare clean environment and mock S3
-    # Act: Trigger application startup
-    # Assert: Verify that complete_data.csv, stratified data, and embeddings exist
+@pytest.mark.asyncio
+async def test_initial_data_load(chanscope_test_config, results_collector):
+    """Test initial data load behavior (force_refresh=true, skip_embeddings=true)"""
+    # Arrange: Prepare clean environment 
+    # Act: Initialize data operations with force_refresh=true
+    # Assert: Verify that complete_data.csv and stratified data exist
 ```
 
 ### 2. Query Behavior Validation
@@ -189,7 +264,7 @@ Tests must cover both query modes:
 
 ### 3. Component Integration Tests
 
-Ensure that tests validate the integration between:
+Tests validate the integration between:
 
 - Data ingestion and stratification.
 - Stratification and embedding generation.
@@ -198,7 +273,7 @@ Ensure that tests validate the integration between:
 
 ### 4. Startup Data Loading Tests
 
-Tests must address:
+Tests address:
 
 - **Health Check Testing:** Validate health checks during initialization.
 - **Initialization State Detection:** Confirm the application reports its initialization state correctly.
@@ -206,32 +281,18 @@ Tests must address:
 - **Background Processing:** Confirm data processing continues in the background without blocking API.
 - **Progress Monitoring:** Ensure that data loading progress is logged and tracked.
 
-Example (pseudo-code):
+Example (from `test_endpoints.py`):
 
 ```python
 def test_health_during_initialization():
     # Arrange: Start application with mock S3 data and AUTO_CHECK_DATA=false
     # Act: Query health endpoint immediately after startup
-    # Assert: Verify health endpoint returns "healthy" status even during initialization
+    # Assert: Verify health endpoint returns appropriate status during initialization
 ```
 
 ### 5. AUTO_CHECK_DATA Setting Tests
 
-Tests must verify the behavior with different AUTO_CHECK_DATA settings:
-
-```python
-def test_auto_check_data_false():
-    # Arrange: Start application with AUTO_CHECK_DATA=false
-    # Act: Query API immediately after startup
-    # Assert: API responds properly even before data processing completes
-    # Assert: Background data processing continues as expected
-
-def test_auto_check_data_true():
-    # Arrange: Start application with AUTO_CHECK_DATA=true
-    # Act: Monitor startup behavior
-    # Assert: API waits for data processing before becoming available
-    # Assert: Health checks respond appropriately during initialization
-```
+Tests verify the behavior with different AUTO_CHECK_DATA settings to ensure proper handling of both automatic and manual data checking modes.
 
 ---
 
@@ -239,7 +300,7 @@ def test_auto_check_data_true():
 
 ### 1. Docker Test Environment
 
-Tests must validate Docker-specific elements:
+Tests validate Docker-specific elements:
 
 - **Volume Mounting and Permissions:**  
   - Use Docker volumes (not bind mounts) for data directories.
@@ -254,7 +315,7 @@ Tests must validate Docker-specific elements:
 
 ### 2. CI/CD Integration
 
-Test scripts must be compatible with automated CI/CD pipelines, including:
+Test scripts are compatible with automated CI/CD pipelines, including:
 
 - Clear indicators of success/failure.
 - Detailed error reporting.
@@ -276,20 +337,12 @@ test:
 
 ### 3. Multi-Environment Testing
 
-Ensure tests are valid across all target environments:
+The framework provides support for multi-environment testing:
 
-- **Local Development:** Validate with local scripts and environment variables.
-- **Docker Container:** Validate containerized execution.
-- **Replit Hosting:** Ensure compatibility and proper environment variable usage.
-
-#### 3.1 Environment Detection and Adaptation
-
-Test scripts should:
-
-- Detect the current environment (Docker, Local, or Replit).
-- Adapt file paths and configurations accordingly.
-- Handle file system permission differences.
-- Use environment variables suited for each context.
+- **Environment Detection**: Automatically identifies the current environment
+- **Environment-Specific Scripts**: Dedicated scripts for each environment
+- **Unified Command Interface**: Consistent commands across all environments
+- **Centralized Configuration**: Environment-specific settings in `.env.test`
 
 ---
 
@@ -303,13 +356,13 @@ git clone https://github.com/your-org/chanscope.git
 cd chanscope
 
 # Create and populate .env file with required variables (AWS, OpenAI, etc.)
-cp .env.example .env
+cp .env.template .env
 
 # Make scripts executable
 chmod +x scripts/*.sh deployment/*.sh
 
 # Run tests
-scripts/run_tests.sh --all
+scripts/run_tests.sh --env=local
 ```
 
 ### 2. Docker Environment Setup
@@ -317,13 +370,13 @@ scripts/run_tests.sh --all
 ```bash
 # Clone the repository
 git clone https://github.com/your-org/chanscope.git
-cd chanscope/deployment
+cd chanscope
 
 # Create and populate .env file
-cp .env.example .env
+cp .env.template .env
 
 # Run tests in Docker
-docker-compose -f docker-compose.test.yml up
+scripts/run_tests.sh --env=docker
 ```
 
 ### 3. Replit Environment Setup
@@ -333,7 +386,7 @@ docker-compose -f docker-compose.test.yml up
 # OPENAI_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, S3_BUCKET
 
 # Run tests
-bash scripts/run_tests.sh --all
+scripts/run_tests.sh --env=replit
 ```
 
 ---
@@ -360,10 +413,7 @@ bash scripts/run_tests.sh --all
 
 ```bash
 # Enable mock embeddings for testing
-export USE_MOCK_EMBEDDINGS=true
-
-# Run embedding tests with mock embeddings
-scripts/run_tests.sh --embedding
+scripts/run_tests.sh --no-mock-embeddings
 ```
 
 ---
@@ -440,7 +490,7 @@ Tests should verify that:
 - Log rotation is configured properly.
 - Log levels are enforced as per configuration.
 
-Example (pseudo-code):
+Example (test verification):
 
 ```python
 def test_log_configuration():
@@ -467,14 +517,16 @@ If tests fail due to AWS credentials:
 For diagnosing issues:
 
 ```bash
-# View Docker test logs
+# View test logs (environment-specific)
+cat test_results/chanscope_tests_local_*.log
 cat test_results/chanscope_tests_docker_*.log
+cat test_results/chanscope_tests_replit_*.log
 
 # View application logs
 cat logs/app.log
 
 # View scheduler logs
-cat data/logs/scheduler.log
+cat scheduler.log
 ```
 
 ### 3. Docker Volume Issues
@@ -495,10 +547,9 @@ If Docker volumes encounter permission issues:
 ### 5. "No Configuration File Found" Error
 
 If you encounter "no configuration file provided: not found" error:
-1. Make sure you're running docker-compose from the deployment directory:
+1. Make sure you're running docker-compose from the project root:
    ```
-   cd deployment
-   docker-compose logs -f
+   docker-compose -f deployment/docker-compose.yml logs -f
    ```
 2. Or specify the full path to the docker-compose file:
    ```
@@ -520,3 +571,45 @@ If the API is unavailable during data processing:
 2. Check the health check configuration (start_period, interval, retries)
 3. Review logs for initialization issues
 4. Consider increasing the container's resource allocation
+
+---
+
+## Recommended Testing Workflow
+
+### 1. Standard Workflow (Recommended) ✅
+
+Run tests in isolation using the dedicated testing framework:
+
+```bash
+# Auto-detect environment
+scripts/run_tests.sh
+
+# Specify environment explicitly
+scripts/run_tests.sh --env=docker
+```
+
+- Ensures isolated test data and resources
+- Optimized environment variables and resource allocation for testing
+
+### 2. Production Deployment (Tests Disabled) ✅
+
+Deploy your application without running tests at startup:
+
+```bash
+docker-compose -f deployment/docker-compose.yml build
+docker-compose -f deployment/docker-compose.yml up -d
+```
+
+- Ensures stable, predictable startup behavior
+- Avoids resource contention and data integrity risks
+
+### 3. Integrated Test and Deploy (Advanced, Optional) ⚠️
+
+Running tests as part of deployment is possible but should be reserved for staging environments:
+
+```bash
+scripts/test_and_deploy.sh --integrated
+```
+
+- Requires careful handling of resource contention and data isolation
+- Not recommended for live production environments

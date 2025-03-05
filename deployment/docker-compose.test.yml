@@ -1,5 +1,6 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
-version: '3.8'
+# The version attribute is now auto-detected and the explicit declaration is obsolete
+# Removed version: '3.8' to avoid warnings
 
 services:
   chanscope-test:
@@ -65,9 +66,14 @@ services:
     environment:
       # Test environment settings
       - DOCKER_ENV=true
+      - IS_DOCKER=true
+      - REPLIT_ENV=false
+      - REPL_ID=
+      - REPL_SLUG=
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - TEST_MODE=true
+      - SKIP_DOCKER_TESTS=true
       
       # Data management settings for testing
       - DATA_RETENTION_DAYS=7

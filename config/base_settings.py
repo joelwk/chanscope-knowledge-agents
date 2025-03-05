@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Dict, Any
 from dotenv import load_dotenv
 import logging
+from datetime import datetime, timedelta
+import pytz
 
 # Global settings cache
 _settings_cache = None
@@ -63,6 +65,8 @@ def get_base_settings() -> Dict[str, Any]:
     # Load environment variables if not already loaded
     load_env_vars()
     
+    filter_date = (datetime.now(pytz.UTC) - timedelta(days=int(os.getenv('DATA_RETENTION_DAYS')))).strftime('%Y-%m-%d %H:%M:%S%z')
+    
     _settings_cache = {
         'api': {
             'host': os.getenv('API_HOST', '0.0.0.0').strip(),
@@ -107,10 +111,10 @@ def get_base_settings() -> Dict[str, Any]:
             'contraction_mapping_enabled': os.getenv('CONTRACTION_MAPPING_ENABLED', 'false').lower() == 'true',
             'non_alpha_numeric_enabled': os.getenv('NON_ALPHA_NUMERIC_ENABLED', 'false').lower() == 'true',
             'max_tokens': int(os.getenv('MAX_TOKENS', '4096')),
-            'max_workers': int(os.getenv('MAX_WORKERS', '4')),
+            'max_workers': int(os.getenv('MAX_WORKERS')),
             'cache_enabled': os.getenv('CACHE_ENABLED', 'true').lower() == 'true',
-            'retention_days': int(os.getenv('DATA_RETENTION_DAYS', '30')),
-            'filter_date': os.getenv('FILTER_DATE'),
+            'retention_days': int(os.getenv('DATA_RETENTION_DAYS')),
+            'filter_date': filter_date if os.getenv('FILTER_DATE') is None else os.getenv('FILTER_DATE'),
             'select_board': os.getenv('SELECT_BOARD'),
             'use_batching': os.getenv('USE_BATCHING', 'true').lower() == 'true',
             'cache_ttl': int(os.getenv('CACHE_TTL', '3600')),

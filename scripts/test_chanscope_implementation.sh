@@ -265,7 +265,7 @@ asyncio.run(test_forced_refresh())
 
 # Test 5: Test scheduled update in the current environment
 # This validates the scheduled update functionality
-run_test "Scheduled Update" "cd $APP_ROOT && python scripts/scheduled_update.py --run_once"
+run_test "Scheduled Update" "cd $APP_ROOT && poetry run python scripts/scheduled_update.py --run_once"
 
 echo
 echo "All tests completed"

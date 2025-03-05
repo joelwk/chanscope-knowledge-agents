@@ -1,5 +1,4 @@
 import os
-import logging
 import asyncio
 # Handle fcntl import for Windows compatibility
 try:
@@ -20,11 +19,10 @@ import pytz
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
 
 from knowledge_agents.data_ops import DataConfig, DataOperations
-from .routes import router as api_router
 from config.logging_config import get_logger
+from config.env_loader import is_replit_environment
 
 # Setup logging using centralized configuration
 logger = get_logger(__name__)
@@ -140,8 +138,8 @@ async def initialize_data_processing() -> None:
                             # Ensure data is ready (this will load and stratify the data)
                             await data_ops.ensure_data_ready(force_refresh=True)
                             
-                            # Create embeddings completion marker
-                            embeddings_complete_marker.touch()
+                            # Generate embeddings - the method now handles creating the completion marker
+                            await data_ops.generate_embeddings(force_refresh=True)
                     
                     # Write completion state
                     state = {
@@ -329,27 +327,13 @@ def is_primary_worker() -> bool:
     logger.info(f"Worker {worker_id} primary status: {is_primary}")
     return is_primary
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
-    # Load environment variables
-    load_environment()
-    
-    # Create FastAPI app with enhanced metadata
-    app = FastAPI(
-        title="Knowledge Agent API",
-        description="API for processing and analyzing text using AI models",
-        version="1.0.0",
-        docs_url="/docs" if get_environment() != "production" else None,
-        redoc_url="/redoc" if get_environment() != "production" else None
-    )
-    
-    # Add middleware from app.py
-    from .app import add_middleware
-    add_middleware(app)
-    
-    # Include API routes with proper prefix
-    app.include_router(api_router, prefix="/api/v1", tags=["knowledge_agents"])
+# Import the standard app creation function
+from .app import create_app
 
+# Extend the app with additional startup/shutdown handlers if needed
+def extend_app(app: FastAPI) -> FastAPI:
+    """Add additional event handlers to the standard app."""
+    
     @app.on_event("startup")
     async def startup_event():
         """Initialize data processing during startup with robust cross-platform locking."""
@@ -378,131 +362,60 @@ def create_app() -> FastAPI:
                 setup_timeout = int(os.getenv('SETUP_TIMEOUT', '120'))
                 if os.getenv("DOCKER_ENV") == "true":
                     if not await wait_for_setup_complete(timeout=setup_timeout):
-                        logger.error(f"Setup not completed after {setup_timeout}s")
-                        return
-                    logger.info("Setup completed successfully")
+                        logger.warning("Setup not completed within timeout, proceeding anyway")
                 
-                # Clean up any existing markers at startup
-                for marker in [init_marker, completion_marker, worker_specific_lock]:
-                    if marker.exists():
-                        try:
-                            marker.unlink()
-                            logger.info(f"Cleaned up marker file: {marker}")
-                        except Exception as e:
-                            logger.warning(f"Could not clean up marker {marker}: {e}")
+                # Create data directories if they don't exist
+                data_config = DataConfig.from_config()
+                os.makedirs(data_config.root_data_path, exist_ok=True)
+                os.makedirs(data_config.stratified_data_path, exist_ok=True)
                 
-                # Create parent directory for lock files if needed
-                lock_file.parent.mkdir(parents=True, exist_ok=True)
+                # Log data status
+                complete_data_path = data_config.root_data_path / 'complete_data.csv'
+                embeddings_path = data_config.stratified_data_path / 'embeddings.npz'
                 
-                # Cross-platform locking strategy
-                lock_acquired = False
-                try:
-                    if HAS_FCNTL:
-                        # Linux-style file locking
-                        with open(lock_file, 'w') as f:
-                            f.write(f"{worker_id}\n")
-                            f.flush()
-                            try:
-                                # Try non-blocking exclusive lock
-                                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                                lock_acquired = True
-                                logger.info(f"Worker {worker_id} acquired fcntl lock")
-                            except (IOError, OSError) as e:
-                                logger.info(f"Another worker already has the lock: {e}")
-                    else:
-                        # Windows-style lock using exclusive file creation
-                        try:
-                            # Create worker-specific lock file exclusively
-                            with open(worker_specific_lock, 'x') as f:
-                                f.write(f"{worker_id}\n{datetime.now(pytz.UTC).isoformat()}")
-                            
-                            # Try to acquire global lock - write our ID to it
-                            with open(lock_file, 'w') as f:
-                                f.write(f"{worker_id}\n{datetime.now(pytz.UTC).isoformat()}")
-                                f.flush()
-                                
-                            # Check if any other worker lock files exist
-                            other_locks = [
-                                p for p in data_dir.glob(".worker.lock.*") 
-                                if p != worker_specific_lock and p.is_file()
-                            ]
-                            
-                            # Check if other locks are stale (> 5 minutes old)
-                            active_locks = []
-                            for other_lock in other_locks:
-                                try:
-                                    lock_age = time.time() - other_lock.stat().st_mtime
-                                    if lock_age < 300:  # 5 minutes
-                                        active_locks.append(other_lock)
-                                    else:
-                                        logger.info(f"Found stale lock file: {other_lock} (age: {lock_age:.1f}s)")
-                                        try:
-                                            other_lock.unlink()
-                                        except Exception as e:
-                                            logger.warning(f"Could not remove stale lock: {e}")
-                                except Exception as e:
-                                    logger.warning(f"Error checking lock file {other_lock}: {e}")
-                                    
-                            if not active_locks:
-                                lock_acquired = True
-                                logger.info(f"Worker {worker_id} acquired Windows-style lock")
-                            else:
-                                logger.info(f"Other active workers found: {[l.name for l in active_locks]}")
-                        except FileExistsError:
-                            logger.info(f"Worker-specific lock file already exists for {worker_id}")
+                logger.info(f"Data file exists: {complete_data_path.exists()}")
+                logger.info(f"Embeddings file exists: {embeddings_path.exists()}")
+                
+                # Log environment information
+                logger.info(f"Environment: {os.environ.get('ENV_TYPE', 'unknown')}")
+                logger.info(f"API workers: {os.environ.get('API_WORKERS', '1')}")
+                logger.info(f"Data update interval: {os.environ.get('DATA_UPDATE_INTERVAL', '3600')} seconds")
+                
+                # Start background data initialization if needed
+                if not init_marker.exists() and not complete_data_path.exists():
+                    logger.info("Starting data initialization in background task")
+                    from fastapi.background import BackgroundTasks
+                    from .app import initialize_data_in_background
                     
-                    if lock_acquired:
-                        # Create initialization marker to indicate we're starting
-                        init_marker.touch()
-                        
-                        # Perform actual initialization
-                        await initialize_data_processing()
-                        
-                        # Mark initialization as complete
-                        completion_marker.touch()
-                        logger.info("Primary worker completed initialization")
-                    else:
-                        # Wait for initialization to complete
-                        logger.info(f"Worker {worker_id} waiting for primary worker initialization")
-                        await wait_for_initialization()
-                    
-                except Exception as e:
-                    logger.error(f"Primary worker initialization failed: {e}")
-                    logger.error(traceback.format_exc())
-                    
-                    # Clean up markers on failure
-                    for marker in [init_marker, completion_marker]:
-                        if marker.exists():
-                            try:
-                                marker.unlink()
-                            except Exception as cleanup_error:
-                                logger.warning(f"Error cleaning up marker {marker}: {cleanup_error}")
-                    raise
-                finally:
-                    # Release locks
-                    if HAS_FCNTL and lock_acquired:
-                        try:
-                            with open(lock_file, 'r+') as f:
-                                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                                logger.info(f"Worker {worker_id} released fcntl lock")
-                        except Exception as e:
-                            logger.warning(f"Error releasing fcntl lock: {e}")
-                    
-                    # Remove worker-specific lock if used
-                    if worker_specific_lock.exists():
-                        try:
-                            worker_specific_lock.unlink()
-                            logger.info(f"Removed worker-specific lock: {worker_specific_lock}")
-                        except Exception as e:
-                            logger.warning(f"Error removing worker-specific lock: {e}")
+                    background_tasks = BackgroundTasks()
+                    background_tasks.add_task(initialize_data_in_background, data_config)
+                    logger.info("Background data initialization task scheduled")
+                else:
+                    logger.info("Data initialization not needed or already in progress")
+                
+                # Clean up any stale marker files
+                if completion_marker.exists():
+                    try:
+                        completion_marker.unlink()
+                        logger.info(f"Cleaned up marker file: {completion_marker}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clean up marker file: {e}")
+                
+                logger.info("Primary worker initialization complete")
             else:
-                logger.info(f"Secondary worker {worker_id} waiting for primary worker initialization")
-                await wait_for_initialization()
-                
+                logger.info(f"Worker {worker_id} is not primary, waiting for initialization...")
+                # Non-primary workers just wait for initialization to complete
+                try:
+                    await wait_for_initialization()
+                    logger.info("Initialization complete, API ready")
+                except Exception as e:
+                    logger.error(f"Error waiting for initialization: {e}")
+                    
         except Exception as e:
             logger.error(f"Error during startup: {e}")
             logger.error(traceback.format_exc())
-            raise
+            
+        logger.info("API startup complete")
     
     @app.on_event("shutdown")
     async def shutdown_event():
@@ -636,305 +549,33 @@ def create_app() -> FastAPI:
     
     return app
 
-async def wait_for_initialization(timeout: int = 900) -> None:
-    """Wait for initialization to complete with improved state checking and stale lock detection.
+# Function to get the appropriate app instance based on environment
+def get_app() -> FastAPI:
+    """Get the appropriate FastAPI application based on current environment.
     
-    This function implements a robust waiting mechanism that can:
-    1. Detect when initialization is complete
-    2. Identify and recover from stale initialization processes
-    3. Handle timeouts gracefully
-    
-    Args:
-        timeout: Maximum time to wait in seconds (default: 15 minutes)
+    This centralizes app creation logic and ensures consistent configuration.
+    For Replit environments, it applies Replit-specific extensions.
     """
-    data_dir = Path("data")
-    completion_marker = data_dir / '.initialization_complete'
-    init_marker = data_dir / '.initialization_in_progress'
-    state_file = data_dir / '.initialization_state'
-    lock_file = data_dir / '.worker.lock'
+    # Create the base app
+    app = create_app()
     
-    start_time = asyncio.get_event_loop().time()
-    check_interval = 5  # seconds
-    stale_threshold = 600  # 10 minutes in seconds
-    
-    logger.info(f"Waiting for initialization (timeout: {timeout}s)...")
-    
-    while not completion_marker.exists() or not is_initialization_fresh(state_file):
-        # Check for timeout
-        time_elapsed = asyncio.get_event_loop().time() - start_time
-        if time_elapsed > timeout:
-            logger.warning(f"Timeout after {time_elapsed:.1f}s waiting for initialization")
-            
-            # Check if initialization is actually in progress
-            if init_marker.exists():
-                # Check if the marker is stale
-                marker_age = time.time() - init_marker.stat().st_mtime
-                if marker_age > stale_threshold:
-                    logger.warning(f"Found stale initialization marker (age: {marker_age:.1f}s), attempting recovery")
-                    try:
-                        # Try to clean up stale markers
-                        try:
-                            init_marker.unlink()
-                            logger.info(f"Removed stale initialization marker")
-                        except FileNotFoundError:
-                            logger.info(f"Stale initialization marker already removed")
-                        except Exception as e:
-                            logger.warning(f"Error removing stale initialization marker: {e}")
-                            
-                        if lock_file.exists():
-                            try:
-                                lock_file.unlink()
-                                logger.info(f"Removed stale lock file")
-                            except FileNotFoundError:
-                                logger.info(f"Stale lock file already removed")
-                            except Exception as e:
-                                logger.warning(f"Error removing stale lock file: {e}")
-                        
-                        # Create our own marker and assume control
-                        init_marker.touch()
-                        logger.info("Taking over initialization after stale process")
-                        
-                        # Return to allow the caller to retry initialization
-                        return
-                    except Exception as e:
-                        logger.error(f"Failed to recover from stale initialization: {e}")
-                else:
-                    logger.info(f"Initialization is still in progress (marker age: {marker_age:.1f}s)")
-            else:
-                logger.warning("No initialization markers found, initialization may have failed")
-            break
-            
-        # Check if state file exists but is stale
-        if state_file.exists():
-            try:
-                state_age = time.time() - state_file.stat().st_mtime
-                if state_age > stale_threshold and init_marker.exists():
-                    logger.warning(f"Found stale state file (age: {state_age:.1f}s), attempting recovery")
-                    try:
-                        # Try to clean up stale markers
-                        try:
-                            init_marker.unlink()
-                            logger.info(f"Removed stale initialization marker")
-                        except FileNotFoundError:
-                            logger.info(f"Stale initialization marker already removed")
-                        except Exception as e:
-                            logger.warning(f"Error removing stale initialization marker: {e}")
-                            
-                        if lock_file.exists():
-                            try:
-                                lock_file.unlink()
-                                logger.info(f"Removed stale lock file")
-                            except FileNotFoundError:
-                                logger.info(f"Stale lock file already removed")
-                            except Exception as e:
-                                logger.warning(f"Error removing stale lock file: {e}")
-                        return
-                    except Exception as e:
-                        logger.error(f"Failed to recover from stale state: {e}")
-            except Exception as e:
-                logger.warning(f"Error checking state file age: {e}")
+    # Apply environment-specific extensions
+    if is_replit_environment():
+        logger.info("Configuring app for Replit environment")
+        from config.env_loader import configure_replit_environment
+        configure_replit_environment()
         
-        # Log progress periodically
-        if int(time_elapsed) % 30 == 0:  # Log every 30 seconds
-            time_remaining = timeout - time_elapsed
-            logger.info(f"Still waiting for initialization... ({time_remaining:.1f}s remaining)")
-            
-            # Check for signs of progress
-            if init_marker.exists():
-                try:
-                    marker_age = time.time() - init_marker.stat().st_mtime
-                    logger.info(f"Initialization marker age: {marker_age:.1f}s")
-                except Exception:
-                    pass
-        
-        await asyncio.sleep(check_interval)
-    
-    if completion_marker.exists() and is_initialization_fresh(state_file):
-        try:
-            with open(state_file, 'r') as f:
-                state = json.load(f)
-            logger.info(f"Initialization completed by worker {state.get('worker_id')} at {state.get('timestamp')}")
-        except Exception as e:
-            logger.warning(f"Error reading initialization state: {e}")
+        # Add Replit-specific routes if needed
+        @app.get("/health_replit")
+        async def health_replit():
+            """Health check endpoint specifically for Replit."""
+            from .routes import health_check_replit
+            return await health_check_replit()
     else:
-        logger.warning("Proceeding without complete initialization")
-
-def is_initialization_fresh(state_file: Path, max_age_minutes: int = 30) -> bool:
-    """Check if initialization state is fresh enough with improved error handling.
-    
-    Args:
-        state_file: Path to the state file
-        max_age_minutes: Maximum age in minutes for the state to be considered fresh
+        # Apply standard extensions
+        app = extend_app(app)
         
-    Returns:
-        bool: True if state is fresh, False otherwise
-    """
-    if not state_file.exists():
-        return False
-    try:
-        # Check file size to avoid trying to parse empty or corrupted files
-        if state_file.stat().st_size == 0:
-            logger.warning("State file exists but is empty")
-            return False
-            
-        with open(state_file, 'r') as f:
-            content = f.read().strip()
-            if not content:
-                logger.warning("State file exists but contains no data")
-                return False
-                
-            # Try to parse the JSON
-            state = json.loads(content)
-            
-        # Validate timestamp field exists
-        if 'timestamp' not in state:
-            logger.warning("State file missing timestamp field")
-            return False
-            
-        # Parse timestamp with error handling
-        try:
-            last_init = datetime.fromisoformat(state.get('timestamp', ''))
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid timestamp format in state file: {e}")
-            return False
-            
-        # Check freshness
-        age = datetime.now() - last_init
-        is_fresh = age < timedelta(minutes=max_age_minutes)
-        
-        if not is_fresh:
-            logger.warning(f"State is stale: {age.total_seconds()/60:.1f} minutes old (max: {max_age_minutes} minutes)")
-        
-        return is_fresh
-    except json.JSONDecodeError as e:
-        logger.warning(f"Corrupted state file (JSON error): {e}")
-        return False
-    except Exception as e:
-        logger.warning(f"Error checking initialization freshness: {e}")
-        return False
-
-def create_replit_app() -> FastAPI:
-    """Create and configure the FastAPI application specifically for Replit environment.
-    
-    This function creates an app with Replit-specific configurations while maintaining
-    compatibility with Docker and other environments.
-    """
-    # Load environment variables
-    load_environment()
-    
-    # Set default port for Replit
-    port = os.getenv("PORT", "80")
-    api_port = os.getenv("API_PORT", port)
-    host = os.getenv("HOST", "0.0.0.0")
-    
-    # Log port configuration and FastAPI version
-    import fastapi
-    logger.info(f"Configuring Replit app with HOST={host}, PORT={port}, API_PORT={api_port}")
-    logger.info(f"Using FastAPI version: {fastapi.__version__}")
-    logger.info(f"Replit environment: REPL_ID={os.getenv('REPL_ID', 'unknown')}, REPL_SLUG={os.getenv('REPL_SLUG', 'unknown')}")
-    
-    # Create FastAPI app with enhanced metadata
-    app = FastAPI(
-        title="Knowledge Agent API (Replit)",
-        description="API for processing and analyzing text using AI models",
-        version="1.0.0",
-        docs_url="/docs",  # Always enable docs for Replit
-        redoc_url="/redoc"  # Always enable redoc for Replit
-    )
-    
-    # Add middleware from app.py
-    from .app import add_middleware
-    add_middleware(app)
-    
-    # Include the main API routes with the /api/v1 prefix
-    app.include_router(api_router, prefix="/api/v1", tags=["knowledge_agents"])
-    
-    # Create a separate health check endpoint for the /api prefix
-    # This avoids duplicate operation IDs while still providing basic functionality
-    @app.get("/api/health")
-    async def api_health_endpoint():
-        """Health check endpoint at the API root level."""
-        return {"status": "ok", "api": "healthy"}
-    
-    # Add a root path redirect
-    @app.get("/")
-    async def root_redirect():
-        """Redirect root to docs in Replit environment."""
-        return RedirectResponse(url="/docs")
-    
-    # Add a simple health check endpoint at the root level for Replit's health check system
-    @app.get("/healthz")
-    async def healthz():
-        """Simple health check endpoint for Replit's health check system."""
-        return {"status": "ok"}
-    
-    # Add specialized Replit health check at root level
-    @app.get("/health_replit")
-    async def root_health_replit():
-        """API health check endpoint for Replit."""
-        from datetime import datetime, timezone
-        
-        # Call the main health check logic
-        from .routes import health_check_replit as routes_health_check
-        health_data = await routes_health_check()
-        
-        # Add Replit port information
-        health_data["port_config"] = {
-            "api_port": api_port,
-            "port": port,
-            "host": host
-        }
-        
-        return health_data
-        
-    @app.on_event("startup")
-    async def startup_event():
-        """Initialize data processing during startup."""
-        logger.info("Starting application initialization in Replit environment...")
-        worker_id = get_worker_id()
-        logger.info(f"Replit worker {worker_id} starting up")
-        
-        # Create initialization marker files
-        data_dir = Path("data")
-        data_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Use more lightweight initialization for Replit
-        should_initialize = True  # Always initialize in Replit environment
-        
-        if should_initialize:
-            try:
-                logger.info(f"Worker {worker_id} initializing data processing...")
-                await initialize_data_processing()
-            except Exception as e:
-                logger.error(f"Error during initialization: {e}")
-                global _initialization_error
-                _initialization_error = str(e)
-                raise
-        else:
-            logger.info(f"Worker {worker_id} waiting for initialization...")
-            try:
-                logger.info("Waiting for initialization to complete...")
-                await wait_for_initialization()
-                logger.info("Initialization complete, API ready")
-            except Exception as e:
-                logger.error(f"Error waiting for initialization: {e}")
-                raise
-    
-    @app.on_event("shutdown")
-    async def shutdown_event():
-        """Clean up resources on shutdown."""
-        logger.info("Shutting down Replit API instance...")
-        worker_id = get_worker_id()
-        
-        try:
-            shutdown_marker = Path(f"data/.worker_shutdown_{worker_id}")
-            with open(shutdown_marker, "w") as f:
-                f.write(f"{worker_id} shutdown at {datetime.now(pytz.UTC).isoformat()}")
-        except Exception as e:
-            logger.warning(f"Error creating shutdown marker: {e}")
-    
     return app
 
-# Create application instance based on environment rather than directly using create_app()
-from .app import get_app
+# Create the application instance
 app = get_app()

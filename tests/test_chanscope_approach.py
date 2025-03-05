@@ -11,14 +11,12 @@ as defined in approach-chanscope.mdc. It tests:
 4. force_refresh=true behavior
 """
 
-import asyncio
 import os
 import pytest
 import logging
 import sys
 import json
 import time
-import shutil
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
@@ -87,6 +85,10 @@ def chanscope_test_config(tmp_path_factory):
     test_root = tmp_path_factory.mktemp("chanscope_test_data")
     test_stratified = test_root / "stratified"
     test_stratified.mkdir(exist_ok=True)
+    try:
+        os.chmod(str(test_stratified), 0o777)
+    except Exception as e:
+        logger.warning(f"Could not set permissions on {test_stratified}: {e}")
     test_temp = test_root / "temp"
     test_temp.mkdir(exist_ok=True)
     

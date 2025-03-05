@@ -5,8 +5,9 @@ This directory contains the Docker configuration files for deploying the Knowled
 ## Prerequisites
 
 - Docker and Docker Compose installed
-- AWS credentials for S3 access
-- OpenAI API key
+- AWS credentials for S3 access (required for data retrieval)
+- OpenAI API key (required for embeddings and query processing)
+- Optional: Grok and Venice API keys for multi-provider capabilities
 
 ## Environment Setup
 
@@ -28,6 +29,10 @@ AWS_SECRET_ACCESS_KEY=your_aws_secret_key
 AWS_DEFAULT_REGION=your_aws_region
 S3_BUCKET=your_s3_bucket
 
+# Optional Additional Provider Keys
+GROK_API_KEY=your_grok_api_key
+VENICE_API_KEY=your_venice_api_key
+
 # Application Configuration
 LOG_LEVEL=info
 API_PORT=80
@@ -41,6 +46,15 @@ cp .env.template .env.test
 ```
 
 4. Edit the `.env.test` file with appropriate test values.
+
+## Docker Configuration Files
+
+The deployment directory contains several important files:
+
+- `docker-compose.yml`: The main Docker Compose file for production deployment
+- `docker-compose.test.yml`: Docker Compose file configured for testing
+- `Dockerfile`: Defines the container image
+- `setup.sh`: Initialization script that runs when the container starts
 
 ## Recommended Workflow ✅
 
@@ -119,6 +133,46 @@ Running tests directly in the production compose file (`docker-compose.yml`) wit
 
 Use the dedicated testing compose file (`docker-compose.test.yml`) for isolated, controlled testing environments.
 
+## Docker Environment Variables
+
+Key environment variables used in the Docker setup:
+
+### Production Variables
+- `OPENAI_API_KEY`: Required for OpenAI API access
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`: Required for S3 access
+- `S3_BUCKET`: The S3 bucket containing 4chan data
+- `API_PORT`: Port on which the API will be exposed (default: 80)
+- `API_WORKERS`: Number of Gunicorn workers (default: 4)
+- `LOG_LEVEL`: Logging level (default: info)
+- `DATA_REFRESH_INTERVAL`: How often to refresh data (in hours, default: 1)
+- `DATA_RETENTION_DAYS`: How many days of data to retain (default: 30)
+
+### Testing Variables
+- `TEST_MODE`: Set to true for test mode
+- `RUN_TESTS_ON_STARTUP`: Set to true to run tests on startup
+- `TEST_TYPE`: Type of tests to run (default: all)
+- `FORCE_REFRESH`: Force data refresh before tests (default: false)
+- `AUTO_CHECK_DATA`: Automatically check data before tests (default: true)
+- `ABORT_ON_TEST_FAILURE`: Abort deployment on test failure (default: false)
+
+## Data Management
+
+The Knowledge Agent uses several Docker volumes to manage data:
+
+### Production Volumes
+- `data`: Main data directory
+- `data_stratified`: Stratified data samples
+- `data_shared`: Shared data for embeddings and tokens
+- `logs`: Application logs
+- `temp`: Temporary files
+
+### Test Volumes
+- `test_data`: Isolated test data
+- `test_data_stratified`: Isolated stratified test data
+- `test_data_shared`: Isolated shared test data
+- `test_logs`: Test logs
+- `test_temp`: Temporary test files
+
 ## Testing Deployment
 
 To run tests in a Docker environment:
@@ -133,24 +187,6 @@ This will:
 2. Start the container in test mode
 3. Run the test suite
 4. Output test results to the console and test_results directory
-
-### Test Configuration
-
-The test environment uses isolated volumes to prevent interference with production data:
-
-- `test_data`: Isolated test data
-- `test_data_stratified`: Isolated stratified test data
-- `test_data_shared`: Isolated shared test data
-- `test_logs`: Test logs
-- `test_temp`: Temporary test files
-
-### Test Environment Variables
-
-Key environment variables for testing:
-
-- `TEST_MODE`: Set to true for test mode
-- `RUN_TESTS_ON_STARTUP`: Set to true to run tests on startup
-- `TEST_TYPE`: Type of tests to run (default: all)
 
 ## Monitoring and Maintenance
 
@@ -222,6 +258,8 @@ If tests fail during the integrated test and deploy workflow:
 - The application runs as the non-root user `nobody:nogroup`
 - Sensitive environment variables are passed through the `.env` file
 - Data directories have appropriate permissions
+- No sensitive credentials are stored in the container
+- Environment variables containing API keys are marked as sensitive
 
 ## Alignment with Chanscope Approach
 
@@ -240,4 +278,22 @@ This Docker setup aligns with the Chanscope approach requirements:
    - Validation of initial data load
    - Embedding generation testing
    - Incremental processing testing
-   - Force refresh behavior testing 
+   - Force refresh behavior testing
+
+## Automated Deployment
+
+The project includes scripts for automated deployment:
+
+- `scripts/test_and_deploy.sh`: Runs tests and deploys if tests pass
+- `deployment/setup.sh`: Sets up the container environment on startup
+
+## Replit Deployment
+
+For Replit deployment, the project includes specialized configuration:
+
+- Environment variables are set through Replit Secrets
+- Path handling is adapted for Replit's filesystem
+- Memory management is optimized for Replit's constraints
+- Startup is handled through Replit's run button
+
+The Knowledge Agent should work seamlessly on Replit with minimal configuration changes. 

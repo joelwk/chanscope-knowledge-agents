@@ -1,27 +1,13 @@
 ---
-description: This rule file provides guidelines for Docker deployment, ensuring volumes, environment variables, and service orchestration align with the Chanscope approach's data processing requirement
-globs: */docker-compose*.yml", */Docker*, */deployment/**/*.sh
+description: These rules define the operational requirements for containerized deployment of the Chanscope application, ensuring that Docker configurations properly support the data ingestion, processing, and query pipeline defined in the Chanscope approach.
+globs: **/docker-compose*.yml,*/Docker* ,*/deployment/**/*.sh
 alwaysApply: false
 ---
 # Chanscope Deployment Rules
 
 This file provides guidelines for Chanscope deployment with Docker, ensuring alignment between infrastructure components and the core Chanscope approach.
 
-## Description
-
-These rules define the operational requirements for containerized deployment of the Chanscope application, ensuring that Docker configurations properly support the data ingestion, processing, and query pipeline defined in the Chanscope approach.
-
-## File Patterns
-
-```
-**/docker-compose*.yml
-**/Docker*
-**/deployment/**/*.sh
-```
-
 ## Production Deployment Requirements
-
-When working with `docker-compose.yml` and `Dockerfile`, ensure the following requirements are met:
 
 ### 1. Volume Configuration
 
@@ -34,7 +20,7 @@ When working with `docker-compose.yml` and `Dockerfile`, ensure the following re
 
 ### 2. Environment Configuration
 
-- **Data Retention**: `DATA_RETENTION_DAYS` must be set appropriately (default: 30).
+- **Data Retention**: `DATA_RETENTION_DAYS` must be set appropriately (default: 14).
 - **Data Scheduler**: `ENABLE_DATA_SCHEDULER` should be true by default with proper `DATA_UPDATE_INTERVAL` (default: 3600s).
 - **AWS Configuration**: All AWS credentials must be properly passed for S3 data ingestion.
 - **Test Configuration**: `RUN_TESTS_ON_STARTUP` should be set to false in production unless testing is explicitly required.
@@ -82,7 +68,7 @@ The API must maintain consistent method names and signatures:
 
 ### 4. Startup Data Loading Considerations
 
-- **Extended Health Check Start Period**: Health checks must account for initial data loading from S3, which can take significant time. Set `start_period` to at least 60-120 seconds.
+- **Extended Health Check Start Period**: Health checks must account for initial data loading from S3, which can take significant time. Set `start_period` to at least 120-300 seconds.
 - **Health Check Retries**: Configure sufficient retries (3-5) to account for data loading delays.
 - **Startup Logging**: Ensure comprehensive logging during startup to track data loading progress.
 - **False Positive Prevention**: Health checks should not report false positives during initial data loading phase.
@@ -176,7 +162,7 @@ Docker Compose files must comply with standard Docker Compose schema:
 - Volumes must be declared appropriately
 
 When encountering linter errors in Docker Compose files, validate:
-1. The Docker Compose file version is specified
+1. The Docker Compose file version is specified or commented with explanation
 2. Top-level keys are valid for the specified version
 3. Service, network, and volume configurations follow the official schema
 
@@ -271,7 +257,7 @@ The `start_period` should be long enough to allow:
 
 Proper logging configuration must be in place:
 - Application logs in `/app/logs`
-- Scheduler logs in `/app/data/logs/scheduler.log`
+- Scheduler logs in `scheduler.log`
 - Container logs accessible via `docker-compose logs`
 - Utility logs should be consolidated in the `/app/logs` directory, not in the application root
 - All log files should use the centralized logging configuration from `config/logging_config.py`
@@ -350,54 +336,109 @@ If you encounter errors like `[Errno 16] Device or resource busy: '/app/data'`:
 ### Production Configuration
 
 ```yaml
-version: '3.8'
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# The version attribute is now auto-detected and the explicit declaration is obsolete
+
 services:
   app:
     build:
       context: ..
       dockerfile: deployment/Dockerfile
     volumes:
+      # Configuration files
+      - type: bind
+        source: ../.env
+        target: /app/.env
+        read_only: true
+      # Application code
+      - type: bind
+        source: ../api
+        target: /app/api
+        read_only: true
+      - type: bind
+        source: ../config
+        target: /app/config
+        read_only: true
+      - type: bind
+        source: ../knowledge_agents
+        target: /app/knowledge_agents
+        read_only: true
       - type: volume
         source: app_data
         target: /app/data
+      # Persistent volumes
+      - type: volume
+        source: poetry_cache
+        target: /app/.cache/pypoetry
       - type: volume
         source: app_logs
         target: /app/logs
+      - type: volume
+        source: app_temp
+        target: /app/temp_files
     environment:
-      - DATA_RETENTION_DAYS=30
+      # Docker environment settings
+      - DOCKER_ENV=true
+      - PYTHONPATH=/app
+      # Data management settings
+      - DATA_RETENTION_DAYS=14
       - ENABLE_DATA_SCHEDULER=true
+      - DATA_UPDATE_INTERVAL=3600
+      # Test execution control
       - RUN_TESTS_ON_STARTUP=false
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/api/v1/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 120s
+      - TEST_MODE=false
 ```
 
 ### Test Configuration
 
 ```yaml
-version: '3.8'
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# The version attribute is now auto-detected and the explicit declaration is obsolete
+
 services:
   chanscope-test:
     build:
       context: ..
       dockerfile: deployment/Dockerfile
     volumes:
+      # Configuration files
+      - type: bind
+        source: ../.env.test
+        target: /app/.env
+        read_only: true
+      # Test files with read-write for scripts and results
+      - type: bind
+        source: ../scripts
+        target: /app/scripts
+      - type: bind
+        source: ../tests
+        target: /app/tests
+        read_only: true
+      - type: bind
+        source: ../test_results
+        target: /app/test_results
+      # Isolated test volumes
       - type: volume
         source: test_data
         target: /app/data
+      - type: volume
+        source: test_logs
+        target: /app/logs
     environment:
+      # Test environment settings
       - TEST_MODE=true
+      # Test execution control
       - RUN_TESTS_ON_STARTUP=true
+      - TEST_TYPE=all
     command: ["bash", "/app/scripts/run_tests.sh", "--all"]
 ```
 
 ### Integrated Test and Deploy
 
 ```yaml
-version: '3.8'
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+# The version attribute is now auto-detected and the explicit declaration is obsolete
+
 services:
   app:
     build:
@@ -410,26 +451,6 @@ services:
       - ABORT_ON_TEST_FAILURE=false
     healthcheck:
       start_period: 300s  # Extended to account for test execution
-```
-
-### Clean Deployment Configuration
-
-```yaml
-version: '3.8'
-services:
-  app:
-    build:
-      context: ..
-      dockerfile: deployment/Dockerfile
-    volumes:
-      - type: volume
-        source: app_data
-        target: /app/data
-        # Use 'nocopy' option to ensure a clean volume
-        volume:
-          nocopy: true
-    environment:
-      - FORCE_DATA_REFRESH=true  # Force data refresh on startup
 ```
 
 ## Windows-Specific Considerations

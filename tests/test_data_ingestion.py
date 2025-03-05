@@ -6,6 +6,7 @@ import shutil
 import logging
 from datetime import datetime, timedelta
 import pytz
+import os
 
 from knowledge_agents.data_ops import (
     DataConfig,
@@ -79,7 +80,20 @@ def test_data_ops(test_config):
 
 @pytest.fixture
 def setup_test_data(test_config):
-    """Setup test data and directory structure."""
+    """Setup test data and directory structure with proper directory creation and permissions."""
+    # Ensure directories exist
+    test_config.root_data_path.mkdir(parents=True, exist_ok=True)
+    if test_config.stratified_data_path:
+        test_config.stratified_data_path.mkdir(parents=True, exist_ok=True)
+    
+    # Try to set permissions
+    try:
+        os.chmod(str(test_config.root_data_path), 0o777)
+        if test_config.stratified_data_path:
+            os.chmod(str(test_config.stratified_data_path), 0o777)
+    except Exception as e:
+        logger.warning(f"Could not set permissions for directories: {e}")
+    
     # Create test DataFrame
     df = pd.DataFrame(TEST_DATA)
     

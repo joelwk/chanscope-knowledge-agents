@@ -1,39 +1,65 @@
+# =============================================
+# Basic Configuration
+# =============================================
 modules = ["python-3.11"]
 hidden = [".pythonlibs"]
 run = "bash deployment/setup.sh"
 
+# =============================================
+# Nix Configuration
+# =============================================
 [nix]
 channel = "stable-23_11"
 
+# =============================================
+# Environment Variables
+# =============================================
 [env]
-PYTHONPATH = "${REPL_HOME}"
+PYTHONPATH = "${PYTHONPATH}:${REPL_HOME}"
 PYTHONUNBUFFERED = "1"
 REPLIT_ENV = "replit"
 API_PORT = "80"
 PORT = "80"
 HOST = "0.0.0.0"
+DOCKER_ENV = "false"
 
+# Testing Configuration
+TEST_MODE = "false"  # Default to false for deployment
+USE_MOCK_DATA = "true"
+USE_MOCK_EMBEDDINGS = "true"
+AUTO_CHECK_DATA = "true"
+
+# =============================================
+# Deployment Configuration
+# =============================================
 [deployment]
 run = ["bash", "deployment/setup.sh"]
-build = ["sh", "-c", "poetry install --only main"]
-deploymentTarget = "cloudrun"
+build = ["poetry", "install", "--only", "main"]
 
-# Configure the primary HTTP port for the API
+# =============================================
+# Port Configuration
+# =============================================
 [[ports]]
 localPort = 80
 externalPort = 80
 
-# Health check configuration
+# =============================================
+# Health Check Configuration
+# =============================================
 [deployment.healthCheck]
-path = "/healthz"
+path = "/api/v1/health"
 port = 80
-initialDelay = 5
+initialDelay = 120     # Increased to allow for startup operations
+timeout = 3            # Reduced for faster failure detection
+period = 10           # More frequent checks
+consecutiveSuccesses = 1  # Only need one success to confirm health
+consecutiveFailures = 2   # Fail faster if truly unhealthy
 
-# Remove external mapping for port 8001:
-# [[ports]]
-# localPort = 8001
-# externalPort = 8001
-# exposeLocalhost = true
+
+# =============================================
+# Language Configuration
+# =============================================
+[languages]
 
 [languages.python3]
 pattern = "**/*.py"
@@ -41,3 +67,46 @@ syntax = "python"
 
 [languages.python3.languageServer]
 start = "pylsp"
+
+# =============================================
+# Package Manager Configuration
+# =============================================
+[packager]
+language = "python3"
+
+[packager.features]
+packageSearch = true
+guessImports = true
+
+# =============================================
+# UPM Configuration
+# =============================================
+[unitTest]
+language = "python3"
+
+# =============================================
+# Interpreter Configuration
+# =============================================
+[interpreter]
+command = ["python3", "-u"]
+
+[workflows]
+runButton = "deploy"
+
+[[workflows.workflow]]
+name = "deploy"
+mode = "sequential"
+author = 38779469
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash deployment/setup.sh"
+
+[[workflows.workflow]]
+name = "test"
+mode = "sequential"
+author = 38779469
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/run_tests.sh --env=replit"

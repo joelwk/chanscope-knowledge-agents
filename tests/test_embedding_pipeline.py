@@ -78,6 +78,7 @@ async def test_embedding_pipeline(test_data_config):
         # Step 1: Create and save sample data
         sample_df = create_sample_data()
         complete_data_path = test_data_config.root_data_path / 'complete_data.csv'
+        complete_data_path.parent.mkdir(parents=True, exist_ok=True)
         sample_df.to_csv(complete_data_path, index=False)
         logger.info(f"Created sample data with {len(sample_df)} records")
         

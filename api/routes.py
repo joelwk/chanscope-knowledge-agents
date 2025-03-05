@@ -5,13 +5,11 @@ import os
 import gc
 import yaml
 import asyncio
-import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, Union, List, Tuple
 from collections import deque
 
-import hashlib
 import json
 import shutil
 from filelock import FileLock
@@ -33,7 +31,7 @@ from knowledge_agents.model_ops import (
     ModelConfig,
     load_config)
  
-from knowledge_agents.embedding_ops import get_agent, merge_articles_and_embeddings
+from knowledge_agents.embedding_ops import get_agent
 from knowledge_agents.data_processing.cloud_handler import S3Handler
 from knowledge_agents.data_ops import DataConfig, DataOperations
 from knowledge_agents.inference_ops import process_multiple_queries_efficient, process_query
@@ -49,6 +47,11 @@ from config.config_utils import (
 from config.logging_config import get_logger
 from api.models import HealthResponse, StratificationResponse, log_endpoint_call
 from api.cache import CACHE_HITS, CACHE_MISSES, CACHE_ERRORS, cache
+from api.exceptions import (
+    ValidationError,
+)
+
+from config.env_loader import is_replit_environment, get_replit_paths
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -66,87 +69,6 @@ _BATCH_SIZE = Config.get_model_settings()['embedding_batch_size']  # Batch size 
 _BATCH_WAIT_TIME = 2  # Seconds to wait for batch accumulation
 _last_batch_processing_time = 0  # Track processing time for ETA estimates
 _query_batch = deque()  # Initialize the query batch queue
-
-# Enhanced error handling classes
-class APIError(Exception):
-    """Base exception for API errors with structured logging."""
-    def __init__(
-        self, 
-        message: str, 
-        status_code: int = 500,
-        error_code: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-        original_error: Optional[Exception] = None
-    ):
-        self.message = message
-        self.status_code = status_code
-        self.error_code = error_code or self.__class__.__name__
-        self.details = details or {}
-        self.original_error = original_error
-        super().__init__(self.message)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert error to structured dictionary for logging and response."""
-        error_dict = {
-            "error": self.error_code,
-            "message": self.message,
-            "status_code": self.status_code,
-            "details": self.details,
-            "timestamp": datetime.now(pytz.UTC).isoformat()
-        }
-        if self.original_error:
-            error_dict["original_error"] = {
-                "type": type(self.original_error).__name__,
-                "message": str(self.original_error)
-            }
-        return error_dict
-
-    def log_error(self, logger: logging.Logger):
-        """Log error with consistent structure."""
-        error_dict = self.to_dict()
-        logger.error(
-            f"{self.error_code}: {self.message}",
-            extra={
-                "error_details": error_dict,
-                "status_code": self.status_code,
-                "traceback": traceback.format_exc() if self.original_error else None
-            }
-        )
-
-class ValidationError(APIError):
-    """Exception for request validation errors."""
-    def __init__(
-        self, 
-        message: str,
-        field: Optional[str] = None,
-        value: Optional[Any] = None
-    ):
-        details = {"field": field, "value": value} if field else {}
-        super().__init__(
-            message=message,
-            status_code=400,
-            error_code="VALIDATION_ERROR",
-            details=details
-        )
-
-class ConfigurationError(APIError):
-    """Exception for configuration errors."""
-    def __init__(
-        self, 
-        message: str,
-        config_key: Optional[str] = None,
-        config_value: Optional[Any] = None
-    ):
-        details = {
-            "config_key": config_key,
-            "config_value": str(config_value) if config_value is not None else None
-        } if config_key else {}
-        super().__init__(
-            message=message,
-            status_code=500,
-            error_code="CONFIGURATION_ERROR",
-            details=details
-        )
 
 # Import run_inference lazily to avoid circular import
 def get_run_inference():
@@ -203,14 +125,26 @@ async def health_check() -> HealthResponse:
         env_info = {
             "docker_env": Config.get_api_settings()['docker_env'],
             "service_type": os.getenv("SERVICE_TYPE", "unknown"),
-            "api_version": "1.0.0"
+            "api_version": "1.0.0",
+            "is_replit": is_replit_environment(),
+            "replit_env": os.getenv("REPLIT_ENV", ""),
+            "repl_id": os.getenv("REPL_ID", "")
+        }
+
+        # Check data directories
+        paths = get_replit_paths() if is_replit_environment() else {}
+        data_status = {
+            "root_data_exists": os.path.exists(paths.get("root_data_path", "/app/data")),
+            "stratified_data_exists": os.path.exists(paths.get("stratified_path", "/app/data/stratified")),
+            "logs_exists": os.path.exists(paths.get("logs_path", "/app/logs"))
         }
 
         response = HealthResponse(
             status="healthy",
             message="Service is running",
             timestamp=datetime.now(pytz.UTC),
-            environment=env_info
+            environment=env_info,
+            data_status=data_status
         )
 
         duration_ms = round((time.time() - start_time) * 1000, 2)
@@ -308,6 +242,15 @@ async def health_check_replit():
         "processor": platform.processor(),
         "memory": f"{os.getenv('REPL_MEMORY', 'unknown')} MB"
     }
+
+    # Check data directories and permissions
+    paths = get_replit_paths()
+    data_status = {
+        "root_data_exists": os.path.exists(paths["root_data_path"]),
+        "stratified_data_exists": os.path.exists(paths["stratified_path"]),
+        "logs_exists": os.path.exists(paths["logs_path"]),
+        "temp_exists": os.path.exists(paths["temp_path"])
+    }
     
     return {
         "status": "healthy",
@@ -316,6 +259,7 @@ async def health_check_replit():
         "environment": environment_vars,
         "service": service_config,
         "system": system_info,
+        "data": data_status,
         "version": "1.0.0"
     }
 
@@ -437,7 +381,7 @@ async def provider_health(
             endpoint=f"/health/provider/{provider}",
             method="GET",
             duration_ms=duration_ms,
-            params={"provider": provider, "response": response}
+            params={"provider": provider}
         )
             
         return response
@@ -754,12 +698,8 @@ async def base_query(
             logger=logger,
             endpoint="/query",
             method="POST",
-            params={
-                "task_id": task_id,
-                "query_length": len(request.query) if request.query else 0,
-                "use_background": request.use_background
-            },
-            duration_ms=duration_ms
+            duration_ms=duration_ms,
+            params={"query": request.query[:50] + "..." if len(request.query) > 50 else request.query}
         )
 
 async def _process_single_query(
@@ -1065,13 +1005,6 @@ async def get_batch_status(task_id: str) -> Dict[str, Any]:
                         )
         duration_ms = round((time.time() - start_time) * 1000, 2)
         logger.debug(f"get_batch_status for {task_id} took {duration_ms} ms with response: {response}")
-        log_endpoint_call(
-            logger=logger,
-            endpoint=f"/batch_status/{task_id}",
-            method="GET",
-            duration_ms=duration_ms,
-            params={"task_id": task_id}
-        )
         return response
 
     except ValidationError as e:
@@ -1162,8 +1095,9 @@ async def process_recent_query(
             logger=logger,
             endpoint="/process_recent_query",
             method="GET",
-            params=log_params,
-            duration_ms=None)
+            duration_ms=None,
+            params=log_params
+        )
 
         # Reuse process_query endpoint logic for consistency
         result = await base_query(
@@ -1567,33 +1501,8 @@ def handle_error(e: Exception) -> None:
             detail=error.to_dict()
         )
 
-# Utility function for structured logging
-def log_endpoint_call(
-    logger: logging.Logger,
-    endpoint: str,
-    method: str,
-    params: Optional[Dict[str, Any]] = None,
-    duration_ms: Optional[float] = None
-):
-    """Log endpoint calls with consistent structure."""
-    log_data = {
-        "endpoint": endpoint,
-        "method": method,
-        "timestamp": datetime.now(pytz.UTC).isoformat()
-    }
-    if params:
-        log_data["parameters"] = params
-    if duration_ms is not None:
-        log_data["duration_ms"] = duration_ms
-
-    logger.info(
-        f"{method} {endpoint}",
-        extra={"endpoint_data": log_data}
-    )
-
 async def _add_to_query_batch(request: QueryRequest) -> str:
     """Add query to batch queue and return batch ID."""
-    # This function is not called anywhere in the code
     batch_id = f"batch_{int(time.time())}_{len(_query_batch)}"
     _query_batch.append({
         "id": batch_id,
@@ -1603,7 +1512,6 @@ async def _add_to_query_batch(request: QueryRequest) -> str:
 
 def _should_process_batch() -> bool:
     """Determine if batch should be processed based on size and wait time."""
-    # This function is not called anywhere in the code
     if len(_query_batch) >= _BATCH_SIZE:
         return True
     if _query_batch and (datetime.now(pytz.UTC) - _query_batch[0]["timestamp"]).total_seconds() >= _BATCH_WAIT_TIME:
@@ -1612,7 +1520,6 @@ def _should_process_batch() -> bool:
 
 def _estimate_processing_time() -> int:
     """Estimate processing time based on batch size and historical data."""
-    # This function is only used in get_batch_status but references _query_batch which is unused
     batch_size = len(_query_batch)
     avg_time_per_query = _last_batch_processing_time / _BATCH_SIZE if _last_batch_processing_time > 0 else 2
     position_in_queue = len(_query_batch) - 1

@@ -28,7 +28,11 @@ class S3Handler:
         self.region_name = aws_settings['aws_default_region'].strip()
         self.aws_access_key_id = aws_settings['aws_access_key_id'].strip()
         self.aws_secret_access_key = aws_settings['aws_secret_access_key'].strip()
-        self.select_board = processing_settings.get('select_board', '').strip() or None
+        
+        # Fix for handling None value in select_board
+        select_board = processing_settings.get('select_board')
+        self.select_board = select_board.strip() if select_board else None
+        
         self.s3 = self._create_s3_client()
 
     @property
@@ -401,14 +405,18 @@ class CloudHandler:
 def parse_filter_date(date_str: Optional[str]) -> Optional[datetime]:
     """Parse a filter date string into a timezone-aware datetime object."""
     if not date_str:
+        logger.warning("No filter date provided, will process all available data")
         return None
+    
     try:
+        logger.info(f"Parsing filter date: {date_str}")
         dt = pd.to_datetime(date_str)
         if dt.tzinfo is None:
             dt = dt.tz_localize('UTC')
+        logger.info(f"Successfully parsed filter date to: {dt.isoformat()}")
         return dt
     except Exception as e:
-        logger.exception(f"Error parsing filter date: {date_str}")
+        logger.error(f"Error parsing filter date '{date_str}': {e}", exc_info=True)
         return None
 
 
@@ -434,7 +442,9 @@ async def load_all_csv_data_from_s3(
     
     filter_date = parse_filter_date(latest_date_processed)
     if filter_date:
-        logger.info(f"Using filter timestamp: {filter_date.isoformat()}")
+        logger.info(f"Using filter timestamp: {filter_date.isoformat()} UTC")
+    else:
+        logger.warning("No valid filter date provided, will process all available data")
 
     # Create S3Handler with custom processing settings if board_id is provided
     if board_id:
