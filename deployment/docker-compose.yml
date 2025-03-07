@@ -44,6 +44,10 @@ services:
       - type: volume
         source: app_temp
         target: /app/temp_files
+      - type: bind
+        source: ../scripts
+        target: /app/scripts
+        read_only: false
     user: "nobody:nogroup"
     env_file:
       - ../.env

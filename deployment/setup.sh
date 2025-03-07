@@ -388,7 +388,7 @@ fi
 if [ "$AUTO_CHECK_DATA" = "true" ]; then
     if ! check_data_status; then
         echo -e "${YELLOW}Data refresh needed. Starting initial data update in background...${NC}"
-        (cd "${APP_ROOT}" && poetry run python scripts/scheduled_update.py --run_once 2>&1 | tee -a "${SCHEDULER_LOG}" &)
+        (cd "${APP_ROOT}" && python scripts/scheduled_update.py --run_once 2>&1 | tee -a "${SCHEDULER_LOG}" &)
         echo -e "${GREEN}Data initialization started in background.${NC}"
     else
         echo -e "${GREEN}Using existing data as it's up-to-date.${NC}"

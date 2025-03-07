@@ -22,7 +22,7 @@ from fastapi import FastAPI
 
 from knowledge_agents.data_ops import DataConfig, DataOperations
 from config.logging_config import get_logger
-from config.env_loader import is_replit_environment
+from config.env_loader import is_replit_environment, is_docker_environment
 
 # Setup logging using centralized configuration
 logger = get_logger(__name__)
@@ -327,6 +327,7 @@ def is_primary_worker() -> bool:
     logger.info(f"Worker {worker_id} primary status: {is_primary}")
     return is_primary
 
+
 # Import the standard app creation function
 from .app import create_app
 
@@ -343,6 +344,10 @@ def extend_app(app: FastAPI) -> FastAPI:
         worker_id = get_worker_id()
         logger.info(f"Worker {worker_id} starting up")
         
+        # Log environment detection
+        is_docker = is_docker_environment()
+        logger.info(f"Docker environment detected: {is_docker}")
+        
         # Create initialization marker files
         data_dir = Path("data")
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -350,6 +355,11 @@ def extend_app(app: FastAPI) -> FastAPI:
         completion_marker = data_dir / ".initialization_complete"
         lock_file = data_dir / ".worker.lock"
         worker_specific_lock = data_dir / f".worker.lock.{worker_id}"
+        
+        # Explicitly set DOCKER_ENV if detected but not set
+        if is_docker and os.environ.get("DOCKER_ENV", "").lower() != "true":
+            logger.info("Setting DOCKER_ENV=true based on environment detection")
+            os.environ["DOCKER_ENV"] = "true"
         
         try:
             # Determine if this worker should handle initialization
@@ -400,6 +410,25 @@ def extend_app(app: FastAPI) -> FastAPI:
                         logger.info(f"Cleaned up marker file: {completion_marker}")
                     except Exception as e:
                         logger.warning(f"Failed to clean up marker file: {e}")
+                
+                # Schedule periodic cleanup of old results
+                from .routes import _cleanup_old_results
+                
+                async def run_periodic_cleanup():
+                    """Run the cleanup task periodically."""
+                    cleanup_interval = int(os.getenv('RESULT_CLEANUP_INTERVAL', '300'))  # Default: 5 minutes
+                    logger.info(f"Starting periodic result cleanup (interval: {cleanup_interval}s)")
+                    while True:
+                        try:
+                            await asyncio.sleep(cleanup_interval)
+                            await _cleanup_old_results()
+                        except Exception as e:
+                            logger.error(f"Error in periodic cleanup: {e}")
+                            await asyncio.sleep(60)  # Wait a minute before retrying
+                
+                # Start the cleanup task
+                asyncio.create_task(run_periodic_cleanup())
+                logger.info("Periodic result cleanup scheduled")
                 
                 logger.info("Primary worker initialization complete")
             else:
@@ -551,11 +580,7 @@ def extend_app(app: FastAPI) -> FastAPI:
 
 # Function to get the appropriate app instance based on environment
 def get_app() -> FastAPI:
-    """Get the appropriate FastAPI application based on current environment.
-    
-    This centralizes app creation logic and ensures consistent configuration.
-    For Replit environments, it applies Replit-specific extensions.
-    """
+    """Get the appropriate FastAPI application based on current environment."""
     # Create the base app
     app = create_app()
     
@@ -571,11 +596,66 @@ def get_app() -> FastAPI:
             """Health check endpoint specifically for Replit."""
             from .routes import health_check_replit
             return await health_check_replit()
-    else:
+    elif is_docker_environment():
+        logger.info("Configuring app for Docker environment")
+        from config.env_loader import configure_docker_environment
+        configure_docker_environment()
+        
         # Apply standard extensions
+        app = extend_app(app)
+    else:
+        # Apply standard extensions for local environment
+        logger.info("Configuring app for local environment")
         app = extend_app(app)
         
     return app
 
 # Create the application instance
 app = get_app()
+
+async def wait_for_initialization(timeout: int = 600) -> bool:
+    """Wait for data initialization to complete.
+    
+    This function checks for the completion marker file that indicates
+    the primary worker has finished initializing the data.
+    
+    Args:
+        timeout: Maximum time to wait in seconds (default: 10 minutes)
+        
+    Returns:
+        bool: True if initialization completed, False if timed out
+    """
+    data_dir = Path("data")
+    completion_marker = data_dir / ".initialization_complete"
+    init_marker = data_dir / ".initialization_in_progress"
+    
+    start_time = asyncio.get_event_loop().time()
+    check_interval = int(os.getenv('INIT_CHECK_INTERVAL', '5'))
+    logger.info(f"Waiting for initialization to complete (timeout: {timeout}s, check interval: {check_interval}s)...")
+    
+    while not completion_marker.exists():
+        # Check if initialization is still in progress
+        if not init_marker.exists():
+            # If neither marker exists, initialization might have failed
+            logger.warning("Initialization marker not found, initialization may have failed")
+            # Check if data exists anyway
+            data_config = DataConfig.from_config()
+            complete_data_path = data_config.root_data_path / 'complete_data.csv'
+            embeddings_path = data_config.stratified_data_path / 'embeddings.npz'
+            
+            if complete_data_path.exists() and embeddings_path.exists():
+                logger.info("Data files exist despite missing markers, considering initialization complete")
+                return True
+        
+        elapsed = asyncio.get_event_loop().time() - start_time
+        if elapsed > timeout:
+            logger.error(f"Initialization completion timeout after {elapsed:.1f}s")
+            return False
+            
+        remaining = timeout - elapsed
+        logger.info(f"Waiting for initialization to complete... ({remaining:.1f}s remaining)")
+        await asyncio.sleep(check_interval)
+    
+    elapsed = asyncio.get_event_loop().time() - start_time
+    logger.info(f"Initialization completed in {elapsed:.1f}s")
+    return True

@@ -1,4 +1,4 @@
-# Chanscope Knowledge Agent
+# Chanscope Retrieval
 
 ## Overview
 An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice) for comprehensive 4chan data analysis to extract actionable insights and patterns. The system provides a robust API layer that can be integrated with autonomous AI agents and agentic systems. It employs intelligent sampling techniques and a multi-stage analysis pipeline to process large volumes of 4chan data, enabling temporal analysis, cross-source verification, and predictive analytics.
@@ -86,6 +86,8 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
   - Comprehensive error handling with detailed feedback
   - Batch processing for high-volume requests
   - Authentication and rate limiting for production use
+  - Persistent task tracking with detailed status reporting
+  - Automatic cleanup of old results with history preservation
 
 For greater technical details and examples, refer to the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
 
@@ -117,7 +119,7 @@ For greater technical details and examples, refer to the [knowledge-agents](http
 
 ## Integration with Agentic Systems
 
-The Knowledge Agent is designed to serve as a backend for AI agents and agentic systems through its API layer:
+The Chanscope Retrieval is designed to serve as a backend for AI agents and agentic systems through its API layer:
 
 ### Agent Integration Patterns
 - **Direct API Consumption**: Agents can directly query the API endpoints
@@ -182,12 +184,13 @@ For detailed testing instructions, see [tests/README_TESTING.md](tests/README_TE
 
 ## API Endpoints
 
-The Knowledge Agent provides a comprehensive set of API endpoints for querying and managing data:
+The Chanscope Retrieval provides a comprehensive set of API endpoints for querying and managing data:
 
 - **Health Check Endpoints**: Various health check endpoints to verify system status
 - **Query Processing Endpoints**: Synchronous and asynchronous query processing
 - **Batch Processing**: Process multiple queries in a batch
 - **Data Management**: Endpoints for triggering data stratification and embedding generation
+- **Task Management**: Enhanced task status tracking with persistent history
 
 For detailed API usage examples, see [tests/knowledge_agent_api_tests.md](tests/knowledge_agent_api_tests.md)
 

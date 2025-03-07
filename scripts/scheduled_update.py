@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Detect environment
 def detect_environment():
     """Detect the current execution environment."""
-    if os.path.exists('/.dockerenv'):
+    if os.path.exists('/app'):
         return "docker"
     elif os.environ.get('REPL_ID'):
         return "replit"

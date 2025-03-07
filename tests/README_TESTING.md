@@ -1,10 +1,10 @@
-# Chanscope Testing Framework
+# Chanscope Retrieval Testing Framework
 
-This document provides an overview of the Chanscope testing framework, including how to run tests in different environments and the structure of the test scripts.
+This document provides an overview of the Chanscope Retrieval testing framework, including how to run tests in different environments and the structure of the test scripts.
 
 ## Test Structure
 
-The Chanscope testing framework is designed to work across multiple environments:
+The Chanscope Retrieval testing framework is designed to work across multiple environments:
 
 - **Local**: For running tests on your local machine
 - **Docker**: For running tests in a Docker container
@@ -20,7 +20,7 @@ The test scripts are organized as follows:
 
 ## Test Categories
 
-The Chanscope testing framework includes the following test categories:
+The Chanscope Retrieval testing framework includes the following test categories:
 
 ### Data Ingestion Tests (`test_data_ingestion.py`)
 
@@ -46,12 +46,12 @@ Tests for API endpoints, including health checks and query processing.
 scripts/run_tests.sh --endpoints
 ```
 
-### Chanscope Approach Tests (`test_chanscope_approach.py`)
+### Chanscope Retrieval Approach Tests (`test_Chanscope Retrieval_approach.py`)
 
-Tests for the complete Chanscope approach implementation.
+Tests for the complete Chanscope Retrieval approach implementation.
 
 ```bash
-scripts/run_tests.sh --chanscope-approach
+scripts/run_tests.sh --Chanscope Retrieval-approach
 ```
 
 ## Running Tests
@@ -90,8 +90,8 @@ scripts/run_tests.sh --embedding
 # Run only API endpoint tests
 scripts/run_tests.sh --endpoints
 
-# Run only Chanscope approach tests
-scripts/run_tests.sh --chanscope-approach
+# Run only Chanscope Retrieval approach tests
+scripts/run_tests.sh --Chanscope Retrieval-approach
 ```
 
 ### Additional Options
@@ -156,7 +156,7 @@ Before testing the API endpoints, set up your environment by specifying the base
 
 ```bash
 # Set the base URL you want to use for testing
-BASE_URL="https://chanscope.replit.app"  # Replit environment
+BASE_URL="https://Chanscope Retrieval.replit.app"  # Replit environment
 # or
 BASE_URL="http://localhost"              # Local environment
 API_PATH="/api/v1"
@@ -254,7 +254,7 @@ For a complete list of API test commands, please refer to [tests/knowledge_agent
 
 ## Docker-Based Testing
 
-The primary script for running Docker-based tests is `scripts/docker_tests.sh`. This script has been enhanced to support the Chanscope approach for data management and testing.
+The primary script for running Docker-based tests is `scripts/docker_tests.sh`. This script has been enhanced to support the Chanscope Retrieval approach for data management and testing.
 
 ### Basic Usage
 
@@ -274,9 +274,9 @@ The primary script for running Docker-based tests is `scripts/docker_tests.sh`. 
 
 ### Key Features
 
-The Docker testing script supports several features that align with the Chanscope approach:
+The Docker testing script supports several features that align with the Chanscope Retrieval approach:
 
-1. **Automatic Data Checking**: By default, the script checks if the data is up-to-date according to the Chanscope approach rules and refreshes it only if needed (when data is missing, embeddings are missing, or data is older than specified retention period).
+1. **Automatic Data Checking**: By default, the script checks if the data is up-to-date according to the Chanscope Retrieval approach rules and refreshes it only if needed (when data is missing, embeddings are missing, or data is older than specified retention period).
 
 2. **Force Refresh Option**: Use `--force-refresh` to explicitly force data regeneration regardless of current status.
 
@@ -287,12 +287,12 @@ The Docker testing script supports several features that align with the Chanscop
    - `--data-ingestion`: Test only the data ingestion process
    - `--embedding`: Test only the embedding generation functionality
    - `--endpoints`: Test only the API endpoints
-   - `--chanscope-approach`: Test the complete Chanscope approach pipeline
+   - `--Chanscope Retrieval-approach`: Test the complete Chanscope Retrieval approach pipeline
 
 ### Advanced Options
 
 ```bash
-# Use the setup.sh script for testing (follows Chanscope approach)
+# Use the setup.sh script for testing (follows Chanscope Retrieval approach)
 ./scripts/docker_tests.sh --use-setup
 
 # Disable automatic data checking (use existing data as is)
@@ -302,9 +302,9 @@ The Docker testing script supports several features that align with the Chanscop
 ./scripts/docker_tests.sh --embedding --force-refresh --use-setup
 ```
 
-## How Testing Works with the Chanscope Approach
+## How Testing Works with the Chanscope Retrieval Approach
 
-When running with `--use-setup`, the testing process follows the Chanscope approach:
+When running with `--use-setup`, the testing process follows the Chanscope Retrieval approach:
 
 1. **Data Verification**: 
    - Checks if `complete_data.csv` exists
@@ -320,7 +320,7 @@ When running with `--use-setup`, the testing process follows the Chanscope appro
    - Runs the specified tests after data preparation
    - Logs detailed results to the test_results directory
 
-This approach ensures that tests run in an environment that closely matches production while following the data processing guidelines defined in the Chanscope approach.
+This approach ensures that tests run in an environment that closely matches production while following the data processing guidelines defined in the Chanscope Retrieval approach.
 
 ## Troubleshooting
 
@@ -383,10 +383,50 @@ echo "Task ID: $TASK_ID"
 curl -X GET "${BASE_URL}${API_PATH}/batch_status/$TASK_ID"
 ```
 
+### Task Status Tracking
+
+The Knowledge Agent now includes an enhanced task status tracking system that provides detailed information about the status of background tasks:
+
+- **Task Status Persistence**: Task status information is now persisted to disk in a `batch_history.json` file, allowing status retrieval even after the task has been removed from memory.
+- **Improved Status Responses**: The `/batch_status/{task_id}` endpoint now provides more detailed status information, including:
+  - Processing status (queued, processing, completed, failed, expired)
+  - Detailed error messages when tasks fail
+  - Timestamps for task creation and completion
+  - Position in queue and estimated processing time for queued tasks
+
+Example response for a completed task:
+```json
+{
+  "status": "completed",
+  "result": {
+    "summary": "Analysis of investment opportunities in renewable energy...",
+    "sources": [...]
+  }
+}
+```
+
+Example response for an expired task:
+```json
+{
+  "status": "expired",
+  "message": "Task task_1234567890_abcdef was completed but results have expired. Results are only kept for 10 minutes.",
+  "completed_at": "2023-06-01T12:34:56.789Z",
+  "task_id": "task_1234567890_abcdef"
+}
+```
+
+### Periodic Cleanup
+
+The system now includes a periodic cleanup process that:
+- Removes old task results to prevent memory leaks
+- Updates the batch history file with final status information
+- Maintains a record of completed tasks for future reference
+
 ## Future Improvements
 
 As part of our ongoing consolidation efforts:
 
 1. We plan to create a unified test runner that works across all environments (Docker, Replit, local).
 2. Update CI/CD and deployment scripts to use the consolidated scripts.
-3. Further streamline the testing workflow to reduce duplication. 
+3. Further streamline the testing workflow to reduce duplication.
+4. Enhance the task management system with additional metrics and monitoring capabilities. 

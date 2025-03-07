@@ -163,15 +163,27 @@ The Knowledge Agent uses several Docker volumes to manage data:
 - `data`: Main data directory
 - `data_stratified`: Stratified data samples
 - `data_shared`: Shared data for embeddings and tokens
-- `logs`: Application logs
+- `logs`: Application logs (includes batch_history.json for task tracking)
 - `temp`: Temporary files
 
 ### Test Volumes
 - `test_data`: Isolated test data
 - `test_data_stratified`: Isolated stratified test data
 - `test_data_shared`: Isolated shared test data
-- `test_logs`: Test logs
+- `test_logs`: Test logs (includes batch_history.json for test task tracking)
 - `test_temp`: Temporary test files
+
+### Task Management
+
+The Knowledge Agent includes a robust task management system that:
+
+1. **Tracks Background Tasks**: Maintains status information for all background tasks
+2. **Persists Task History**: Stores task history in a `batch_history.json` file in the logs directory
+3. **Provides Detailed Status**: Offers detailed status information through the `/api/v1/batch_status/{task_id}` endpoint
+4. **Performs Automatic Cleanup**: Periodically removes old task results to prevent memory leaks
+5. **Preserves Task History**: Maintains a record of completed tasks even after results are removed from memory
+
+This system ensures that users can track the status of their queries even if they were submitted hours ago, while preventing memory issues from accumulating task results.
 
 ## Testing Deployment
 
@@ -248,7 +260,7 @@ If tests fail during the integrated test and deploy workflow:
 2. Examine test results in the test_results directory:
    ```bash
    docker-compose -f deployment/docker-compose.yml exec app ls -la /app/test_results
-   docker-compose -f deployment/docker-compose.yml exec app cat /app/test_results/chanscope_tests_*.log
+   docker-compose -f deployment/docker-compose.yml exec app cat /app/test_results/Chanscope Retrieval_tests_*.log
    ```
 3. If `ABORT_ON_TEST_FAILURE=false` (default), the application will continue to run despite test failures
 4. To abort deployment on test failures, set `ABORT_ON_TEST_FAILURE=true`
@@ -261,9 +273,9 @@ If tests fail during the integrated test and deploy workflow:
 - No sensitive credentials are stored in the container
 - Environment variables containing API keys are marked as sensitive
 
-## Alignment with Chanscope Approach
+## Alignment with Chanscope Retrieval Approach
 
-This Docker setup aligns with the Chanscope approach requirements:
+This Docker setup aligns with the Chanscope Retrieval approach requirements:
 
 1. **Data Processing Pipeline**:
    - Initial data ingestion from S3

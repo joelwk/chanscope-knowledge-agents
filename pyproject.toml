@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "knowledge_agents"
+name = "chanscope-retrieval"
 version = "0.1.0"
 description = "An advanced NLP system that leverages cloud storage and multiple LLM providers"
 authors = ["Joel Konitzer"]

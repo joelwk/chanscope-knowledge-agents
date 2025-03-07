@@ -56,19 +56,17 @@ from config.env_loader import is_replit_environment, get_replit_paths
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Global dictionary to track background tasks with lock
+# Global variables for tracking tasks and results
 _background_tasks: Dict[str, Dict[str, Any]] = {}
-_tasks_lock = asyncio.Lock()
-_embedding_task_key = 'embedding_generation'
-
-task_response_queue: asyncio.Queue = asyncio.Queue()
-
-# Batch processing configuration
 _batch_results: Dict[str, Any] = {}
+_query_batch: List[Dict[str, Any]] = []
 _BATCH_SIZE = Config.get_model_settings()['embedding_batch_size']  # Batch size from configuration
 _BATCH_WAIT_TIME = 2  # Seconds to wait for batch accumulation
 _last_batch_processing_time = 0  # Track processing time for ETA estimates
-_query_batch = deque()  # Initialize the query batch queue
+_tasks_lock = asyncio.Lock()
+_embedding_task_key = "embedding_generation"
+
+task_response_queue: asyncio.Queue = asyncio.Queue()
 
 # Import run_inference lazily to avoid circular import
 def get_run_inference():
@@ -90,14 +88,21 @@ API_DOCS = {
     "name": "Knowledge Agents API",
     "version": "1.0",
     "documentation": {
-        "process_query": "/process_query",
+        "root": "/",
+        "health": "/health",
+        "healthz": "/healthz",
+        "health_replit": "/health_replit",
+        "health_connections": "/health/connections",
+        "health_s3": "/health/s3",
+        "health_provider": "/health/provider/{provider}",
+        "health_all_providers": "/health/all",
+        "health_cache": "/health/cache",
+        "health_embeddings": "/health/embeddings",
+        "process_query": "/query",
         "batch_process": "/batch_process",
+        "batch_status": "/batch_status/{task_id}",
         "stratify": "/stratify",
         "process_recent_query": "/process_recent_query",
-        "health_replit": "/health_replit",
-        "connections": "/health/connections",
-        "s3_health": "/health/s3",
-        "provider_health": "/health/provider/{provider}",
         "trigger_embedding_generation": "/trigger_embedding_generation",
         "embedding_status": "/embedding_status",
         "debug_routes": "/debug/routes",
@@ -556,8 +561,7 @@ async def base_query(
             )
             
         # Generate task ID
-        timestamp = int(time.time())
-        task_id = f"query_{timestamp}_{secrets.token_hex(4)}"
+        task_id = _generate_task_id(prefix="query")
         
         logger.info(f"Processing query request {task_id}: {request.query[:50]}...")
         
@@ -800,7 +804,7 @@ async def batch_process_queries(
 ) -> Dict[str, Any]:
     """Process multiple queries in an optimized batch."""
     start_time = time.time()
-    batch_id = str(uuid.uuid4())
+    batch_id = _generate_task_id(prefix="batch")
     logger.info(f"Processing batch of {len(request.queries)} queries: {batch_id}")
     
     try:
@@ -874,7 +878,12 @@ async def batch_process_queries(
 
 @router.get("/batch_status/{task_id}")
 async def get_batch_status(task_id: str) -> Dict[str, Any]:
-    """Get the status of a batch processing task."""
+    """Get the status of a processing task.
+    
+    This endpoint works with both query tasks and batch processing tasks.
+    The task_id format is prefix_timestamp_randomhex, where prefix can be
+    'query', 'batch', or other task types.
+    """
     start_time = time.time()
     try:
         logger.debug(f"get_batch_status: Checking status for task_id: {task_id}")
@@ -882,7 +891,7 @@ async def get_batch_status(task_id: str) -> Dict[str, Any]:
         logger.debug(f"_batch_results keys: {list(_batch_results.keys())}")
         logger.debug(f"_query_batch length: {len(_query_batch)}")
         
-        # First, check background tasks (multi-query batches)
+        # First, check background tasks
         if task_id in _background_tasks:
             task_status = _background_tasks[task_id]
             logger.debug(f"Task {task_id} found in _background_tasks: {task_status}")
@@ -894,7 +903,7 @@ async def get_batch_status(task_id: str) -> Dict[str, Any]:
                 "errors": task_status.get("errors", []),
                 "duration_ms": task_status.get("duration_ms")
             }
-        # Then check single-query batch results
+        # Then check results cache
         elif task_id in _batch_results:
             result = _batch_results[task_id]
             logger.debug(f"Task {task_id} found in _batch_results: {result}")
@@ -918,7 +927,7 @@ async def get_batch_status(task_id: str) -> Dict[str, Any]:
                 }
             else:
                 # Fallback: check the cache
-                cache_key = f"query_result:{task_id}"
+                cache_key = f"task_result:{task_id}"
                 cached_result = await cache.get(cache_key)
                 if cached_result:
                     logger.debug(f"Task {task_id} retrieved from cache.")
@@ -927,79 +936,72 @@ async def get_batch_status(task_id: str) -> Dict[str, Any]:
                         "result": cached_result
                     }
                 else:
-                    # Attempt to parse task_id if it follows the expected batch format
-                    if task_id.startswith("batch_"):
-                        try:
-                            parts = task_id.split("_")
-                            if len(parts) < 2:
-                                raise ValueError("Invalid batch task id format.")
-                            timestamp_str = parts[1]
-                            timestamp = int(timestamp_str)
-                            current_time = int(time.time())
-                            logger.debug(f"Extracted timestamp {timestamp} from task_id {task_id}; current_time={current_time}")
-                            if current_time - timestamp < 600:
-                                # Check if embedding generation is active
-                                is_embedding_active = False
-                                async with _tasks_lock:
-                                    if _embedding_task_key in _background_tasks and _background_tasks[_embedding_task_key]["status"] == "running":
-                                        is_embedding_active = True
-                                if is_embedding_active:
-                                    logger.debug(f"Embedding generation is active for task {task_id}")
-                                    response = {
-                                        "status": "preprocessing",
-                                        "message": "Embeddings are currently being generated. Please try again shortly.",
-                                        "estimated_wait_time": 300  # 5 minutes
-                                    }
-                                else:
-                                    logger.debug(f"Task {task_id} is processing but not found in any storage; returning generic processing message.")
-                                    response = {
-                                        "status": "processing",
-                                        "message": "The task is being processed. Please check back soon.",
-                                        "task_id": task_id,
-                                        "created_at": datetime.fromtimestamp(timestamp, tz=pytz.UTC).isoformat()
-                                    }
+                    # Attempt to parse task_id if it follows the expected format
+                    try:
+                        parts = task_id.split("_")
+                        if len(parts) < 3:
+                            raise ValueError("Invalid task id format.")
+                        
+                        prefix = parts[0]
+                        timestamp_str = parts[1]
+                        timestamp = int(timestamp_str)
+                        current_time = int(time.time())
+                        
+                        logger.debug(f"Extracted timestamp {timestamp} from task_id {task_id}; current_time={current_time}")
+                        
+                        if current_time - timestamp < 600:
+                            # Check if embedding generation is active
+                            is_embedding_active = False
+                            async with _tasks_lock:
+                                if _embedding_task_key in _background_tasks and _background_tasks[_embedding_task_key]["status"] == "running":
+                                    is_embedding_active = True
+                            if is_embedding_active:
+                                logger.debug(f"Embedding generation is active for task {task_id}")
+                                response = {
+                                    "status": "preprocessing",
+                                    "message": "Embeddings are currently being generated. Please try again shortly.",
+                                    "estimated_wait_time": 300  # 5 minutes
+                                }
                             else:
-                                logger.debug(f"Task {task_id} has expired based on timestamp check.")
-                                # Check persistent history if available
-                                history_path = Path(Config.get_paths()['logs']) / "batch_history.json"
-                                if history_path.exists():
-                                    try:
-                                        with open(history_path, 'r') as f:
-                                            history = json.load(f)
-                                        if task_id in history:
-                                            task_info = history[task_id]
-                                            if task_info.get("status") == "completed":
-                                                response = {
-                                                    "status": "expired",
-                                                    "message": f"Task {task_id} was completed but results have expired. Results are only kept for 10 minutes.",
-                                                    "completed_at": task_info.get("completed_at"),
-                                                    "task_id": task_id
-                                                }
-                                                return response
-                                            elif task_info.get("status") == "failed":
-                                                response = {
-                                                    "status": "failed",
-                                                    "message": f"Task {task_id} failed: {task_info.get('error', 'Unknown error')}",
-                                                    "task_id": task_id,
-                                                    "error": task_info.get("error")
-                                                }
-                                                return response
-                                    except Exception as ex:
-                                        logger.warning(f"Error reading batch history for {task_id}: {ex}")
-                                raise ValidationError(
-                                    message=f"Task {task_id} not found or has expired",
-                                    field="task_id",
-                                    value=task_id
-                                )
-                        except (IndexError, ValueError) as ex:
-                            raise ValidationError(
-                                message=f"Invalid task ID format: {task_id}. Error: {ex}",
-                                field="task_id",
-                                value=task_id
-                            )
-                    else:
+                                logger.debug(f"Task {task_id} is processing but not found in any storage; returning generic processing message.")
+                                response = {
+                                    "status": "processing",
+                                    "message": "The task is being processed. Please check back soon.",
+                                    "task_id": task_id,
+                                    "created_at": datetime.fromtimestamp(timestamp, tz=pytz.UTC).isoformat()
+                                }
+                        else:
+                            logger.debug(f"Task {task_id} has expired based on timestamp check.")
+                            # Check persistent history if available
+                            history_path = Path(Config.get_paths()['logs']) / "batch_history.json"
+                            if history_path.exists():
+                                try:
+                                    with open(history_path, 'r') as f:
+                                        history = json.load(f)
+                                    if task_id in history:
+                                        task_info = history[task_id]
+                                        if task_info.get("status") == "completed":
+                                            response = {
+                                                "status": "expired",
+                                                "message": f"Task {task_id} was completed but results have expired. Results are only kept for 10 minutes.",
+                                                "completed_at": task_info.get("completed_at"),
+                                                "task_id": task_id
+                                            }
+                                            return response
+                                        elif task_info.get("status") == "failed":
+                                            response = {
+                                                "status": "failed",
+                                                "message": f"Task {task_id} failed: {task_info.get('error', 'Unknown error')}",
+                                                "task_id": task_id,
+                                                "error": task_info.get("error")
+                                            }
+                                            return response
+                                except Exception as ex:
+                                    logger.warning(f"Error reading batch history for {task_id}: {ex}")
+                            raise ValidationError(detail=f"Task {task_id} not found")
+                    except (IndexError, ValueError) as ex:
                         raise ValidationError(
-                            message=f"Task {task_id} not found or has invalid format",
+                            message=f"Invalid task ID format: {task_id}. Error: {ex}",
                             field="task_id",
                             value=task_id
                         )
@@ -1503,7 +1505,7 @@ def handle_error(e: Exception) -> None:
 
 async def _add_to_query_batch(request: QueryRequest) -> str:
     """Add query to batch queue and return batch ID."""
-    batch_id = f"batch_{int(time.time())}_{len(_query_batch)}"
+    batch_id = _generate_task_id(prefix="batch")
     _query_batch.append({
         "id": batch_id,
         "request": request,
@@ -1667,10 +1669,12 @@ async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]
     """Store batch processing results for later retrieval.
     
     Args:
-        batch_id: Unique identifier for the batch
+        batch_id: Unique identifier for the task (format: prefix_timestamp_randomhex)
         result: Either a tuple of (chunks, summary) or a dict with chunks, summary, and metadata
         config: Either a ModelConfig object or a dictionary with configuration
     """
+    # Not active, so set to None
+    redis_client = None 
     try:
         # Handle both tuple and dict formats for backward compatibility
         if isinstance(result, tuple):
@@ -1712,101 +1716,108 @@ async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]
             }
         }
         
-        logger.debug(f"Storing batch result for {batch_id}")
+        logger.debug(f"Storing result for task {batch_id}")
         
-        # Store in memory
-        _batch_results[batch_id] = result_obj
-        
-        # Schedule cleanup of old results
-        asyncio.create_task(_cleanup_old_batch_results())
+        # Store in Redis or another shared storage
+        if redis_client:
+            redis_client.set(f"task_result:{batch_id}", json.dumps({
+                'result': result_obj,
+                'expires_at': time.time() + batch_result_ttl,
+                'config': config if isinstance(config, dict) else config.dict()
+            }), ex=batch_result_ttl)
+        else:
+            logger.warning("Redis client not available, skipping result storage")
         
         # Update batch history
-        await _update_batch_history({
-            batch_id: {
-                "status": "completed",
-                "timestamp": time.time(),
-                "summary_length": len(summary) if summary else 0,
-                "chunks_count": len(chunks) if chunks else 0,
-                "completed_at": datetime.now(pytz.UTC).isoformat(),
-                "metadata": result_obj["metadata"]
-            }
-        })
+        await _update_batch_history({batch_id: {'timestamp': time.time(), 'query': config.query if hasattr(config, 'query') else ''}})
         
-        logger.info(f"Stored batch result for {batch_id} (expires in {batch_result_ttl}s)")
+        logger.info(f"Stored result for task {batch_id} (expires in {batch_result_ttl}s)")
+        
+        # Also store results in background tasks for redundancy
+        if batch_id in _background_tasks:
+            _background_tasks[batch_id]['results'] = result
+        
+        # Store in memory cache
+        _batch_results[batch_id] = result_obj
+        
         return True
         
     except Exception as e:
-        logger.error(f"Error storing batch result: {str(e)}")
+        logger.error(f"Error storing result: {str(e)}")
         logger.error(traceback.format_exc())
         return False
     
-async def _cleanup_old_batch_results():
-    """Clean up old batch results that are no longer needed.
-    
-    This function:
-    1. Identifies and removes batch results older than the retention period
-    2. Updates the batch history with completion information
-    3. Ensures proper resource cleanup to prevent memory leaks
-    
-    The cleanup is performed asynchronously and doesn't block the main processing flow.
-    Results are kept for 5 minutes by default to allow clients time to retrieve them.
-    """
+async def _cleanup_old_results():
+    """Clean up old results to prevent memory leaks."""
     try:
-        # Define retention period (5 minutes = 300 seconds)
-        retention_period = int(os.getenv('BATCH_RESULT_RETENTION_SECONDS', '300'))
+        retention_period = 600  # 10 minutes
         current_time = time.time()
         batch_ids_to_remove = []
         batch_history_updates = {}
         
-        # Identify old results to clean up
+        # Check all stored results
         for batch_id, result in _batch_results.items():
-            # Check if result has a timestamp
-            timestamp = result.get("timestamp", 0)
+            # Check if the result has expired
+            timestamp = result.get("metadata", {}).get("timestamp", 0)
             if current_time - timestamp > retention_period:
                 batch_ids_to_remove.append(batch_id)
-                # Save completion info to history
-                status = "completed" if "error" not in result else "failed"
+                # Update history with expiry information
                 batch_history_updates[batch_id] = {
-                    "status": status,
-                    "completed_at": datetime.fromtimestamp(timestamp, tz=pytz.UTC).isoformat(),
-                    "removed_at": datetime.now(pytz.UTC).isoformat(),
-                    "retention_period_seconds": retention_period
+                    "status": "expired",
+                    "expired_at": current_time
                 }
         
-        # Remove old results if any found
+        # Remove expired results
         if batch_ids_to_remove:
-            # Use a lock to avoid race conditions if needed
+            memory_freed = 0
             for batch_id in batch_ids_to_remove:
                 if batch_id in _batch_results:
-                    # Get result size before removal for logging
+                    # Estimate memory usage
                     try:
                         result_size = len(str(_batch_results[batch_id]))
-                    except Exception:
-                        result_size = 0
+                        memory_freed += result_size
+                    except:
+                        pass
                     
-                    # Remove from cache and memory
+                    # Remove from memory
                     del _batch_results[batch_id]
+                    
                     # Also try to remove from the cache
                     try:
-                        cache_key = f"query_result:{batch_id}"
+                        cache_key = f"task_result:{batch_id}"
                         asyncio.create_task(cache.delete(cache_key))
                     except Exception as cache_error:
                         logger.debug(f"Cache removal error for {batch_id}: {str(cache_error)}")
-                        
-            # Log cleanup stats
-            logger.info(f"Cleaned up {len(batch_ids_to_remove)} old batch results (retention: {retention_period}s)")
             
-            # Update batch history file with completed tasks
-            if batch_history_updates:
-                await _update_batch_history(batch_history_updates)
+            # Update batch history
+            await _update_batch_history(batch_history_updates)
+            
+            logger.info(f"Cleaned up {len(batch_ids_to_remove)} old results (retention: {retention_period}s)")
+            if memory_freed > 0:
+                logger.info(f"Estimated memory freed: {memory_freed / 1024:.2f} KB")
+        
+        # Also clean up old background tasks
+        if len(batch_ids_to_remove) > 10:
+            # If we're cleaning up a lot of results, also clean up background tasks
+            tasks_to_remove = []
+            for task_id, task in _background_tasks.items():
+                if task_id == _embedding_task_key:
+                    continue  # Skip the embedding task
                 
-            # Force garbage collection after large cleanups
-            if len(batch_ids_to_remove) > 10:
-                gc.collect()
+                timestamp = task.get("timestamp", 0)
+                if current_time - timestamp > retention_period:
+                    tasks_to_remove.append(task_id)
+            
+            if tasks_to_remove:
+                async with _tasks_lock:
+                    for task_id in tasks_to_remove:
+                        if task_id in _background_tasks:
+                            del _background_tasks[task_id]
                 
+                logger.info(f"Cleaned up {len(tasks_to_remove)} old background tasks")
+        
     except Exception as e:
-        # Don't let cleanup failures affect the main process
-        logger.error(f"Error during batch result cleanup: {str(e)}")
+        logger.error(f"Error cleaning up old results: {str(e)}")
         logger.error(traceback.format_exc())
 
 async def _update_batch_history(updates: Dict[str, Dict[str, Any]]) -> None:
@@ -1868,3 +1879,16 @@ async def _update_batch_history(updates: Dict[str, Dict[str, Any]]) -> None:
                 logger.debug(f"Updated batch history with {len(updates)} entries")
     except Exception as e:
         logger.error(f"Error updating batch history: {e}")
+
+def _generate_task_id(prefix: str = "task") -> str:
+    """Generate a unique task ID with the given prefix.
+    
+    Args:
+        prefix: Prefix for the task ID (e.g., 'query', 'batch')
+        
+    Returns:
+        A unique task ID string
+    """
+    timestamp = int(time.time())
+    random_suffix = secrets.token_hex(4)
+    return f"{prefix}_{timestamp}_{random_suffix}"

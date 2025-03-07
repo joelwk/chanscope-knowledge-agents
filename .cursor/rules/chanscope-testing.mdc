@@ -1,4 +1,9 @@
 ---
+description: 
+globs: 
+alwaysApply: false
+---
+---
 description: This document outlines the guidelines for testing the Chanscope application, ensuring that test implementation aligns with the core Chanscope approach. It covers the data processing pipeline, query behavior, deployment processes, and more.
 globs: */tests/**/*.py,*/scripts/run_*tests.sh,*/scripts/validate_chanscope_approach.py
 alwaysApply: false

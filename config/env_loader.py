@@ -142,5 +142,34 @@ def configure_replit_environment():
             "MAX_WORKERS": os.environ.get("MAX_WORKERS", "2")
         })
 
+def configure_docker_environment():
+    """Configure environment variables for Docker deployment."""
+    if is_docker_environment():
+        logger.info("Configuring Docker-specific environment variables")
+        
+        # Set Docker-specific paths if not already set
+        docker_data_path = os.environ.get("ROOT_DATA_PATH", "/app/data")
+        docker_stratified_path = os.environ.get("STRATIFIED_PATH", "/app/data/stratified")
+        docker_temp_path = os.environ.get("PATH_TEMP", "/app/temp_files")
+        
+        # Create directories
+        for path in [docker_data_path, docker_stratified_path, docker_temp_path]:
+            Path(path).mkdir(parents=True, exist_ok=True)
+        
+        # Set environment variables with Docker-specific defaults
+        os.environ.update({
+            "ROOT_DATA_PATH": docker_data_path,
+            "STRATIFIED_PATH": docker_stratified_path,
+            "PATH_TEMP": docker_temp_path,
+            "DOCKER_ENV": "true",
+            "EMBEDDING_BATCH_SIZE": os.environ.get("EMBEDDING_BATCH_SIZE", "20"),
+            "CHUNK_BATCH_SIZE": os.environ.get("CHUNK_BATCH_SIZE", "20"),
+            "PROCESSING_CHUNK_SIZE": os.environ.get("PROCESSING_CHUNK_SIZE", "10000"),
+            "MAX_WORKERS": os.environ.get("MAX_WORKERS", "4"),
+            "DATA_UPDATE_INTERVAL": os.environ.get("DATA_UPDATE_INTERVAL", "3600")
+        })
+        
+        logger.info(f"Docker environment configured with ROOT_DATA_PATH={docker_data_path}")
+
 # Load environment variables when module is imported
 load_environment() 
