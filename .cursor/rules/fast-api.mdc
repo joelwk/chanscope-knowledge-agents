@@ -4,6 +4,11 @@ globs:
 alwaysApply: false
 ---
 ---
+description: This file outlines Cursor’s guidelines tailored for FastAPI applications. It details best practices for endpoint design, error handling, asynchronous processing, logging, and dependency management. The rules ensure that FastAPI-based services are robust, maintainable, and consistent with Cursor’s principles of clarity and efficiency.
+globs: 
+alwaysApply: false
+---
+---
 description: fast-api-python
 globs: 
 ---

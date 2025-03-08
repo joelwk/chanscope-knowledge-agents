@@ -15,7 +15,7 @@ channel = "stable-23_11"
 # Environment Variables
 # =============================================
 [env]
-PYTHONPATH = "${PYTHONPATH}:${REPL_HOME}"
+PYTHONPATH = "${REPL_HOME}"
 PYTHONUNBUFFERED = "1"
 REPLIT_ENV = "replit"
 API_PORT = "80"
@@ -25,8 +25,8 @@ DOCKER_ENV = "false"
 
 # Testing Configuration
 TEST_MODE = "false"  # Default to false for deployment
-USE_MOCK_DATA = "true"
-USE_MOCK_EMBEDDINGS = "true"
+USE_MOCK_DATA = "false"
+USE_MOCK_EMBEDDINGS = "false"
 AUTO_CHECK_DATA = "true"
 
 # =============================================
@@ -35,13 +35,7 @@ AUTO_CHECK_DATA = "true"
 [deployment]
 run = ["bash", "deployment/setup.sh"]
 build = ["poetry", "install", "--only", "main"]
-
-# =============================================
-# Port Configuration
-# =============================================
-[[ports]]
-localPort = 80
-externalPort = 80
+deploymentTarget = "cloudrun"
 
 # =============================================
 # Health Check Configuration
@@ -49,12 +43,16 @@ externalPort = 80
 [deployment.healthCheck]
 path = "/api/v1/health"
 port = 80
-initialDelay = 120     # Increased to allow for startup operations
+initialDelay = 5     # Increased to allow for startup operations
 timeout = 3            # Reduced for faster failure detection
-period = 10           # More frequent checks
+period = 30           # More frequent checks
 consecutiveSuccesses = 1  # Only need one success to confirm health
 consecutiveFailures = 2   # Fail faster if truly unhealthy
 
+[[ports]]
+localPort = 80
+externalPort = 80
+exposeLocalhost = true
 
 # =============================================
 # Language Configuration

@@ -80,23 +80,30 @@ def setup_environment():
         if not os.environ.get('PROCESSING_CHUNK_SIZE'):
             os.environ['PROCESSING_CHUNK_SIZE'] = '1000'
             
-        # Create sample test data for Replit if it doesn't exist
-        mock_data_path = f"{paths['root_data_path']}/mock/sample_data.csv"
-        if not os.path.exists(mock_data_path):
-            logger.info("Creating sample test data for Replit environment")
-            with open(mock_data_path, 'w') as f:
-                f.write("thread_id,posted_date_time,text_clean,posted_comment\n")
-                f.write("1001,2025-01-01 12:00:00,This is a test post for embedding generation,Original comment 1\n")
-                f.write("1002,2025-01-01 12:05:00,Another test post with different content,Original comment 2\n")
-                f.write("1003,2025-01-01 12:10:00,Third test post for validation purposes,Original comment 3\n")
-                f.write("1004,2025-01-01 12:15:00,Fourth test post with unique content,Original comment 4\n")
-                f.write("1005,2025-01-01 12:20:00,Fifth test post for comprehensive testing,Original comment 5\n")
+        # Check if mock data should be used
+        use_mock_data = os.environ.get('USE_MOCK_DATA', 'false').lower() in ('true', '1', 'yes')
+        logger.info(f"USE_MOCK_DATA is set to: {os.environ.get('USE_MOCK_DATA', 'not set')} (evaluated as: {use_mock_data})")
+        
+        # Create sample test data for Replit if it doesn't exist and mock data is enabled
+        if use_mock_data:
+            mock_data_path = f"{paths['root_data_path']}/mock/sample_data.csv"
+            if not os.path.exists(mock_data_path):
+                logger.info("Creating sample test data for Replit environment")
+                with open(mock_data_path, 'w') as f:
+                    f.write("thread_id,posted_date_time,text_clean,posted_comment\n")
+                    f.write("1001,2025-01-01 12:00:00,This is a test post for embedding generation,Original comment 1\n")
+                    f.write("1002,2025-01-01 12:05:00,Another test post with different content,Original comment 2\n")
+                    f.write("1003,2025-01-01 12:10:00,Third test post for validation purposes,Original comment 3\n")
+                    f.write("1004,2025-01-01 12:15:00,Fourth test post with unique content,Original comment 4\n")
+                    f.write("1005,2025-01-01 12:20:00,Fifth test post for comprehensive testing,Original comment 5\n")
 
-            # Copy mock data to main data directory for tests if complete_data.csv doesn't exist
-            complete_data_path = f"{paths['root_data_path']}/complete_data.csv"
-            if not os.path.exists(complete_data_path):
-                shutil.copy(mock_data_path, complete_data_path)
-                logger.info("Copied sample test data to complete_data.csv")
+                # Copy mock data to main data directory for tests if complete_data.csv doesn't exist
+                complete_data_path = f"{paths['root_data_path']}/complete_data.csv"
+                if not os.path.exists(complete_data_path):
+                    shutil.copy(mock_data_path, complete_data_path)
+                    logger.info("Copied sample test data to complete_data.csv")
+        else:
+            logger.info("Mock data is disabled, skipping mock data creation")
 
 def is_scheduler_running() -> bool:
     """Check if scheduler is already running."""
@@ -197,10 +204,14 @@ async def run_update():
         
         # Special handling for Replit in test mode
         use_mock_data = os.environ.get('USE_MOCK_DATA', 'false').lower() in ('true', '1', 'yes')
+        logger.info(f"USE_MOCK_DATA is set to: {os.environ.get('USE_MOCK_DATA', 'not set')} (evaluated as: {use_mock_data})")
+        
         if ENV_TYPE == "replit" and use_mock_data and is_initial_startup:
             logger.info("Using mock data for Replit test environment")
             # This would be handled by the setup_environment function which creates sample data
             # Just need to ensure the data is properly stratified and embeddings are generated
+        elif ENV_TYPE == "replit" and not use_mock_data:
+            logger.info("Mock data is disabled in Replit environment, using real data from S3")
         
         if is_initial_startup:
             logger.info("Initial startup detected. Following Chanscope startup approach...")

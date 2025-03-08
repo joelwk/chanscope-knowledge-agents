@@ -21,38 +21,10 @@ The test scripts are organized as follows:
 ## Test Categories
 
 The Chanscope Retrieval testing framework includes the following test categories:
-
-### Data Ingestion Tests (`test_data_ingestion.py`)
-
-Tests for data ingestion from S3, data retention logic, and initial data load.
-
-```bash
-scripts/run_tests.sh --data-ingestion
-```
-
-### Embedding Tests (`test_embedding_pipeline.py`)
-
-Tests for embedding generation, storage, and consistency.
-
-```bash
-scripts/run_tests.sh --embedding
-```
-
-### API Endpoint Tests (`test_endpoints.py`)
-
-Tests for API endpoints, including health checks and query processing.
-
-```bash
-scripts/run_tests.sh --endpoints
-```
-
-### Chanscope Retrieval Approach Tests (`test_Chanscope Retrieval_approach.py`)
-
-Tests for the complete Chanscope Retrieval approach implementation.
-
-```bash
-scripts/run_tests.sh --Chanscope Retrieval-approach
-```
+- Data Ingestion Tests
+- Embedding Tests
+- API Endpoint Tests
+- Chanscope Retrieval Approach Tests
 
 ## Running Tests
 
@@ -146,112 +118,6 @@ Test results are saved in the `test_results` directory, including:
 - JSON result files with test summary information
 - JUnit XML files for CI/CD integration
 
-## API Testing
-
-The knowledge agent provides various API endpoints that can be tested using the curl commands specified in [tests/knowledge_agent_api_tests.md](../tests/knowledge_agent_api_tests.md). Below is a summary of the API endpoints and how to test them.
-
-### Setting Up API Test Environment
-
-Before testing the API endpoints, set up your environment by specifying the base URL:
-
-```bash
-# Set the base URL you want to use for testing
-BASE_URL="https://Chanscope Retrieval.replit.app"  # Replit environment
-# or
-BASE_URL="http://localhost"              # Local environment
-API_PATH="/api/v1"
-```
-
-### Health Check Endpoints
-
-Test the health of various system components:
-
-```bash
-# Standard health check
-curl -X GET "${BASE_URL}/api/health"
-
-# API v1 health check
-curl -X GET "${BASE_URL}${API_PATH}/health"
-
-# Check S3 connection
-curl -X GET "${BASE_URL}/api/health/s3"
-
-# Check embedding health
-curl -X GET "${BASE_URL}/api/health/embeddings"
-
-# Check provider health (OpenAI, Venice, Grok)
-curl -X GET "${BASE_URL}/api/health/provider/openai"
-```
-
-### Data Processing Endpoints
-
-Trigger data processing operations:
-
-```bash
-# Trigger data stratification
-curl -X POST "${BASE_URL}/api/stratify"
-
-# Trigger embedding generation
-curl -X POST "${BASE_URL}/api/trigger_embedding_generation"
-
-# Check embedding generation status
-curl -X GET "${BASE_URL}/api/embedding_status"
-```
-
-### Query Processing Endpoints
-
-Execute queries for data analysis:
-
-```bash
-# Basic query with default settings
-curl -X POST "${BASE_URL}${API_PATH}/query" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "Investment opportunities in renewable energy",
-    "use_background": false
-  }'
-
-# Background query with all options
-curl -X POST "${BASE_URL}${API_PATH}/query" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "Investment opportunities in energy and crypto",
-    "force_refresh": true,
-    "filter_date": "2025-02-03",
-    "sample_size": 1000,
-    "embedding_provider": "openai",
-    "chunk_provider": "venice",
-    "summary_provider": "venice",
-    "skip_embeddings": false,
-    "skip_batching": false,
-    "use_background": true
-  }'
-```
-
-### Batch Query Processing
-
-Process multiple queries at once:
-
-```bash
-# Process multiple queries in a batch
-curl -X POST "${BASE_URL}${API_PATH}/batch_process" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "queries": [
-      "Investment opportunities in renewable energy",
-      "Cryptocurrency market trends",
-      "AI developments in finance"
-    ],
-    "force_refresh": false,
-    "skip_embeddings": false,
-    "chunk_batch_size": 5,
-    "summary_batch_size": 3,
-    "max_workers": 4
-  }'
-```
-
-For a complete list of API test commands, please refer to [tests/knowledge_agent_api_tests.md](../tests/knowledge_agent_api_tests.md).
-
 ## Docker-Based Testing
 
 The primary script for running Docker-based tests is `scripts/docker_tests.sh`. This script has been enhanced to support the Chanscope Retrieval approach for data management and testing.
@@ -301,26 +167,6 @@ The Docker testing script supports several features that align with the Chanscop
 # Combine multiple options
 ./scripts/docker_tests.sh --embedding --force-refresh --use-setup
 ```
-
-## How Testing Works with the Chanscope Retrieval Approach
-
-When running with `--use-setup`, the testing process follows the Chanscope Retrieval approach:
-
-1. **Data Verification**: 
-   - Checks if `complete_data.csv` exists
-   - Verifies if the file is up-to-date based on DATA_RETENTION_DAYS
-   - Checks if embeddings exist
-
-2. **Data Handling**:
-   - If data is missing or outdated, runs data ingestion
-   - If embeddings are missing, generates new ones
-   - If `--force-refresh` is used, regenerates stratified sample and embeddings
-
-3. **Test Execution**:
-   - Runs the specified tests after data preparation
-   - Logs detailed results to the test_results directory
-
-This approach ensures that tests run in an environment that closely matches production while following the data processing guidelines defined in the Chanscope Retrieval approach.
 
 ## Troubleshooting
 

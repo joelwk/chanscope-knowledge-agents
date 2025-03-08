@@ -403,6 +403,10 @@ echo -e "${YELLOW}Environment: $ENVIRONMENT, Replit: $IS_REPLIT${NC}"
 # In Replit, use the app instance from api/app.py which has Replit-specific configurations
 if [ "$IS_REPLIT" = true ]; then
     echo -e "${YELLOW}Starting with Replit-specific configuration${NC}"
+    
+    # Log the current data retention settings
+    echo -e "${YELLOW}Using Replit environment with DATA_RETENTION_DAYS=${DATA_RETENTION_DAYS} and FILTER_DATE=${FILTER_DATE}${NC}"
+    
     # Reduced worker count and added --reload-delay to optimize startup
     exec poetry run python -m uvicorn api.app:app --host "$HOST" --port "$API_PORT" --log-level "$LOG_LEVEL" --reload-delay 5 --workers 1 --timeout-keep-alive 30
 else

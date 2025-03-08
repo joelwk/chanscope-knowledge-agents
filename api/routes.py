@@ -13,13 +13,12 @@ from collections import deque
 import json
 import shutil
 from filelock import FileLock
-import numpy as np
-import uuid
 import pytz
 import pandas as pd
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
 import secrets
+import re
 
 from knowledge_agents.model_ops import (
     ModelProvider, 
@@ -35,7 +34,7 @@ from knowledge_agents.embedding_ops import get_agent
 from knowledge_agents.data_processing.cloud_handler import S3Handler
 from knowledge_agents.data_ops import DataConfig, DataOperations
 from knowledge_agents.inference_ops import process_multiple_queries_efficient, process_query
-from knowledge_agents.errors import ProcessingError
+from api.errors import ProcessingError, APIError
 
 from config.base_settings import get_base_settings
 from config.settings import Config
@@ -560,8 +559,30 @@ async def base_query(
                 value=request.query
             )
             
-        # Generate task ID
-        task_id = _generate_task_id(prefix="query")
+        # Process user-provided task_id or generate one
+        if request.task_id:
+            # Validate user-provided task ID
+            if not _is_valid_task_id(request.task_id):
+                raise ValidationError(
+                    message="Invalid task ID format. Task IDs must be 4-64 characters and contain only alphanumeric characters, underscores, and hyphens.",
+                    field="task_id",
+                    value=request.task_id
+                )
+            
+            # Check for collisions
+            if _check_task_id_collision(request.task_id):
+                raise ValidationError(
+                    message="Task ID already exists. Please provide a unique task ID.",
+                    field="task_id",
+                    value=request.task_id
+                )
+            
+            task_id = request.task_id
+            logger.info(f"Using user-provided task ID: {task_id}")
+        else:
+            # Generate task ID
+            task_id = _generate_task_id(prefix="query")
+            logger.info(f"Generated task ID: {task_id}")
         
         logger.info(f"Processing query request {task_id}: {request.query[:50]}...")
         
@@ -1033,7 +1054,8 @@ async def process_recent_query(
     background_tasks: BackgroundTasks,
     agent: KnowledgeAgent = Depends(get_agent),
     data_ops: DataOperations = Depends(get_data_ops),
-    select_board: Optional[str] = None
+    select_board: Optional[str] = None,
+    task_id: Optional[str] = None
 ):
     """Process a query using recent data from the last 6 hours with batch processing.
     
@@ -1045,6 +1067,7 @@ async def process_recent_query(
         agent: Knowledge agent for processing 
         data_ops: Data operations for preparation
         select_board: Optional board ID to filter data
+        task_id: Optional user-provided task ID
     """
     try:
         # Calculate time range
@@ -1078,14 +1101,16 @@ async def process_recent_query(
                 config_key="stored_queries",
                 original_error=e)
 
-        # Create request object with consistent parameters
+        # Create request object with consistent parameters and pass task_id
         request = QueryRequest(
             query=query,
             filter_date=filter_date,
             force_refresh=False,
             skip_embeddings=True,
             skip_batching=False,
-            select_board=select_board)
+            select_board=select_board,
+            task_id=task_id
+        )
 
         # Log request
         log_params = {
@@ -1892,3 +1917,42 @@ def _generate_task_id(prefix: str = "task") -> str:
     timestamp = int(time.time())
     random_suffix = secrets.token_hex(4)
     return f"{prefix}_{timestamp}_{random_suffix}"
+
+def _is_valid_task_id(task_id: str) -> bool:
+    """Validate a task ID format.
+    
+    Args:
+        task_id: The task ID to validate
+        
+    Returns:
+        True if the task ID is valid, False otherwise
+    """
+    # Allow alphanumeric characters, underscores, and hyphens
+    # Length must be between 4 and 64 characters
+    pattern = re.compile(r'^[a-zA-Z0-9_-]{4,64}$')
+    return bool(pattern.match(task_id))
+
+def _check_task_id_collision(task_id: str) -> bool:
+    """Check if a task ID already exists in the system.
+    
+    Args:
+        task_id: The task ID to check
+        
+    Returns:
+        True if the task ID exists, False otherwise
+    """
+    # Check in active background tasks
+    if task_id in _background_tasks:
+        return True
+    
+    # Check in stored batch results
+    if task_id in _batch_results:
+        return True
+    
+    # Check in query batch
+    for item in _query_batch:
+        if item.get("id") == task_id:
+            return True
+    
+    return False
+

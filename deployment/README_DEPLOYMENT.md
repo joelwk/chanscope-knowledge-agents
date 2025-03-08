@@ -56,31 +56,10 @@ The deployment directory contains several important files:
 - `Dockerfile`: Defines the container image
 - `setup.sh`: Initialization script that runs when the container starts
 
-## Recommended Workflow ✅
-
-We strongly recommend the following workflow for clarity, safety, and maintainability:
-
-### Step 1: Run Tests in Isolation (Recommended)
-
-```bash
-docker-compose -f deployment/docker-compose.test.yml build
-docker-compose -f deployment/docker-compose.test.yml up
-```
-
-- Ensures isolated test data and resources.
-- Optimized environment variables and resource allocation for testing.
-
-### Step 2: Deploy to Production (Tests Disabled)
-
-After successful testing, deploy your application without running tests at startup:
-
-```bash
-docker-compose -f deployment/docker-compose.yml build
-docker-compose -f deployment/docker-compose.yml up -d
-```
-
-- Ensures stable, predictable startup behavior.
-- Avoids resource contention and data integrity risks.
+## Recommended Deployment Workflow
+1. Run tests in isolation using docker-compose.test.yml
+2. Deploy to production using docker-compose.yml
+3. Monitor deployment using the health check endpoints
 
 ## Deployment Options
 
@@ -114,24 +93,6 @@ docker-compose -f deployment/docker-compose.test.yml up
 docker-compose -f deployment/docker-compose.yml build
 docker-compose -f deployment/docker-compose.yml up -d
 ```
-
-### 3. Integrated Test and Deploy Workflow (Advanced, Optional) ⚠️
-
-Running tests directly in the production compose file (`docker-compose.yml`) with `RUN_TESTS_ON_STARTUP=true` is possible but introduces complexity and potential risks:
-
-- **Resource Contention:** Tests and application startup processes may compete for resources, causing delays or failures.
-- **Data Integrity Risks:** Tests might inadvertently modify or corrupt production data if isolation isn't perfect.
-- **Complexity in Debugging:** Mixing test and production environments complicates debugging and troubleshooting.
-
-### Recommended Usage:
-
-- Reserve integrated testing for staging or pre-production environments only.
-- Ensure robust isolation, resource allocation, and data handling if choosing this approach.
-- Clearly document and communicate this decision within your team.
-
-### Recommended Alternative:
-
-Use the dedicated testing compose file (`docker-compose.test.yml`) for isolated, controlled testing environments.
 
 ## Docker Environment Variables
 
@@ -185,21 +146,6 @@ The Knowledge Agent includes a robust task management system that:
 
 This system ensures that users can track the status of their queries even if they were submitted hours ago, while preventing memory issues from accumulating task results.
 
-## Testing Deployment
-
-To run tests in a Docker environment:
-
-```bash
-docker-compose -f deployment/docker-compose.test.yml build
-docker-compose -f deployment/docker-compose.test.yml up
-```
-
-This will:
-1. Build the Docker image
-2. Start the container in test mode
-3. Run the test suite
-4. Output test results to the console and test_results directory
-
 ## Monitoring and Maintenance
 
 ### Checking Container Status
@@ -225,72 +171,6 @@ docker-compose -f deployment/docker-compose.yml restart
 ```bash
 docker-compose -f deployment/docker-compose.yml down
 ```
-
-## Troubleshooting
-
-### Permission Issues
-
-If you encounter permission issues with Docker volumes:
-
-1. Ensure the volumes are properly configured in docker-compose.yml
-2. Check that the container is running as the nobody:nogroup user
-3. Verify that the directories have appropriate permissions (777 for data directories)
-
-### Data Refresh Issues
-
-If data is not being refreshed:
-
-1. Check the scheduler logs: `docker-compose -f deployment/docker-compose.yml exec app cat /app/data/logs/scheduler.log`
-2. Verify AWS credentials are correct
-3. Check S3 bucket accessibility
-
-### Container Health Issues
-
-If the container is not healthy:
-
-1. Check the health status: `docker ps`
-2. View container logs: `docker-compose -f deployment/docker-compose.yml logs -f`
-3. Verify the API is running: `curl http://localhost/api/v1/health`
-
-### Test Failures During Startup
-
-If tests fail during the integrated test and deploy workflow:
-
-1. Check the test logs: `docker-compose -f deployment/docker-compose.yml logs | grep "test"`
-2. Examine test results in the test_results directory:
-   ```bash
-   docker-compose -f deployment/docker-compose.yml exec app ls -la /app/test_results
-   docker-compose -f deployment/docker-compose.yml exec app cat /app/test_results/Chanscope Retrieval_tests_*.log
-   ```
-3. If `ABORT_ON_TEST_FAILURE=false` (default), the application will continue to run despite test failures
-4. To abort deployment on test failures, set `ABORT_ON_TEST_FAILURE=true`
-
-## Security Considerations
-
-- The application runs as the non-root user `nobody:nogroup`
-- Sensitive environment variables are passed through the `.env` file
-- Data directories have appropriate permissions
-- No sensitive credentials are stored in the container
-- Environment variables containing API keys are marked as sensitive
-
-## Alignment with Chanscope Retrieval Approach
-
-This Docker setup aligns with the Chanscope Retrieval approach requirements:
-
-1. **Data Processing Pipeline**:
-   - Initial data ingestion from S3
-   - Data stratification
-   - Embedding generation
-
-2. **Query Processing Requirements**:
-   - Support for force refresh capability
-   - Use of existing embeddings when available
-
-3. **Testing Framework Support**:
-   - Validation of initial data load
-   - Embedding generation testing
-   - Incremental processing testing
-   - Force refresh behavior testing
 
 ## Automated Deployment
 

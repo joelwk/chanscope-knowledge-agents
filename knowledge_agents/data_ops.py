@@ -1137,8 +1137,23 @@ class DataOperations:
                     self.config.sample_size = len(df)
                 stratified_df = await self.processor.stratify_data(df)
                 if stratified_df.empty:
-                    self._logger.error("Stratification resulted in an empty dataset")
-                    raise ValueError("Stratification resulted in empty dataset")
+                    self._logger.warning("Stratification resulted in an empty dataset, using fallback approach")
+                    # Fallback: Ignore date filtering and use all available data
+                    self._logger.info("Using all available data without date filtering as fallback")
+                    # Save the original filter_date
+                    original_filter_date = self.processor.config.filter_date
+                    try:
+                        # Temporarily set filter_date to None to use all data
+                        self.processor.config.filter_date = None
+                        # Try stratification again without date filtering
+                        stratified_df = await self.processor.stratify_data(df)
+                        if stratified_df.empty:
+                            self._logger.error("Fallback stratification also resulted in an empty dataset")
+                            raise ValueError("Stratification resulted in empty dataset even with fallback")
+                    finally:
+                        # Restore the original filter_date
+                        self.processor.config.filter_date = original_filter_date
+                
                 stratified_file = self.config.stratified_data_path / 'stratified_sample.csv'
                 
                 # Ensure parent directory exists

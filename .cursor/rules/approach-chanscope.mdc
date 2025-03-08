@@ -1,6 +1,11 @@
 ---
 description: This rule establishes a complete and robust pipeline for the Chanscope application by ensuring that data is ingested, stratified, and embedded on startup, and that queries are processed consistently—refreshing data when forced and using pre-processed data otherwise—while preserving context, maintaining transparency, and enforcing rigorous error handling in line with Cursor best practices.
 globs: 
+alwaysApply: true
+---
+---
+description: This rule establishes a complete and robust pipeline for the Chanscope application by ensuring that data is ingested, stratified, and embedded on startup, and that queries are processed consistently—refreshing data when forced and using pre-processed data otherwise—while preserving context, maintaining transparency, and enforcing rigorous error handling in line with Cursor best practices.
+globs: 
 alwaysApply: false
 ---
 # Chanscope Rules

@@ -42,6 +42,7 @@ class QueryRequest(BaseModel):
     skip_cache: bool = Field(False, description="Skip cache lookup for query")
     filter_date: Optional[str] = Field(None, description="Filter results by date (format: YYYY-MM-DD HH:MM:SS+00:00)")
     select_board: Optional[str] = Field(None, description="Filter S3 data by board ID")
+    task_id: Optional[str] = Field(None, description="User-provided task ID")
     # Configuration options
     sample_size: Optional[int] = Field(None, description="Sample size for processing")
     embedding_batch_size: Optional[int] = Field(None, description="Batch size for embedding operations")
@@ -52,7 +53,7 @@ class QueryRequest(BaseModel):
     embedding_provider: Optional[str] = Field(None, description="Provider for embeddings (openai/grok/venice)")
     chunk_provider: Optional[str] = Field(None, description="Provider for chunk generation (openai/grok/venice)")
     summary_provider: Optional[str] = Field(None, description="Provider for summarization (openai/grok/venice)")
-    use_background: bool = Field(False, description="Use background processing")
+    use_background: bool = Field(True, description="Use background processing")
 
 class QueryResponse(BaseModel):
     """Response model for query processing.
@@ -63,7 +64,6 @@ class QueryResponse(BaseModel):
     chunks: List[Dict[str, Any]] = Field(..., description="List of processed chunks with metadata")
     summary: str = Field(..., description="Generated summary of the chunks")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata about the processing")
-
 class BatchQueryRequest(BaseModel):
     """Request model for batch query processing.
     
@@ -80,6 +80,7 @@ class BatchQueryRequest(BaseModel):
     # Data refresh options
     force_refresh: bool = Field(False, description="Force refresh the data cache before processing")
     skip_embeddings: bool = Field(False, description="Skip embedding generation when refreshing data")
+    task_id: Optional[str] = Field(None, description="Optional user-provided task ID for tracking")
     
     # Skip cache option
     skip_cache: bool = Field(False, description="Skip cache lookup for queries")

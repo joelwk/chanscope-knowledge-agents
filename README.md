@@ -98,6 +98,7 @@ For greater technical details and examples, refer to the [knowledge-agents](http
 - Activity burst detection
 - Topic evolution mapping
 - Cross-reference analysis
+- Real-time trend prediction
 
 ### 2. Signal Processing
 - Source credibility rating
@@ -211,8 +212,7 @@ The project supports multiple AI model providers:
 - **[tests/knowledge_agent_api_tests.md](tests/knowledge_agent_api_tests.md)**: API usage examples
 
 ## Environment Variables
-
-For a complete list of environment variables and their descriptions, see [.env.template](.env.template)
+For a complete and up-to-date list of environment variables, see [.env.template](.env.template)
 
 ## References
 - Data Gathering Lambda: [chanscope-lambda](https://github.com/joelwk/chanscope-lambda)
