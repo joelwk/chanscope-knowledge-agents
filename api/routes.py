@@ -2,13 +2,11 @@
 import time
 import traceback
 import os
-import gc
 import yaml
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any, Union, List, Tuple
-from collections import deque
+from typing import Optional, Dict, Any, Union, List
 
 import json
 import shutil
@@ -34,7 +32,7 @@ from knowledge_agents.embedding_ops import get_agent
 from knowledge_agents.data_processing.cloud_handler import S3Handler
 from knowledge_agents.data_ops import DataConfig, DataOperations
 from knowledge_agents.inference_ops import process_multiple_queries_efficient, process_query
-from api.errors import ProcessingError, APIError
+from api.errors import ProcessingError, APIError, ConfigurationError
 
 from config.base_settings import get_base_settings
 from config.settings import Config
