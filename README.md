@@ -134,6 +134,51 @@ The Chanscope Retrieval is designed to serve as a backend for AI agents and agen
 - **Temporal Awareness**: Understanding of how topics evolve over time
 - **Cross-Reference Analysis**: Connecting related discussions across threads and boards
 
+## Environment Configuration
+
+The project uses an intelligent environment detection system that automatically configures settings based on the deployment context:
+
+### Environment Detection
+- **Replit Detection**: Automatically detects Replit environment through multiple indicators
+- **Docker Detection**: Identifies Docker containers through environment markers
+- **Local Development**: Falls back to local configuration when neither is detected
+
+### Environment-Specific Settings
+1. **Replit Environment**:
+   - Optimized path configuration for Replit filesystem
+   - Automatic directory structure creation
+   - Memory-optimized batch sizes and worker counts
+   - Default configuration for mock data and embeddings
+
+2. **Docker Environment**:
+   - Container-specific path configuration
+   - Optimized worker counts for containerized deployment
+   - Enhanced batch processing settings
+   - Automatic volume management
+
+3. **Local Environment**:
+   - Flexible path configuration
+   - Development-friendly defaults
+   - Easy-to-modify settings
+
+### Configuration Sections
+The `.env` file supports section-based configuration:
+```ini
+[replit]
+# Replit-specific settings
+USE_MOCK_DATA=false
+EMBEDDING_BATCH_SIZE=10
+MAX_WORKERS=2
+
+[docker]
+# Docker-specific settings
+EMBEDDING_BATCH_SIZE=20
+MAX_WORKERS=4
+
+[local]
+# Local development settings
+```
+
 ## Quick Start
 
 ### 1. Setup Environment
@@ -146,12 +191,35 @@ cp .env.template .env  # Configure your API keys
 ### 2. Required Environment Variables
 - `OPENAI_API_KEY`: Primary provider (Required)
 - `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`: For S3 access (Required)
-  
-  For AWS S3 access to 4chan data (hourly for the last 30 days), email chanscope@proton.me.
 
-### 3. Launch with Docker
+### 3. Environment-Specific Configuration
+The system automatically detects and configures based on your environment:
+
+#### Replit Deployment
 ```bash
-# Development
+# Set in Replit Secrets:
+OPENAI_API_KEY=your_key
+AWS_ACCESS_KEY_ID=your_key
+AWS_SECRET_ACCESS_KEY=your_key
+```
+
+#### Docker Deployment
+```bash
+# In your .env file:
+DOCKER_ENV=true
+EMBEDDING_BATCH_SIZE=20
+MAX_WORKERS=4
+```
+
+#### Local Development
+```bash
+# In your .env file:
+# Leave DOCKER_ENV and REPLIT_ENV unset for local detection
+```
+
+### 4. Launch Application
+```bash
+# For Docker
 docker-compose -f deployment/docker-compose.yml up --build -d
 
 # Access Services

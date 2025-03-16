@@ -129,4 +129,46 @@ class ConfigurationError(APIError):
             error_info["original_error"] = str(self.original_error)
             error_info["original_error_type"] = type(self.original_error).__name__
             
-        logger.error(f"Configuration Error: {self.config_key}", extra=error_info) 
+        logger.error(f"Configuration Error: {self.config_key}", extra=error_info)
+
+
+class ValidationError(APIError):
+    """Error raised when there's an issue with request validation."""
+    
+    def __init__(
+        self,
+        message: str = None,
+        field: str = None,
+        value: Any = None,
+        detail: str = None,
+        status_code: int = 400
+    ):
+        # Use either message or detail
+        error_message = message or detail or "Validation error"
+        
+        details = {}
+        if field:
+            details["field"] = field
+        if value is not None:
+            details["value"] = str(value)
+            
+        super().__init__(
+            message=error_message,
+            status_code=status_code,
+            error_code="VALIDATION_ERROR",
+            details=details
+        )
+        self.field = field
+        self.value = value
+        
+    def log_error(self, logger):
+        """Log the validation error with additional context."""
+        error_info = {
+            "error_code": self.error_code,
+            "status_code": self.status_code,
+            "message": self.message,
+            "field": self.field,
+            "value": str(self.value) if self.value is not None else None
+        }
+            
+        logger.error(f"Validation Error: {self.field or 'unknown field'}", extra=error_info) 

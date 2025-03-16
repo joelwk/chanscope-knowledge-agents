@@ -32,7 +32,7 @@ from knowledge_agents.embedding_ops import get_agent
 from knowledge_agents.data_processing.cloud_handler import S3Handler
 from knowledge_agents.data_ops import DataConfig, DataOperations
 from knowledge_agents.inference_ops import process_multiple_queries_efficient, process_query
-from api.errors import ProcessingError, APIError, ConfigurationError
+from api.errors import ProcessingError, APIError, ConfigurationError, ValidationError
 
 from config.base_settings import get_base_settings
 from config.settings import Config
@@ -44,11 +44,9 @@ from config.config_utils import (
 from config.logging_config import get_logger
 from api.models import HealthResponse, StratificationResponse, log_endpoint_call
 from api.cache import CACHE_HITS, CACHE_MISSES, CACHE_ERRORS, cache
-from api.exceptions import (
-    ValidationError,
-)
 
 from config.env_loader import is_replit_environment, get_replit_paths
+from knowledge_agents.utils import save_query_output
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -644,7 +642,7 @@ async def base_query(
                 # Store result
                 success = await _store_batch_result(
                     batch_id=task_id,
-                    result=result,  # Pass the entire result dictionary
+                    result=result,
                     config=config
                 )
                 
@@ -660,7 +658,7 @@ async def base_query(
                         _background_tasks[task_id]["status"] = "completed"
                         _background_tasks[task_id]["progress"] = 100
                 
-                # Return complete result
+                # Create complete response
                 response = {
                     "status": "completed",
                     "task_id": task_id,
@@ -670,8 +668,22 @@ async def base_query(
                 }
                 
                 duration_ms = round((time.time() - start_time) * 1000, 2)
+                response["metadata"]["processing_time_ms"] = duration_ms
+
+                # Save complete response
+                try:
+                    base_path = Path(Config.get_paths()["generated_data"])
+                    saved_paths = save_query_output(
+                        response=response,
+                        base_path=base_path,
+                        logger=logger
+                    )
+                    response["metadata"]["saved_paths"] = saved_paths
+                except Exception as save_error:
+                    logger.warning(f"Error saving query output: {str(save_error)}", exc_info=True)
+                    # Continue processing even if save fails
+
                 logger.info(f"Query {task_id} processed in {duration_ms}ms")
-                
                 return response
                 
             except Exception as e:
@@ -765,10 +777,32 @@ async def _process_single_query(
             config=config
         )
         
-        # Store the result directly (no need to unpack)
+        # Create complete response
+        response = {
+            "status": "completed",
+            "task_id": task_id,
+            "chunks": result.get("chunks", []),
+            "summary": result.get("summary", ""),
+            "metadata": result.get("metadata", {})
+        }
+        
+        # Save complete response
+        try:
+            base_path = Path(Config.get_paths()["generated_data"])
+            saved_paths = save_query_output(
+                response=response,
+                base_path=base_path,
+                logger=logger
+            )
+            response["metadata"]["saved_paths"] = saved_paths
+        except Exception as save_error:
+            logger.warning(f"Error saving query output: {str(save_error)}", exc_info=True)
+            # Continue processing even if save fails
+        
+        # Store the result
         success = await _store_batch_result(
             batch_id=task_id,
-            result=result,  # Pass the entire result dictionary
+            result=response,  # Pass the complete response
             config=config
         )
         
@@ -1017,7 +1051,11 @@ async def get_batch_status(task_id: str) -> Dict[str, Any]:
                                             return response
                                 except Exception as ex:
                                     logger.warning(f"Error reading batch history for {task_id}: {ex}")
-                            raise ValidationError(detail=f"Task {task_id} not found")
+                            raise ValidationError(
+                                message=f"Task {task_id} not found",
+                                field="task_id",
+                                value=task_id
+                            )
                     except (IndexError, ValueError) as ex:
                         raise ValidationError(
                             message=f"Invalid task ID format: {task_id}. Error: {ex}",
@@ -1086,7 +1124,8 @@ async def process_recent_query(
                 raise ValidationError(
                     message="No example queries found in stored_queries.yaml",
                     field="stored_queries",
-                    value=None)
+                    value=None
+                )
             query = stored_queries['query']['example'][0]
         except FileNotFoundError as e:
             raise ConfigurationError(

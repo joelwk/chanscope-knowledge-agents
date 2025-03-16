@@ -4,6 +4,9 @@ import logging
 import warnings
 from datetime import datetime
 from pathlib import Path
+import json
+import numpy as np
+from typing import Dict, Any, Optional
 
 # Import centralized logging configuration
 from config.logging_config import get_logger
@@ -156,3 +159,119 @@ class DateProcessor:
     
     def to_string(self, timestamp, format='%Y-%m-%d %H:%M:%S'):
         return timestamp.strftime(format) if pd.notnull(timestamp) else None
+
+def save_query_output(
+    response: Dict[str, Any], 
+    base_path: Optional[str] = None,
+    logger: Optional[logging.Logger] = None
+) -> Dict[str, str]:
+    """Save query response data and embeddings to organized directory structure.
+    
+    Args:
+        response: Query response dictionary containing chunks, summary, and metadata
+        base_path: Optional base path override (defaults to data/generated_data)
+        logger: Optional logger instance
+        
+    Returns:
+        Dictionary with paths where files were saved
+        
+    Raises:
+        ValueError: If response is invalid or required paths cannot be created
+        IOError: If there are issues writing the files
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+        
+    try:
+        # Validate response
+        if not isinstance(response, dict):
+            raise ValueError("Response must be a dictionary")
+            
+        # Set up paths with proper error handling
+        if base_path is None:
+            from config.settings import Config
+            try:
+                paths = Config.get_paths()
+                base_path = paths.get('generated_data')
+                if base_path is None:
+                    raise ValueError("Could not determine generated_data path from config")
+            except Exception as e:
+                logger.error(f"Error getting base path from config: {e}")
+                base_path = "data/generated_data"  # Fallback default
+                
+        base_dir = Path(base_path)
+        logger.info(f"Using base directory: {base_dir}")
+        embeddings_dir = base_dir / "embeddings"
+        
+        # Create directories with error handling
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+            embeddings_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise IOError(f"Failed to create required directories: {e}")
+        
+        # Extract temporal context for filename
+        temporal_context = response.get("metadata", {}).get("temporal_context", {})
+        end_date = temporal_context.get("end_date", datetime.now().strftime("%Y-%m-%d"))
+        
+        # Generate base filename using end date
+        base_filename = f"query_output_{end_date}"
+        
+        # Save main response data as JSON
+        response_path = base_dir / f"{base_filename}.json"
+        with open(response_path, 'w', encoding='utf-8') as f:
+            json.dump(response, f, indent=2, ensure_ascii=False)
+            
+        # Save text data (chunks and summary) separately for easier access
+        text_data = {
+            "summary": response.get("summary", ""),
+            "chunks": [
+                {
+                    "thread_id": chunk.get("thread_id", "unknown"),
+                    "posted_date_time": chunk.get("posted_date_time", "unknown"),
+                    "analysis": chunk.get("analysis", {}).get("thread_analysis", "")
+                }
+                for chunk in response.get("chunks", [])
+            ]
+        }
+        text_path = base_dir / f"{base_filename}_text.json"
+        with open(text_path, 'w', encoding='utf-8') as f:
+            json.dump(text_data, f, indent=2, ensure_ascii=False)
+            
+        # Save embeddings if present in chunks
+        embeddings_data = {}
+        embeddings_path = None
+        
+        # Extract embeddings from chunks
+        for chunk in response.get("chunks", []):
+            if "embedding" in chunk and chunk["embedding"] is not None:
+                thread_id = chunk.get("thread_id", "unknown")
+                embeddings_data[thread_id] = chunk["embedding"]
+
+        # Save embeddings if any were found
+        if embeddings_data:
+            embeddings_path = embeddings_dir / f"{base_filename}_embeddings.npz"
+            # Save embeddings with thread IDs for reference
+            np.savez_compressed(
+                embeddings_path,
+                embeddings=np.array(list(embeddings_data.values())),
+                thread_ids=np.array(list(embeddings_data.keys())),
+                metadata=np.array(json.dumps({
+                    "date": end_date,
+                    "count": len(embeddings_data),
+                    "dimensions": len(next(iter(embeddings_data.values())))
+                }).encode())
+            )
+        
+        saved_paths = {
+            "response": str(response_path),
+            "text": str(text_path),
+            "embeddings": str(embeddings_path) if embeddings_data else None
+        }
+        
+        logger.info(f"Saved query output to: {saved_paths}")
+        return saved_paths
+        
+    except Exception as e:
+        logger.error(f"Error saving query output: {str(e)}")
+        raise

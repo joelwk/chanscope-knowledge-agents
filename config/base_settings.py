@@ -19,10 +19,11 @@ def get_base_paths() -> Dict[str, Path]:
         'config': root / 'config',
         'root_data_path': root / 'data',
         'stratified': root / 'data/stratified',
+        'generated_data': root / 'data/generated_data',
         'temp': root / 'temp_files',
         'logs': root / 'logs'
     }
-
+    
 def ensure_base_paths() -> None:
     """Ensure base paths exist."""
     paths = get_base_paths()

@@ -212,6 +212,7 @@ def get_replit_paths() -> dict:
     return {
         "root_data_path": os.path.join(repl_home, "data"),
         "stratified_path": os.path.join(repl_home, "data/stratified"),
+        "generated_data_path": os.path.join(repl_home, "data/generated_data"),
         "temp_path": os.path.join(repl_home, "temp_files"),
         "logs_path": os.path.join(repl_home, "logs"),
         "mock_data_path": os.path.join(repl_home, "data/mock")
@@ -239,6 +240,7 @@ def configure_replit_environment():
         env_vars = {
             "ROOT_DATA_PATH": paths["root_data_path"],
             "STRATIFIED_PATH": paths["stratified_path"],
+            "GENERATED_DATA_PATH": paths["generated_data_path"],
             "PATH_TEMP": paths["temp_path"],
             "REPLIT_ENV": "replit",
             "DOCKER_ENV": "false",
@@ -271,16 +273,18 @@ def configure_docker_environment():
         # Set Docker-specific paths if not already set
         docker_data_path = os.environ.get("ROOT_DATA_PATH", "/app/data")
         docker_stratified_path = os.environ.get("STRATIFIED_PATH", "/app/data/stratified")
+        docker_generated_data_path = os.environ.get("GENERATED_DATA_PATH", "/app/data/generated_data")
         docker_temp_path = os.environ.get("PATH_TEMP", "/app/temp_files")
         
         # Create directories
-        for path in [docker_data_path, docker_stratified_path, docker_temp_path]:
+        for path in [docker_data_path, docker_stratified_path, docker_generated_data_path, docker_temp_path]:
             Path(path).mkdir(parents=True, exist_ok=True)
         
         # Set environment variables with Docker-specific defaults
         os.environ.update({
             "ROOT_DATA_PATH": docker_data_path,
             "STRATIFIED_PATH": docker_stratified_path,
+            "GENERATED_DATA_PATH": docker_generated_data_path,
             "PATH_TEMP": docker_temp_path,
             "DOCKER_ENV": "true",
             "EMBEDDING_BATCH_SIZE": os.environ.get("EMBEDDING_BATCH_SIZE", "20"),
