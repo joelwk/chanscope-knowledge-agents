@@ -1005,15 +1005,7 @@ class DataOperations:
             self._release_lock(lock)
 
     async def _fetch_and_save_data(self, retention_start: datetime, current_time: Optional[datetime] = None) -> bool:
-        """Fetch data from S3 and save locally.
-        
-        Args:
-            retention_start: Minimum date for data retention
-            current_time: Current time reference
-            
-        Returns:
-            bool: Success status
-        """
+        """Fetch data from S3 and save locally."""
         if current_time is None:
             current_time = datetime.now(pytz.UTC)
         
@@ -1026,17 +1018,17 @@ class DataOperations:
             # Stagger by 10 ms to avoid locking conflicts
             await asyncio.sleep(0.01)
             
-            # Convert date to correct format for S3 handler
-            filter_date_str = self.config.filter_date
+            # Format the filter date in ISO format for consistent parsing
+            filter_date_str = retention_start.isoformat()
             logger.info(f"Using filter_date for data fetching: {filter_date_str}")
             
             # Process data in chunks to avoid memory issues
             complete_df = []
             record_count = 0
             
-            # Stream data from S3
+            # Stream data from S3 with explicit filter date
             data_generator = load_all_csv_data_from_s3(
-                latest_date_processed=filter_date_str,
+                latest_date_processed=filter_date_str,  # Pass the formatted retention_start date
                 chunk_size=self.config.processing_chunk_size,
                 board_id=self.config.board_id
             )
@@ -1071,12 +1063,15 @@ class DataOperations:
                     if self.config.filter_date:
                         try:
                             filter_date_pd = pd.to_datetime(self.config.filter_date, utc=True)
+                            logger.debug(f"Using filter date: {filter_date_pd} (original: {self.config.filter_date})")
                             date_mask = chunk[self.config.time_column] >= filter_date_pd
-                            if not date_mask.all():
-                                logger.info(f"Filtered {(~date_mask).sum()} rows before {filter_date_pd}")
-                                chunk = chunk[date_mask]
+                            filtered_count = (~date_mask).sum()
+                            logger.info(f"Filtered {filtered_count} rows before {filter_date_pd}")
+                            if filtered_count > 0:
+                                logger.debug(f"Date range in chunk: {chunk[self.config.time_column].min()} to {chunk[self.config.time_column].max()}")
+                            chunk = chunk[date_mask]
                         except Exception as e:
-                            logger.warning(f"Error filtering by date: {e}")
+                            logger.warning(f"Error filtering by date: {e}", exc_info=True)
                     
                     record_count += len(chunk)
                     complete_df.append(chunk)

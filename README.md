@@ -66,10 +66,11 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
 
 - **Intelligent Data Processing**
   - Automated hourly data updates with incremental processing
-  - Time-based and category-based stratified sampling
+  - Time-based and category-based stratified sampling with configurable weights
   - Board-specific data filtering and validation
   - Efficient large dataset handling with reservoir sampling
   - Automated data chunking and embedding generation
+  - Configurable data retention with `DATA_RETENTION_DAYS` environment variable
 
 - **Advanced Analysis Pipeline**
   - Real-time monitoring with 6-hour rolling window
@@ -79,6 +80,9 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
   - Cross-platform data synchronization
   - Enhanced S3 data streaming with board filtering
   - Optimized batch processing for query efficiency
+  - Dual processing modes with `force_refresh` flag:
+    - When enabled: Regenerates stratified samples and embeddings
+    - When disabled: Uses existing data for faster processing
 
 - **API-First Design**
   - RESTful endpoints for all core functionality
@@ -88,6 +92,8 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
   - Authentication and rate limiting for production use
   - Persistent task tracking with detailed status reporting
   - Automatic cleanup of old results with history preservation
+  - Background processing with `use_background` parameter
+  - Custom task IDs for integration with external systems
 
 For greater technical details and examples, refer to the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
 
@@ -191,6 +197,7 @@ cp .env.template .env  # Configure your API keys
 ### 2. Required Environment Variables
 - `OPENAI_API_KEY`: Primary provider (Required)
 - `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`: For S3 access (Required)
+- `DATA_RETENTION_DAYS`: Number of days to retain data (Optional, defaults to 30)
 
 ### 3. Environment-Specific Configuration
 The system automatically detects and configures based on your environment:
@@ -226,6 +233,33 @@ docker-compose -f deployment/docker-compose.yml up --build -d
 API: http://localhost:80
 ```
 
+### 5. Basic API Usage
+
+#### Synchronous Query
+```bash
+curl -X POST "http://localhost/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Investment opportunities in renewable energy",
+    "force_refresh": false
+  }'
+```
+
+#### Background Processing
+```bash
+# Submit background task
+curl -X POST "http://localhost/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Bitcoin Strategic Reserve",
+    "use_background": true,
+    "task_id": "bitcoin_analysis_123"
+  }'
+
+# Check task status
+curl -X GET "http://localhost/api/v1/batch_status/bitcoin_analysis_123"
+```
+
 ## Deployment Options
 
 The project supports multiple deployment options:
@@ -248,6 +282,8 @@ The project includes a comprehensive testing framework to validate functionality
 - **Embedding Tests**: Validate embedding generation and storage
 - **API Endpoint Tests**: Validate API functionality
 - **Chanscope Approach Tests**: Validate the complete pipeline
+- **Task Management Tests**: Verify background processing and status tracking
+- **Force Refresh Tests**: Ensure proper behavior with different refresh settings
 
 For detailed testing instructions, see [tests/README_TESTING.md](tests/README_TESTING.md)
 

@@ -673,15 +673,25 @@ async def base_query(
                 # Save complete response
                 try:
                     base_path = Path(Config.get_paths()["generated_data"])
-                    saved_paths = save_query_output(
+                    json_path, embeddings_path = save_query_output(
                         response=response,
                         base_path=base_path,
-                        logger=logger
+                        logger=logger,
+                        query=request.query
                     )
-                    response["metadata"]["saved_paths"] = saved_paths
-                except Exception as save_error:
-                    logger.warning(f"Error saving query output: {str(save_error)}", exc_info=True)
-                    # Continue processing even if save fails
+                    
+                    # Add file paths to response metadata
+                    if "metadata" not in response:
+                        response["metadata"] = {}
+                    response["metadata"]["saved_files"] = {
+                        "json": str(json_path)
+                    }
+                    if embeddings_path:
+                        response["metadata"]["saved_files"]["embeddings"] = str(embeddings_path)
+                        
+                except Exception as e:
+                    logger.error(f"Error saving query output: {e}")
+                    # Continue processing even if saving fails
 
                 logger.info(f"Query {task_id} processed in {duration_ms}ms")
                 return response
@@ -789,15 +799,25 @@ async def _process_single_query(
         # Save complete response
         try:
             base_path = Path(Config.get_paths()["generated_data"])
-            saved_paths = save_query_output(
+            json_path, embeddings_path = save_query_output(
                 response=response,
                 base_path=base_path,
-                logger=logger
+                logger=logger,
+                query=query
             )
-            response["metadata"]["saved_paths"] = saved_paths
-        except Exception as save_error:
-            logger.warning(f"Error saving query output: {str(save_error)}", exc_info=True)
-            # Continue processing even if save fails
+            
+            # Add file paths to response metadata
+            if "metadata" not in response:
+                response["metadata"] = {}
+            response["metadata"]["saved_files"] = {
+                "json": str(json_path)
+            }
+            if embeddings_path:
+                response["metadata"]["saved_files"]["embeddings"] = str(embeddings_path)
+                
+        except Exception as e:
+            logger.error(f"Error saving query output: {e}")
+            # Continue processing even if saving fails
         
         # Store the result
         success = await _store_batch_result(

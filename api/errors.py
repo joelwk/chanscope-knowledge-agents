@@ -164,11 +164,15 @@ class ValidationError(APIError):
     def log_error(self, logger):
         """Log the validation error with additional context."""
         error_info = {
-            "error_code": self.error_code,
-            "status_code": self.status_code,
-            "message": self.message,
-            "field": self.field,
-            "value": str(self.value) if self.value is not None else None
+            "error_details": {  # Nest the error info to avoid conflicts
+                "error_code": self.error_code,
+                "status_code": self.status_code,
+                "field": self.field,
+                "value": str(self.value) if self.value is not None else None
+            }
         }
             
-        logger.error(f"Validation Error: {self.field or 'unknown field'}", extra=error_info) 
+        logger.error(
+            f"Validation Error: {self.field or 'unknown field'} - {self.message}", 
+            extra=error_info
+        ) 

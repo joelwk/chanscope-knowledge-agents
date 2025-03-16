@@ -20,6 +20,7 @@ def get_base_paths() -> Dict[str, Path]:
         'root_data_path': root / 'data',
         'stratified': root / 'data/stratified',
         'generated_data': root / 'data/generated_data',
+        'embeddings': root / 'data/generated_data/embeddings',
         'temp': root / 'temp_files',
         'logs': root / 'logs'
     }
@@ -66,7 +67,11 @@ def get_base_settings() -> Dict[str, Any]:
     # Load environment variables if not already loaded
     load_env_vars()
     
-    filter_date = (datetime.now(pytz.UTC) - timedelta(days=int(os.getenv('DATA_RETENTION_DAYS')))).strftime('%Y-%m-%d %H:%M:%S%z')
+    # Format the filter date in ISO format for consistent parsing
+    retention_days = int(os.getenv('DATA_RETENTION_DAYS'))
+    filter_date = (
+        datetime.now(pytz.UTC) - timedelta(days=retention_days)
+    ).isoformat()
     
     _settings_cache = {
         'api': {
@@ -114,8 +119,8 @@ def get_base_settings() -> Dict[str, Any]:
             'max_tokens': int(os.getenv('MAX_TOKENS', '4096')),
             'max_workers': int(os.getenv('MAX_WORKERS')),
             'cache_enabled': os.getenv('CACHE_ENABLED', 'true').lower() == 'true',
-            'retention_days': int(os.getenv('DATA_RETENTION_DAYS')),
-            'filter_date': filter_date if os.getenv('FILTER_DATE') is None else os.getenv('FILTER_DATE'),
+            'retention_days': retention_days,
+            'filter_date': os.getenv('FILTER_DATE', filter_date),
             'select_board': os.getenv('SELECT_BOARD'),
             'use_batching': os.getenv('USE_BATCHING', 'true').lower() == 'true',
             'cache_ttl': int(os.getenv('CACHE_TTL', '3600')),

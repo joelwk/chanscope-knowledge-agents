@@ -5,12 +5,12 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 import json
-import numpy as np
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, List
+import traceback
 
 # Import centralized logging configuration
 from config.logging_config import get_logger
-
+from knowledge_agents.embedding_ops import load_embeddings, load_thread_id_map
 # Create a logger using the centralized configuration
 logger = get_logger('knowledge_agents.utils')
 
@@ -163,115 +163,187 @@ class DateProcessor:
 def save_query_output(
     response: Dict[str, Any], 
     base_path: Optional[str] = None,
-    logger: Optional[logging.Logger] = None
-) -> Dict[str, str]:
-    """Save query response data and embeddings to organized directory structure.
+    logger: Optional[logging.Logger] = None,
+    include_embeddings: bool = True,
+    save_numpy: bool = True,
+    query: Optional[str] = None
+) -> Tuple[Path, Optional[Path]]:
+    """Save query output to JSON files with embeddings in separate files.
     
     Args:
-        response: Query response dictionary containing chunks, summary, and metadata
-        base_path: Optional base path override (defaults to data/generated_data)
+        response: Query response dictionary
+        base_path: Optional base path for saving files
         logger: Optional logger instance
+        include_embeddings: Whether to include embeddings in the output
+        save_numpy: Whether to save embeddings in NumPy format (.npz) in addition to JSON
+        query: The original query text to include in the output
         
     Returns:
-        Dictionary with paths where files were saved
-        
-    Raises:
-        ValueError: If response is invalid or required paths cannot be created
-        IOError: If there are issues writing the files
+        Tuple of (json_path, embeddings_path) for the saved files
     """
     if logger is None:
         logger = logging.getLogger(__name__)
         
+    # Ensure we have a base path
+    if base_path is None:
+        base_path = Path("generated_data")
+    else:
+        base_path = Path(base_path)
+    base_path.mkdir(parents=True, exist_ok=True)
+    
+    # Create embeddings directory
+    embeddings_dir = base_path / "embeddings"
+    embeddings_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate timestamp for filenames with more precision to ensure uniqueness
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    
+    # Prepare paths
+    json_path = base_path / f"query_output_{timestamp}.json"
+    embeddings_json_path = embeddings_dir / f"query_output_{timestamp}_embeddings.json"
+    embeddings_npy_path = embeddings_dir / f"query_output_{timestamp}_embeddings.npz"
+    
     try:
-        # Validate response
-        if not isinstance(response, dict):
-            raise ValueError("Response must be a dictionary")
-            
-        # Set up paths with proper error handling
-        if base_path is None:
-            from config.settings import Config
-            try:
-                paths = Config.get_paths()
-                base_path = paths.get('generated_data')
-                if base_path is None:
-                    raise ValueError("Could not determine generated_data path from config")
-            except Exception as e:
-                logger.error(f"Error getting base path from config: {e}")
-                base_path = "data/generated_data"  # Fallback default
-                
-        base_dir = Path(base_path)
-        logger.info(f"Using base directory: {base_dir}")
-        embeddings_dir = base_dir / "embeddings"
-        
-        # Create directories with error handling
-        try:
-            base_dir.mkdir(parents=True, exist_ok=True)
-            embeddings_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            raise IOError(f"Failed to create required directories: {e}")
-        
-        # Extract temporal context for filename
-        temporal_context = response.get("metadata", {}).get("temporal_context", {})
-        end_date = temporal_context.get("end_date", datetime.now().strftime("%Y-%m-%d"))
-        
-        # Generate base filename using end date
-        base_filename = f"query_output_{end_date}"
-        
-        # Save main response data as JSON
-        response_path = base_dir / f"{base_filename}.json"
-        with open(response_path, 'w', encoding='utf-8') as f:
-            json.dump(response, f, indent=2, ensure_ascii=False)
-            
-        # Save text data (chunks and summary) separately for easier access
-        text_data = {
-            "summary": response.get("summary", ""),
-            "chunks": [
-                {
-                    "thread_id": chunk.get("thread_id", "unknown"),
-                    "posted_date_time": chunk.get("posted_date_time", "unknown"),
-                    "analysis": chunk.get("analysis", {}).get("thread_analysis", "")
-                }
-                for chunk in response.get("chunks", [])
-            ]
-        }
-        text_path = base_dir / f"{base_filename}_text.json"
-        with open(text_path, 'w', encoding='utf-8') as f:
-            json.dump(text_data, f, indent=2, ensure_ascii=False)
-            
-        # Save embeddings if present in chunks
+        # Create a copy of the response without embeddings for the main JSON file
+        response_without_embeddings = response.copy()
         embeddings_data = {}
-        embeddings_path = None
         
-        # Extract embeddings from chunks
-        for chunk in response.get("chunks", []):
-            if "embedding" in chunk and chunk["embedding"] is not None:
-                thread_id = chunk.get("thread_id", "unknown")
-                embeddings_data[thread_id] = chunk["embedding"]
-
-        # Save embeddings if any were found
-        if embeddings_data:
-            embeddings_path = embeddings_dir / f"{base_filename}_embeddings.npz"
-            # Save embeddings with thread IDs for reference
-            np.savez_compressed(
-                embeddings_path,
-                embeddings=np.array(list(embeddings_data.values())),
-                thread_ids=np.array(list(embeddings_data.keys())),
-                metadata=np.array(json.dumps({
-                    "date": end_date,
-                    "count": len(embeddings_data),
-                    "dimensions": len(next(iter(embeddings_data.values())))
-                }).encode())
-            )
+        # Add the original query to the main response if provided
+        if query and "query" not in response_without_embeddings:
+            response_without_embeddings["query"] = query
         
-        saved_paths = {
-            "response": str(response_path),
-            "text": str(text_path),
-            "embeddings": str(embeddings_path) if embeddings_data else None
-        }
+        # If embeddings are requested, fetch them for each thread
+        if include_embeddings:
+            thread_ids = [chunk["thread_id"] for chunk in response.get("chunks", [])]
+            thread_embeddings = _fetch_embeddings_for_threads(thread_ids)
+            
+            # Add embeddings to response if found
+            if thread_embeddings:
+                for chunk in response["chunks"]:
+                    thread_id = chunk["thread_id"]
+                    if thread_id in thread_embeddings:
+                        # Store embeddings in the separate data structure
+                        embeddings_data[thread_id] = thread_embeddings[thread_id]
+                        
+                        # Add a reference to the embeddings file in the main response
+                        if "chunks" in response_without_embeddings:
+                            for chunk_without_embedding in response_without_embeddings["chunks"]:
+                                if chunk_without_embedding["thread_id"] == thread_id:
+                                    # Add references to both JSON and NPY files if applicable
+                                    embedding_refs = {
+                                        "json": str(embeddings_json_path)
+                                    }
+                                    if save_numpy:
+                                        embedding_refs["numpy"] = str(embeddings_npy_path)
+                                    chunk_without_embedding["embedding_references"] = embedding_refs
         
-        logger.info(f"Saved query output to: {saved_paths}")
-        return saved_paths
+        # Save main JSON output without embeddings
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(response_without_embeddings, f, indent=2, ensure_ascii=False)
+        
+        # Save embeddings to separate files if we have any
+        if embeddings_data and include_embeddings:
+            # Save as JSON
+            with open(embeddings_json_path, 'w', encoding='utf-8') as f:
+                json.dump(embeddings_data, f, indent=2, ensure_ascii=False)
+            
+            # Save as NumPy if requested
+            if save_numpy:
+                save_embeddings_to_numpy(embeddings_data, embeddings_npy_path, logger)
+            
+            logger.info(f"Saved query output to {json_path} and embeddings to {embeddings_json_path}")
+            if save_numpy:
+                logger.info(f"Also saved embeddings in NumPy format to {embeddings_npy_path}")
+            
+            return json_path, embeddings_json_path
+        else:
+            logger.info(f"Saved query output to {json_path}")
+            return json_path, None
         
     except Exception as e:
-        logger.error(f"Error saving query output: {str(e)}")
+        logger.error(f"Error saving query output: {e}")
+        logger.error(traceback.format_exc())
+        raise
+
+def _fetch_embeddings_for_threads(thread_ids: List[str]) -> Dict[str, List[float]]:
+    """Fetch embeddings for a list of thread IDs.
+    
+    Args:
+        thread_ids: List of thread IDs to fetch embeddings for
+        
+    Returns:
+        Dictionary mapping thread IDs to their embeddings
+    """
+    try:
+        # Initialize paths
+        data_dir = Path("data")
+        stratified_dir = data_dir / 'stratified'
+        embeddings_path = stratified_dir / 'embeddings.npz'
+        thread_id_map_path = stratified_dir / 'thread_id_map.json'
+        
+        # Load embeddings and thread ID map
+        embeddings_array, metadata = load_embeddings(embeddings_path)
+        thread_id_map = load_thread_id_map(thread_id_map_path)
+        
+        if embeddings_array is None or thread_id_map is None:
+            logging.warning("Could not load embeddings or thread ID map")
+            return {}
+            
+        # Convert thread IDs to strings for consistent comparison
+        thread_id_map = {str(k): v for k, v in thread_id_map.items()}
+        thread_ids = [str(tid) for tid in thread_ids]
+        
+        # Create mapping of thread IDs to embeddings
+        embeddings_dict = {}
+        for thread_id in thread_ids:
+            if thread_id in thread_id_map:
+                idx = thread_id_map[thread_id]
+                if idx < len(embeddings_array):
+                    embeddings_dict[thread_id] = embeddings_array[idx].tolist()
+                    
+        return embeddings_dict
+        
+    except Exception as e:
+        logging.error(f"Error fetching embeddings: {e}")
+        logging.error(traceback.format_exc())
+        return {}
+
+def save_embeddings_to_numpy(
+    embeddings_data: Dict[str, List[float]],
+    file_path: Path,
+    logger: Optional[logging.Logger] = None
+) -> Path:
+    """Save embeddings to a NumPy file.
+    
+    Args:
+        embeddings_data: Dictionary mapping thread IDs to embeddings
+        file_path: Path to save the NumPy file
+        logger: Optional logger instance
+        
+    Returns:
+        Path to the saved NumPy file
+    """
+    import numpy as np
+    
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    
+    try:
+        # Convert embeddings to numpy array
+        thread_ids = list(embeddings_data.keys())
+        embeddings_list = [embeddings_data[tid] for tid in thread_ids]
+        
+        # Save as .npz file with thread_ids as keys
+        np.savez(
+            file_path, 
+            thread_ids=np.array(thread_ids, dtype=str),
+            embeddings=np.array(embeddings_list, dtype=np.float32)
+        )
+        
+        logger.info(f"Saved embeddings to NumPy file: {file_path}")
+        return file_path
+    
+    except Exception as e:
+        logger.error(f"Error saving embeddings to NumPy file: {e}")
+        logger.error(traceback.format_exc())
         raise
