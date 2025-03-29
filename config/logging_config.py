@@ -82,6 +82,11 @@ def setup_logging() -> None:
                     "handlers": ["console", "file", "error_file"],
                     "level": log_level,
                     "propagate": False,
+                },
+                "tests": {
+                    "handlers": ["console", "file", "error_file"],
+                    "level": log_level,
+                    "propagate": False,
                 }
             },
         }
@@ -110,8 +115,25 @@ def setup_logging() -> None:
             )
             logging.error(f"Error configuring logging: {str(e)}. Using basic configuration.")
 
-def get_logger(name: str) -> logging.Logger:
-    """Get a logger instance with the specified name."""
+def get_logger(name: str, level: str = None) -> logging.Logger:
+    """Get a logger instance with the specified name and optional level.
+    
+    Args:
+        name: The name of the logger
+        level: Optional logging level to override the default
+        
+    Returns:
+        A configured logger instance
+    """
     if not _is_logging_configured:
         setup_logging()
-    return logging.getLogger(name) 
+    
+    logger = logging.getLogger(name)
+    
+    # Set custom level if provided
+    if level is not None:
+        if isinstance(level, str):
+            level = getattr(logging, level.upper(), logging.INFO)
+        logger.setLevel(level)
+        
+    return logger 

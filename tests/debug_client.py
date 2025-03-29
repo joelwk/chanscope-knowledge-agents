@@ -9,13 +9,10 @@ from knowledge_agents.model_ops import ModelProvider
 import pytest_asyncio
 import asyncio
 from quart import Quart
+from config.logging_config import get_logger
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Use centralized logging configuration instead of direct setup
+logger = get_logger(__name__)
 
 class DebugClient:
     def __init__(self, test_client=None):

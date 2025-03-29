@@ -323,23 +323,18 @@ class S3Handler:
                     if not board_match:
                         filtered_by_board += 1
                         continue
-
-                    # Extract date from filename using regex
-                    import re
-                    date_match = re.search(r'_(\d{4}-\d{2}-\d{2})_', key)
-                    if date_match:
-                        file_data_date = pd.to_datetime(date_match.group(1), utc=True)
-                    else:
-                        # If no date in filename, use LastModified
-                        file_data_date = file_date
+                    board_match = True if not self.select_board else self.select_board.lower() in key.lower()
+                    if not board_match:
+                        filtered_by_board += 1
+                        continue
 
                     if latest_date is not None:
-                        if file_data_date < latest_date:
+                        cutoff_date = latest_date - pd.Timedelta(days=30)
+                        if file_date < cutoff_date:
                             filtered_by_date += 1
-                            logger.info(f"Skipping {key} (date {file_data_date} < filter date {latest_date})")
+                            logger.info(f"Skipping {key} (date {file_date} < cutoff {cutoff_date})")
                             continue
                     csv_keys.append(key)
-
             logger.info(
                 f"Total objects: {len(response['Contents'])}, CSV files: {total_files}, "
                 f"Filtered by date: {filtered_by_date}, board: {filtered_by_board}, Selected: {len(csv_keys)}"

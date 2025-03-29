@@ -1020,73 +1020,106 @@ class DataOperations:
             
             # Format the filter date in ISO format for consistent parsing
             filter_date_str = retention_start.isoformat()
-            logger.info(f"Using filter_date for data fetching: {filter_date_str}")
+            logger.info(f"Attempting to fetch data from S3 starting from {filter_date_str}")
             
             # Process data in chunks to avoid memory issues
             complete_df = []
             record_count = 0
             
-            # Stream data from S3 with explicit filter date
-            data_generator = load_all_csv_data_from_s3(
-                latest_date_processed=filter_date_str,  # Pass the formatted retention_start date
-                chunk_size=self.config.processing_chunk_size,
-                board_id=self.config.board_id
-            )
-            
-            async for chunk in data_generator:
-                # Validate and process chunk data
+            try:
+                # First verify S3 connectivity
+                from .data_processing.cloud_handler import S3Handler
+                s3_handler = S3Handler()
+                if not s3_handler.is_configured:
+                    logger.error("S3 is not properly configured. Check AWS credentials and S3 bucket settings.")
+                    raise ConnectionError("S3 is not properly configured. Check AWS credentials and S3 bucket settings.")
+                
+                # Verify we can list S3 objects
                 try:
-                    # Check if we have required columns
-                    required_columns = list(self.config.dtype_optimizations.keys())
-                    missing_cols = set(required_columns) - set(chunk.columns)
-                    if missing_cols:
-                        logger.warning(f"Missing columns in chunk: {missing_cols}")
-                        continue
-                    
-                    # Process date column
-                    chunk[self.config.time_column] = pd.to_datetime(
-                        chunk[self.config.time_column], 
-                        format='mixed',
-                        utc=True,
-                        errors='coerce'
-                    )
-                    
-                    # Remove rows with invalid dates
-                    valid_mask = ~chunk[self.config.time_column].isna()
-                    if not valid_mask.all():
-                        invalid_count = (~valid_mask).sum()
-                        if invalid_count > 0:
-                            logger.warning(f"Removed {invalid_count} rows with invalid dates")
-                            chunk = chunk[valid_mask]
-                    
-                    # Filter by date range
-                    if self.config.filter_date:
+                    latest_key = s3_handler.get_latest_data_key()
+                    if latest_key:
+                        logger.info(f"Successfully found latest S3 key: {latest_key}")
+                    else:
+                        logger.warning("No data files found in S3 bucket. Bucket may be empty or path configuration is incorrect.")
+                except Exception as s3_list_error:
+                    logger.error(f"Failed to list S3 objects: {s3_list_error}")
+                    raise ConnectionError(f"Failed to list S3 objects: {s3_list_error}")
+                
+                # Stream data from S3 with explicit filter date
+                data_generator = load_all_csv_data_from_s3(
+                    latest_date_processed=filter_date_str,  # Pass the formatted retention_start date
+                    chunk_size=self.config.processing_chunk_size,
+                    board_id=self.config.board_id
+                )
+                
+                try:
+                    async for chunk in data_generator:
+                        # Validate and process chunk data
                         try:
-                            filter_date_pd = pd.to_datetime(self.config.filter_date, utc=True)
-                            logger.debug(f"Using filter date: {filter_date_pd} (original: {self.config.filter_date})")
-                            date_mask = chunk[self.config.time_column] >= filter_date_pd
-                            filtered_count = (~date_mask).sum()
-                            logger.info(f"Filtered {filtered_count} rows before {filter_date_pd}")
-                            if filtered_count > 0:
-                                logger.debug(f"Date range in chunk: {chunk[self.config.time_column].min()} to {chunk[self.config.time_column].max()}")
-                            chunk = chunk[date_mask]
+                            # Check if we have required columns
+                            required_columns = list(self.config.dtype_optimizations.keys())
+                            missing_cols = set(required_columns) - set(chunk.columns)
+                            if missing_cols:
+                                logger.warning(f"Missing columns in chunk: {missing_cols}")
+                                continue
+                            
+                            # Process date column
+                            chunk[self.config.time_column] = pd.to_datetime(
+                                chunk[self.config.time_column], 
+                                format='mixed',
+                                utc=True,
+                                errors='coerce'
+                            )
+                            
+                            # Remove rows with invalid dates
+                            valid_mask = ~chunk[self.config.time_column].isna()
+                            if not valid_mask.all():
+                                invalid_count = (~valid_mask).sum()
+                                if invalid_count > 0:
+                                    logger.warning(f"Removed {invalid_count} rows with invalid dates")
+                                    chunk = chunk[valid_mask]
+                            
+                            # Filter by date range
+                            if self.config.filter_date:
+                                try:
+                                    filter_date_pd = pd.to_datetime(self.config.filter_date, utc=True)
+                                    logger.debug(f"Using filter date: {filter_date_pd} (original: {self.config.filter_date})")
+                                    date_mask = chunk[self.config.time_column] >= filter_date_pd
+                                    filtered_count = (~date_mask).sum()
+                                    logger.info(f"Filtered {filtered_count} rows before {filter_date_pd}")
+                                    if filtered_count > 0:
+                                        logger.debug(f"Date range in chunk: {chunk[self.config.time_column].min()} to {chunk[self.config.time_column].max()}")
+                                    chunk = chunk[date_mask]
+                                except Exception as e:
+                                    logger.warning(f"Error filtering by date: {e}", exc_info=True)
+                            
+                            record_count += len(chunk)
+                            complete_df.append(chunk)
+                            logger.info(f"Processed chunk with {len(chunk)} rows (Total: {record_count})")
+                            
+                            # Yield to other tasks
+                            await asyncio.sleep(0)
+                            
                         except Exception as e:
-                            logger.warning(f"Error filtering by date: {e}", exc_info=True)
+                            logger.exception(f"Error processing data chunk: {e}")
+                            continue
+                except Exception as generator_error:
+                    logger.error(f"Error during S3 data iteration: {generator_error}")
+                    raise ConnectionError(f"Failed to read data from S3: {generator_error}")
                     
-                    record_count += len(chunk)
-                    complete_df.append(chunk)
-                    logger.info(f"Processed chunk with {len(chunk)} rows (Total: {record_count})")
-                    
-                    # Yield to other tasks
-                    await asyncio.sleep(0)
-                    
-                except Exception as e:
-                    logger.exception(f"Error processing data chunk: {e}")
-                    continue
+            except ImportError as ie:
+                logger.error(f"Missing S3 handling module: {ie}")
+                raise ConnectionError(f"S3 module cannot be imported: {ie}")
+            except ConnectionError:
+                # Re-raise connection errors
+                raise
+            except Exception as s3_error:
+                logger.error(f"Error establishing S3 connection: {s3_error}", exc_info=True)
+                raise ConnectionError(f"Failed to connect to S3: {s3_error}")
             
             # Check if we have data to save
             if not complete_df:
-                logger.warning("No data fetched from S3 or all chunks were filtered out")
+                logger.error("No data fetched from S3. Either the bucket is empty, no data matches the filter criteria, or there is a connection issue.")
                 return False
             
             # Combine all chunks and save to file
@@ -1107,8 +1140,11 @@ class DataOperations:
                 logger.exception(f"Error saving combined data: {e}")
                 return False
                 
+        except ConnectionError as ce:
+            logger.error(f"S3 connection error: {ce}")
+            raise
         except Exception as e:
-            logger.exception(f"Error fetching data from S3: {e}")
+            logger.exception(f"Unexpected error during S3 data fetching: {e}")
             return False
 
     async def _create_stratified_dataset(self) -> None:
@@ -1116,8 +1152,19 @@ class DataOperations:
             try:
                 complete_data_path = self.config.root_data_path / 'complete_data.csv'
                 if not complete_data_path.exists():
-                    self._logger.error("complete_data.csv not found")
-                    raise FileNotFoundError("complete_data.csv not found")
+                    self._logger.info("complete_data.csv not found, attempting to fetch data from S3")
+                    # Try to fetch data from S3
+                    retention_start = pd.Timestamp.now(tz='UTC') - pd.Timedelta(days=self.retention_days)
+                    data_fetch_success = await self._fetch_and_save_data(retention_start)
+                    if not data_fetch_success or not complete_data_path.exists():
+                        self._logger.error("Failed to fetch data from S3. Please check your S3 connection and credentials.")
+                        raise ConnectionError("Failed to fetch data from S3. Cannot proceed without valid data source.")
+                
+                # Now complete_data.csv should exist, read it
+                if not complete_data_path.exists():
+                    self._logger.error("Failed to create complete_data.csv")
+                    raise FileNotFoundError("Failed to create complete_data.csv")
+                    
                 df = pd.read_csv(complete_data_path)
                 if df.empty:
                     self._logger.warning("Complete dataset is empty, attempting re-fetch")
@@ -1194,6 +1241,44 @@ class DataOperations:
             except Exception:
                 self._logger.exception("Error creating stratified dataset")
                 raise
+
+    async def _create_mock_complete_data(self) -> pd.DataFrame:
+        """Create mock complete data for when real data is not available."""
+        self._logger.info("Creating mock complete data")
+        
+        import pandas as pd
+        import numpy as np
+        from datetime import datetime, timedelta
+        import pytz
+        
+        # Create mock data for the past retention_days
+        mock_data = []
+        num_records = 1000  # More records than stratified to allow for sampling
+        
+        # Generate data over the past retention period
+        end_date = datetime.now(pytz.UTC)
+        start_date = end_date - timedelta(days=self.retention_days)
+        
+        for i in range(num_records):
+            # Create timestamps spread across the retention period
+            time_offset = timedelta(
+                days=np.random.uniform(0, self.retention_days),
+                hours=np.random.uniform(0, 24),
+                minutes=np.random.uniform(0, 60)
+            )
+            timestamp = (end_date - time_offset).isoformat()
+            
+            mock_data.append({
+                'thread_id': str(10000000 + i),
+                'posted_date_time': timestamp,
+                'text_clean': f'Mock text for testing article {i} created for the complete dataset',
+                'posted_comment': f'Mock comment for article {i} in the complete dataset'
+            })
+        
+        df = pd.DataFrame(mock_data)
+        self._logger.info(f"Created mock complete data with {len(df)} records")
+        
+        return df
 
     def _verify_file(self, file_path: Path, min_size_bytes: int = 100) -> bool:
         try:

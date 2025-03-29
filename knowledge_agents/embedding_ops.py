@@ -336,6 +336,7 @@ async def get_relevant_content(
         embeddings_path.parent.mkdir(parents=True, exist_ok=True)
         thread_id_map_path.parent.mkdir(parents=True, exist_ok=True)
         
+        logger.info(f"Starting dedicated embedding generation (force_refresh={force_refresh})")
         logger.info(f"Using stratified_path: {stratified_path}")
         logger.info(f"Using embeddings_path: {embeddings_path}")
         logger.info(f"Using thread_id_map_path: {thread_id_map_path}")
@@ -354,24 +355,43 @@ async def get_relevant_content(
         in_progress_marker = data_dir / '.initialization_in_progress'
         worker_marker = data_dir / f'.worker_{worker_id}_in_progress'
         
-        # Skip if embeddings already exist and force_refresh is False
-        if not force_refresh and embeddings_path.exists() and thread_id_map_path.exists():
+        # Per Chanscope approach: First check if complete_data.csv exists
+        complete_data_path = Path(data_dir.parent) / 'complete_data.csv'
+        complete_data_exists = complete_data_path.exists()
+        
+        if not complete_data_exists:
+            logger.info(f"complete_data.csv not found at {complete_data_path}. Will process data regardless of force_refresh setting.")
+            # Force refresh to ensure data processing happens
+            force_refresh = True
+        else:
+            logger.info(f"complete_data.csv exists at {complete_data_path}. Checking embedding files.")
+        
+        # Skip if complete_data.csv exists, embeddings already exist, and force_refresh is False
+        if not force_refresh and complete_data_exists and embeddings_path.exists() and thread_id_map_path.exists():
             # Load and verify embeddings
             embeddings, metadata = load_embeddings(embeddings_path)
             thread_id_map = load_thread_id_map(thread_id_map_path)
             
             if embeddings is not None and thread_id_map is not None:
-                logger.info(f"Embeddings already exist at {embeddings_path}, skipping generation")
+                logger.info(f"Embeddings already exist and force_refresh=False, skipping generation")
                 return
             elif not force_refresh:
                 logger.warning("Embeddings exist but could not be loaded properly, regenerating")
                 force_refresh = True
-            
+        else:
+            # Log the reason for continuing with embedding generation
+            if force_refresh:
+                logger.info("Proceeding with embedding generation because force_refresh=True")
+            elif not complete_data_exists:
+                logger.info("Proceeding with embedding generation because complete_data.csv doesn't exist")
+            elif not embeddings_path.exists() or not thread_id_map_path.exists():
+                logger.info("Proceeding with embedding generation because embedding files don't exist")
+        
         # Check if another worker is already processing
         worker_markers = list(data_dir.glob('.worker_*_in_progress'))
         if worker_markers and not force_refresh:
             other_workers = [m for m in worker_markers if m.name != f'.worker_{worker_id}_in_progress']
-            if other_workers:
+            if other_workers and complete_data_exists:  # Only skip if complete_data.csv exists
                 # Check if the worker marker is stale (older than 30 minutes)
                 current_time = time.time()
                 stale_markers = []
@@ -414,7 +434,7 @@ async def get_relevant_content(
             try:
                 with FileLock(str(lock_file), timeout=5):
                     # Double check if embeddings exist after acquiring lock
-                    if not force_refresh and embeddings_path.exists() and thread_id_map_path.exists():
+                    if not force_refresh and complete_data_exists and embeddings_path.exists() and thread_id_map_path.exists():
                         logger.info(f"Embeddings already exist at {embeddings_path} (checked after lock), skipping generation")
                         return
                     

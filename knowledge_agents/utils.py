@@ -11,26 +11,11 @@ import traceback
 # Import centralized logging configuration
 from config.logging_config import get_logger
 from knowledge_agents.embedding_ops import load_embeddings, load_thread_id_map
+
 # Create a logger using the centralized configuration
 logger = get_logger('knowledge_agents.utils')
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
-
-def get_logger(name, level=logging.INFO):
-    """Get a logger with the specified name and level.
-    
-    This is a wrapper around the centralized logging configuration.
-    
-    Args:
-        name: The name of the logger
-        level: The logging level
-        
-    Returns:
-        A configured logger instance
-    """
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    return logger
 
 def parse_date(date_str, default_format="%Y-%m-%d %H:%M:%S"):
     """Parse a date string into a datetime object."""
@@ -48,8 +33,7 @@ def parse_date(date_str, default_format="%Y-%m-%d %H:%M:%S"):
         "%Y-%m-%d",
         "%Y/%m/%d",
         "%m/%d/%Y",
-        "%d/%m/%Y"
-    ]
+        "%d/%m/%Y"]
     
     for fmt in formats:
         try:
