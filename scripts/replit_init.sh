@@ -112,31 +112,7 @@ fi
 
 # Initialize data with stratification and embedding generation
 echo -e "${YELLOW}Checking if data processing is needed...${NC}"
-poetry run python -c "
-import asyncio
-import os
-import sys
-from knowledge_agents.data_processing.chanscope_manager import ChanScopeDataManager
-
-async def process_data():
-    try:
-        # Create data manager with force_refresh=True to ensure stratification and embedding
-        data_manager = ChanScopeDataManager()
-        
-        # Check if data is ready, process if needed
-        data_ready = await data_manager.ensure_data_ready(force_refresh=False)
-        
-        if data_ready:
-            print('Data is ready for use (includes stratification and embeddings)')
-        else:
-            print('Warning: Data could not be fully prepared')
-            
-    except Exception as e:
-        print(f'Error during data processing: {e}')
-        
-# Run the async function
-asyncio.run(process_data())
-"
+poetry run python scripts/process_data.py
 
 # Configure and start the data scheduler if enabled
 ENABLE_DATA_SCHEDULER="${ENABLE_DATA_SCHEDULER:-true}"
