@@ -37,6 +37,7 @@ openai = "^1.12.0"
 typing_extensions = "^4.9.0"
 psycopg2-binary = "^2.9.9"
 replit = "^3.3.2"
+replit-object-storage = "1.0.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
