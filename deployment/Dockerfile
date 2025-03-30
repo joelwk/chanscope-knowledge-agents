@@ -11,8 +11,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Poetry
-RUN pip install --no-cache-dir poetry==1.7.1 \
-    && poetry config virtualenvs.create false
+RUN pip install --no-cache-dir poetry==1.7.1
+
+# Configure Poetry to create virtual environment in project directory
+ENV POETRY_VIRTUALENVS_IN_PROJECT=true \
+    POETRY_NO_INTERACTION=1
 
 # Copy dependency files
 COPY pyproject.toml poetry.lock ./
@@ -26,6 +29,7 @@ FROM python:3.11-slim as app
 # Copy Python packages from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /app/.venv /app/.venv
 
 WORKDIR /app
 
@@ -61,7 +65,8 @@ ENV PYTHONPATH=/app \
     DOCKER_ENV=true \
     REPLIT_ENV=false \
     HOME=/home/nobody \
-    TZ=UTC
+    TZ=UTC \
+    PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 80
 

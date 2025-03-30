@@ -168,6 +168,33 @@ echo "S3_BUCKET=${S3_BUCKET}"
 echo "AWS_ACCESS_KEY_ID is set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo "yes" || echo "no")"
 echo "AWS_SECRET_ACCESS_KEY is set: $([ -n "$AWS_SECRET_ACCESS_KEY" ] && echo "yes" || echo "no")"
 
+# Check Replit database configuration if in Replit environment
+if [ "$IS_REPLIT" = true ]; then
+    echo "Replit Database Configuration:"
+    echo "REPLIT_DB_URL is set: $([ -n "$REPLIT_DB_URL" ] && echo "yes" || echo "no")"
+    echo "DATABASE_URL is set: $([ -n "$DATABASE_URL" ] && echo "yes" || echo "no")"
+    echo "PGHOST is set: $([ -n "$PGHOST" ] && echo "yes" || echo "no")"
+    echo "PGUSER is set: $([ -n "$PGUSER" ] && echo "yes" || echo "no")"
+    echo "PGPASSWORD is set: $([ -n "$PGPASSWORD" ] && echo "yes" || echo "no")"
+    
+    # Check if we need to create a PostgreSQL database
+    if [ -z "$DATABASE_URL" ] && [ -z "$PGHOST" ]; then
+        echo -e "${YELLOW}No PostgreSQL database detected. You may need to create one from the Database tool in Replit.${NC}"
+        echo -e "${YELLOW}Visit the Database tool in the Replit sidebar to add a PostgreSQL database.${NC}"
+    fi
+    
+    # Check if we can access REPLIT_DB_URL for Key-Value storage
+    if [ -z "$REPLIT_DB_URL" ]; then
+        # For deployments, check if REPLIT_DB_URL is available in /tmp/replitdb
+        if [ -f "/tmp/replitdb" ]; then
+            # Read the value without printing it
+            echo -e "${YELLOW}Found REPLIT_DB_URL in /tmp/replitdb for deployment${NC}"
+        else
+            echo -e "${YELLOW}REPLIT_DB_URL not set. Key-Value operations may fail.${NC}"
+        fi
+    fi
+fi
+
 # Create necessary directories with proper permissions
 mkdir -p "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}" "${POETRY_CACHE_DIR}"
 mkdir -p "${DATA_DIR}/stratified" "${DATA_DIR}/shared"
@@ -275,28 +302,95 @@ check_data_status() {
         return 1
     fi
 
-    # Check if complete_data.csv exists
-    if [ ! -f "$COMPLETE_DATA_FILE" ]; then
-        echo "Complete data file not found, data ingestion required."
-        return 1
+    # Check AWS credentials for S3 access
+    if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$S3_BUCKET" ]; then
+        echo "Missing required AWS credentials or S3 bucket configuration"
+        echo "AWS_ACCESS_KEY_ID is set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo "yes" || echo "no")"
+        echo "AWS_SECRET_ACCESS_KEY is set: $([ -n "$AWS_SECRET_ACCESS_KEY" ] && echo "yes" || echo "no")"
+        echo "S3_BUCKET is set: $([ -n "$S3_BUCKET" ] && echo "yes" || echo "no")"
+        echo "Will continue without data refresh"
+        return 0
     fi
 
-    # Check if embeddings exist
-    if [ -z "$(ls -A $EMBEDDINGS_DIR 2>/dev/null)" ]; then
-        echo "Embeddings not found, embedding generation required."
-        return 1
-    fi
+    # For Replit environment, check PostgreSQL directly
+    if [ "$IS_REPLIT" = true ] && [ -n "$DATABASE_URL" ]; then
+        # We need to check the database directly
+        echo "Replit environment detected with PostgreSQL database"
+        
+        # Use Python to check PostgreSQL database status
+        ROW_COUNT=$(python -c "
+import os
+import psycopg2
+import sys
 
-    # Check if data is too old (based on file modification time and DATA_RETENTION_DAYS)
-    if [ -n "$DATA_RETENTION_DAYS" ]; then
-        # Get file modification time in seconds since epoch
-        file_time=$(stat -c %Y "$COMPLETE_DATA_FILE" 2>/dev/null || stat -f %m "$COMPLETE_DATA_FILE" 2>/dev/null)
-        current_time=$(date +%s)
-        max_age_seconds=$((DATA_RETENTION_DAYS * 24 * 60 * 60))
-
-        if (( current_time - file_time > max_age_seconds )); then
-            echo "Complete data file is older than $DATA_RETENTION_DAYS days, refresh required."
+try:
+    # Connect to the PostgreSQL database
+    conn = psycopg2.connect(os.environ.get('DATABASE_URL'))
+    cursor = conn.cursor()
+    
+    # Check if table exists
+    cursor.execute(\"\"\"
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_name = 'complete_data'
+        );
+    \"\"\")
+    table_exists = cursor.fetchone()[0]
+    
+    if not table_exists:
+        print('0')
+        sys.exit(0)
+    
+    # Check row count
+    cursor.execute('SELECT COUNT(*) FROM complete_data')
+    row_count = cursor.fetchone()[0]
+    print(row_count)
+    
+    conn.close()
+except Exception as e:
+    print(f'Error checking PostgreSQL: {e}')
+    print('0')
+    sys.exit(0)
+")
+        
+        # Check if there was an error message
+        if [[ $ROW_COUNT == Error* ]]; then
+            echo "Error connecting to PostgreSQL: $ROW_COUNT"
+            # Assume we need to refresh in case of error
             return 1
+        fi
+        
+        echo "PostgreSQL database has $ROW_COUNT rows"
+        
+        if [ "$ROW_COUNT" = "0" ]; then
+            echo "PostgreSQL database is empty, data ingestion required."
+            return 1
+        fi
+    else
+        # Standard file-based check
+        # Check if complete_data.csv exists
+        if [ ! -f "$COMPLETE_DATA_FILE" ]; then
+            echo "Complete data file not found, data ingestion required."
+            return 1
+        fi
+
+        # Check if embeddings exist
+        if [ -z "$(ls -A $EMBEDDINGS_DIR 2>/dev/null)" ]; then
+            echo "Embeddings not found, embedding generation required."
+            return 1
+        fi
+
+        # Check if data is too old (based on file modification time and DATA_RETENTION_DAYS)
+        if [ -n "$DATA_RETENTION_DAYS" ]; then
+            # Get file modification time in seconds since epoch
+            file_time=$(stat -c %Y "$COMPLETE_DATA_FILE" 2>/dev/null || stat -f %m "$COMPLETE_DATA_FILE" 2>/dev/null)
+            current_time=$(date +%s)
+            max_age_seconds=$((DATA_RETENTION_DAYS * 24 * 60 * 60))
+
+            if (( current_time - file_time > max_age_seconds )); then
+                echo "Complete data file is older than $DATA_RETENTION_DAYS days, refresh required."
+                return 1
+            fi
         fi
     fi
 
@@ -388,29 +482,66 @@ fi
 if [ "$AUTO_CHECK_DATA" = "true" ]; then
     if ! check_data_status; then
         echo -e "${YELLOW}Data refresh needed. Starting initial data update in background...${NC}"
-        (cd "${APP_ROOT}" && python scripts/scheduled_update.py --run_once 2>&1 | tee -a "${SCHEDULER_LOG}" &)
+        if [ "$IS_REPLIT" = true ]; then
+            # Use environment-specific parameters for Replit with explicit force-refresh for empty database
+            (cd "${APP_ROOT}" && python scripts/scheduled_update.py refresh --env=replit --force-refresh 2>&1 | tee -a "${SCHEDULER_LOG}" &)
+        else
+            # Standard docker environment
+            (cd "${APP_ROOT}" && python scripts/scheduled_update.py refresh 2>&1 | tee -a "${SCHEDULER_LOG}" &)
+        fi
         echo -e "${GREEN}Data initialization started in background.${NC}"
     else
         echo -e "${GREEN}Using existing data as it's up-to-date.${NC}"
     fi
 fi
 
-# Start the FastAPI application immediately
+# Start the FastAPI application
 echo -e "${YELLOW}Starting FastAPI application...${NC}"
 echo -e "${YELLOW}Host: $HOST, Port: $API_PORT, Workers: $API_WORKERS, Log level: $LOG_LEVEL${NC}"
 echo -e "${YELLOW}Environment: $ENVIRONMENT, Replit: $IS_REPLIT${NC}"
 
-# In Replit, use the app instance from api/app.py which has Replit-specific configurations
+# Make sure Poetry knows to use virtualenvs in project
+export POETRY_VIRTUALENVS_IN_PROJECT=true
+
+# Main entry point
 if [ "$IS_REPLIT" = true ]; then
     echo -e "${YELLOW}Starting with Replit-specific configuration${NC}"
     
     # Log the current data retention settings
     echo -e "${YELLOW}Using Replit environment with DATA_RETENTION_DAYS=${DATA_RETENTION_DAYS} and FILTER_DATE=${FILTER_DATE}${NC}"
     
+    # Initialize PostgreSQL schema if needed
+    if [ -n "$DATABASE_URL" ] || [ -n "$PGHOST" ]; then
+        echo -e "${YELLOW}Initializing PostgreSQL schema if needed...${NC}"
+        poetry run python -c "
+import asyncio
+from config.replit import PostgresDB
+
+async def initialize_db():
+    try:
+        db = PostgresDB()
+        db.initialize_schema()
+        print('PostgreSQL schema initialized successfully')
+    except Exception as e:
+        print(f'Error initializing PostgreSQL schema: {e}')
+
+# Run the async function
+asyncio.run(initialize_db())
+" || echo -e "${YELLOW}PostgreSQL schema initialization failed, but continuing startup...${NC}"
+    fi
+    
     # Reduced worker count and added --reload-delay to optimize startup
     exec poetry run python -m uvicorn api.app:app --host "$HOST" --port "$API_PORT" --log-level "$LOG_LEVEL" --reload-delay 5 --workers 1 --timeout-keep-alive 30
 else
-    # In Docker/local, use the standard approach
+    # In Docker/local, use the standard approach but match the same import pattern as Replit
     echo -e "${YELLOW}Starting with standard configuration${NC}"
-    exec poetry run uvicorn api:app --host "$HOST" --port "$API_PORT" --workers "$API_WORKERS" --log-level "$LOG_LEVEL"
+    
+    # Verify that uvicorn is available in the virtual environment
+    if ! poetry run python -c "import uvicorn" 2>/dev/null; then
+        echo -e "${RED}Error: uvicorn module not found in the Poetry virtual environment.${NC}"
+        echo -e "${YELLOW}Installing missing dependencies...${NC}"
+        poetry install --no-interaction
+    fi
+    
+    exec poetry run python -m uvicorn api.app:app --host "$HOST" --port "$API_PORT" --workers "$API_WORKERS" --log-level "$LOG_LEVEL"
 fi

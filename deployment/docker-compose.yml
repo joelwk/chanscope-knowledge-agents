@@ -37,7 +37,10 @@ services:
       # Persistent volumes
       - type: volume
         source: poetry_cache
-        target: /app/.cache/pypoetry
+        target: /home/nobody/.cache/pypoetry
+      - type: volume
+        source: poetry_virtualenvs
+        target: /app/.venv
       - type: volume
         source: app_logs
         target: /app/logs
@@ -60,7 +63,8 @@ services:
       - FASTAPI_DEBUG=true
       - REPLIT_ENV=false
       - HOME=/app
-      - POETRY_CACHE_DIR=/app/.cache/pypoetry
+      - POETRY_CACHE_DIR=/home/nobody/.cache/pypoetry
+      - POETRY_VIRTUALENVS_IN_PROJECT=true
       
       # Data management settings
       - DATA_RETENTION_DAYS=14
@@ -134,6 +138,8 @@ networks:
 
 volumes:
   poetry_cache:
+    driver: local
+  poetry_virtualenvs:
     driver: local
   app_data:
     driver: local

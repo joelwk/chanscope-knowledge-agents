@@ -255,7 +255,8 @@ def build_data_config(model_config: ModelConfig) -> 'DataConfig':
     Returns:
         DataConfig: Configured data operations instance
     """
-    from knowledge_agents.data_ops import DataConfig  # Import here to avoid circular dependency
+    # Import inside function to avoid circular dependency
+    from knowledge_agents.data_ops import DataConfig
     
     return DataConfig(
         root_data_path=model_config.root_data_path,
@@ -321,43 +322,20 @@ def build_config_from_request(request: QueryRequest) -> Dict[str, Any]:
 
 def build_unified_config(request: Union[Dict[str, Any], QueryRequest]) -> ModelConfig:
     """Build a unified ModelConfig from a configuration dictionary or QueryRequest."""
-    # Initialize with base settings
-    base_settings = BaseConfig.get_base_settings()
-    config_dict = {
-        'model': base_settings.get('model', {}),
-        'processing': base_settings.get('processing', {}),
-        'paths': base_settings.get('paths', {})
-    }
-    
     if isinstance(request, QueryRequest):
-        # Update model settings from request
-        if request.embedding_provider:
-            config_dict['model']['default_embedding_provider'] = request.embedding_provider
-        if request.chunk_provider:
-            config_dict['model']['default_chunk_provider'] = request.chunk_provider
-        if request.summary_provider:
-            config_dict['model']['default_summary_provider'] = request.summary_provider
-        if request.embedding_batch_size:
-            config_dict['model']['embedding_batch_size'] = request.embedding_batch_size
-        if request.chunk_batch_size:
-            config_dict['model']['chunk_batch_size'] = request.chunk_batch_size
-        if request.summary_batch_size:
-            config_dict['model']['summary_batch_size'] = request.summary_batch_size
-            
-        # Update processing settings from request
-        if request.filter_date:
-            parsed_date = parse_filter_date(request.filter_date)
-            if parsed_date:
-                config_dict['processing']['filter_date'] = parsed_date
-                logger.info(f"Using parsed filter date: {parsed_date}")
-            else:
-                logger.warning(f"Failed to parse filter date: {request.filter_date}")
-        if request.sample_size:
-            config_dict['processing']['sample_size'] = request.sample_size
-        if request.max_workers:
-            config_dict['processing']['max_workers'] = request.max_workers
+        # Use the ModelConfig.from_request method to properly handle providers
+        return ModelConfig.from_request(request)
     else:
-        # If it's a dictionary, merge it with base settings
+        # If it's a dictionary, use the normal initialization approach
+        # Initialize with base settings
+        base_settings = BaseConfig.get_base_settings()
+        config_dict = {
+            'model': base_settings.get('model', {}).copy(),
+            'processing': base_settings.get('processing', {}).copy(),
+            'paths': base_settings.get('paths', {}).copy()
+        }
+        
+        # Merge with provided settings
         config_dict['model'].update(request.get('model', {}))
         config_dict['processing'].update(request.get('processing', {}))
         config_dict['paths'].update(request.get('paths', {}))
@@ -371,8 +349,8 @@ def build_unified_config(request: Union[Dict[str, Any], QueryRequest]) -> ModelC
             else:
                 logger.warning(f"Failed to parse filter date: {config_dict['processing']['filter_date']}")
     
-    # Validate model settings
-    model_settings = validate_model_config(config_dict['model'])
-    
-    # Create ModelConfig instance with the entire config dictionary
-    return ModelConfig(**config_dict)
+        # Validate model settings
+        model_settings = validate_model_config(config_dict['model'])
+        
+        # Create ModelConfig instance with the entire config dictionary
+        return ModelConfig(**config_dict)

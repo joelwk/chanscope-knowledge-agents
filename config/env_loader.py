@@ -8,6 +8,30 @@ import re
 
 logger = logging.getLogger(__name__)
 
+def detect_environment() -> str:
+    """
+    Detect the current execution environment.
+    
+    This is the centralized function for detecting whether we're running in
+    Replit, Docker, or local environment. All code should use this function
+    instead of implementing their own detection logic.
+    
+    Returns:
+        str: 'replit' if running in Replit, 'docker' if running in Docker, 
+             or 'docker' as default/fallback (considering local as equivalent to Docker)
+    """
+    # Check Replit environment first
+    if os.environ.get('REPLIT_ENV', '').lower() in ('replit', 'true') or os.environ.get('REPL_ID'):
+        return 'replit'
+    
+    # Check Docker environment
+    elif os.path.exists('/.dockerenv') or os.environ.get('DOCKER_ENV', '').lower() == 'true':
+        return 'docker'
+    
+    # Default to Docker (treating local as Docker-equivalent)
+    else:
+        return 'docker'
+
 def load_environment():
     """Load environment variables from root .env file.
     
@@ -116,39 +140,13 @@ def load_environment_section(env_path):
         logger.error(f"Error loading environment section: {str(e)}")
 
 def is_docker_environment() -> bool:
-    """Detect if running in Docker environment."""
-    # First check if we're explicitly in Replit
-    if is_replit_environment():
-        logger.debug("Replit environment detected, not Docker")
-        return False
+    """
+    Check if running in Docker environment.
     
-    # Then check if we're explicitly set to not be in Docker
-    if os.environ.get("DOCKER_ENV", "").lower() == "false":
-        logger.debug("DOCKER_ENV=false, not Docker")
-        return False
-    
-    # Check for explicit Docker environment variable
-    if os.environ.get("DOCKER_ENV", "").lower() == "true":
-        logger.debug("DOCKER_ENV=true, Docker environment detected")
-        return True
-    
-    # Check for Docker-specific files
-    if os.path.exists("/.dockerenv"):
-        logger.debug("/.dockerenv exists, Docker environment detected")
-        return True
-    
-    # Check for Docker in cgroups
-    if os.path.exists("/proc/1/cgroup"):
-        try:
-            with open("/proc/1/cgroup", "r") as f:
-                if "docker" in f.read():
-                    logger.debug("Docker found in /proc/1/cgroup, Docker environment detected")
-                    return True
-        except Exception as e:
-            logger.warning(f"Error reading /proc/1/cgroup: {e}")
-    
-    logger.debug("No Docker environment detected")
-    return False
+    Returns:
+        bool: True if running in Docker (or local), False otherwise
+    """
+    return detect_environment() == 'docker'
 
 def _validate_critical_vars():
     """Validate that critical environment variables are set."""
@@ -173,38 +171,13 @@ def _validate_critical_vars():
             logger.warning(f"Missing {description} ({var})")
 
 def is_replit_environment() -> bool:
-    """Detect if running in Replit environment."""
-    # Check for explicit environment variable
-    if os.environ.get("REPLIT_ENV") == "replit" or os.environ.get("REPLIT_ENV") == "true":
-        logger.debug("REPLIT_ENV=replit/true, Replit environment detected")
-        return True
+    """
+    Check if running in Replit environment.
     
-    # Check for Replit ID or slug
-    if os.environ.get("REPL_ID") is not None:
-        logger.debug(f"REPL_ID={os.environ.get('REPL_ID')}, Replit environment detected")
-        return True
-    
-    if os.environ.get("REPL_SLUG") is not None:
-        logger.debug(f"REPL_SLUG={os.environ.get('REPL_SLUG')}, Replit environment detected")
-        return True
-    
-    if os.environ.get("REPLIT_DEPLOYMENT") == "1":
-        logger.debug("REPLIT_DEPLOYMENT=1, Replit environment detected")
-        return True
-    
-    # Check for Replit-specific paths
-    repl_home = os.environ.get("REPL_HOME")
-    if repl_home and os.path.exists(repl_home):
-        logger.debug(f"REPL_HOME={repl_home} exists, Replit environment detected")
-        return True
-    
-    # Check for /home/runner path which is common in Replit
-    if os.path.exists("/home/runner"):
-        logger.debug("/home/runner exists, Replit environment detected")
-        return True
-    
-    logger.debug("No Replit environment detected")
-    return False
+    Returns:
+        bool: True if running in Replit, False otherwise
+    """
+    return detect_environment() == 'replit'
 
 def get_replit_paths() -> dict:
     """Get Replit-specific paths."""

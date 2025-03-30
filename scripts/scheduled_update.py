@@ -1,336 +1,418 @@
-from dotenv import load_dotenv
+#!/usr/bin/env python
+"""
+Unified Scheduled Data Update Script for the Chanscope Application
+
+This script handles scheduled data updates for the Chanscope application
+with unified support for:
+- Docker environments (file-based storage)
+- Replit environments (database storage)
+- Local development environments
+
+Features:
+- Auto-detection of environment
+- Support for one-time and continuous updates
+- Comprehensive data status reporting
+- Robust error handling with auto-recovery
+
+Usage:
+  python scripts/scheduled_update.py refresh  # Update all data
+  python scripts/scheduled_update.py status   # Check data status
+  python scripts/scheduled_update.py embeddings  # Generate embeddings only
+  
+  # Continuous updates (scheduler mode)
+  python scripts/scheduled_update.py refresh --continuous --interval=3600
+"""
+
+import os
+import sys
+import time
 import asyncio
 import logging
-import os
 import argparse
+import traceback
+import json
 from pathlib import Path
 from datetime import datetime, timedelta
-import pytz
-import sys
-import traceback
-import socket
-import shutil
+from typing import Dict, Any, Optional, List, Tuple
 
-# Load environment variables first
-load_dotenv()
+# Add the project root to the Python path to import from packages
+root_path = Path(__file__).parent.parent
+sys.path.insert(0, str(root_path))
 
-from config.settings import Config
-from knowledge_agents.data_ops import DataConfig, DataOperations
+# Import environment utilities
+from config.env_loader import load_environment, is_replit_environment
+from config.logging_config import setup_logging
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Import the ChanScope manager
+from knowledge_agents.data_processing.chanscope_manager import ChanScopeDataManager
+from config.chanscope_config import ChanScopeConfig
 
-logger = logging.getLogger(__name__)
+# Set up logging
+setup_logging()
+logger = logging.getLogger("scheduled_update")
 
-# Detect environment
-def detect_environment():
-    """Detect the current execution environment."""
-    if os.path.exists('/app'):
-        return "docker"
-    elif os.environ.get('REPL_ID'):
-        return "replit"
-    else:
-        return "local"
+# Initialize environment variables
+load_environment()
 
-ENV_TYPE = detect_environment()
-logger.info(f"Detected environment: {ENV_TYPE}")
-
-# Get environment-specific paths
-def get_environment_paths():
-    """Get environment-specific paths based on detected environment."""
-    if ENV_TYPE == "replit":
-        # Replit-specific paths
-        repl_home = os.environ.get('REPL_HOME', os.getcwd())
-        return {
-            'root_data_path': f"{repl_home}/data",
-            'stratified': f"{repl_home}/data/stratified",
-            'temp': f"{repl_home}/temp_files",
-            'logs': f"{repl_home}/logs",
-            'test_results': f"{repl_home}/test_results",
-        }
-    else:
-        # Default paths from config
-        return Config.get_paths()
-
-def setup_environment():
-    """Set up environment-specific directories and configurations."""
-    paths = get_environment_paths()
+class ScheduledUpdater:
+    """Main class for handling scheduled data updates"""
     
-    # Create necessary directories
-    for path_key, path_value in paths.items():
-        # Convert PosixPath to string before checking endswith
-        path_str = str(path_value)
-        if path_key != 'temp' and not path_str.endswith('.json'):  # Skip temp files and JSON configs
-            os.makedirs(path_value, exist_ok=True)
-            
-    # Additional Replit-specific setup
-    if ENV_TYPE == "replit":
-        # Create additional directories needed in Replit
-        os.makedirs(f"{paths['root_data_path']}/shared", exist_ok=True)
-        os.makedirs(f"{paths['root_data_path']}/logs", exist_ok=True)
-        os.makedirs(f"{paths['root_data_path']}/mock", exist_ok=True)
+    def __init__(self, args):
+        """Initialize the updater with command line arguments"""
+        self.args = args
+        self.run_timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        self.environment = self._detect_environment()
+        self.config = self._create_config()
+        self.data_manager = None
+        self.initialize_data_manager()
         
-        # Set Replit-specific environment variables
-        if not os.environ.get('EMBEDDING_BATCH_SIZE'):
-            os.environ['EMBEDDING_BATCH_SIZE'] = '5'  # Smaller batch size for Replit's limited resources
-        if not os.environ.get('CHUNK_BATCH_SIZE'):
-            os.environ['CHUNK_BATCH_SIZE'] = '5'
-        if not os.environ.get('PROCESSING_CHUNK_SIZE'):
-            os.environ['PROCESSING_CHUNK_SIZE'] = '1000'
+    def _detect_environment(self) -> str:
+        """Detect the current execution environment"""
+        # Use provided environment if specified
+        if self.args.env:
+            logger.info(f"Using specified environment: {self.args.env}")
+            return self.args.env
             
-        # Check if mock data should be used
-        use_mock_data = os.environ.get('USE_MOCK_DATA', 'false').lower() in ('true', '1', 'yes')
-        logger.info(f"USE_MOCK_DATA is set to: {os.environ.get('USE_MOCK_DATA', 'not set')} (evaluated as: {use_mock_data})")
-        
-        # Create sample test data for Replit if it doesn't exist and mock data is enabled
-        if use_mock_data:
-            mock_data_path = f"{paths['root_data_path']}/mock/sample_data.csv"
-            if not os.path.exists(mock_data_path):
-                logger.info("Creating sample test data for Replit environment")
-                with open(mock_data_path, 'w') as f:
-                    f.write("thread_id,posted_date_time,text_clean,posted_comment\n")
-                    f.write("1001,2025-01-01 12:00:00,This is a test post for embedding generation,Original comment 1\n")
-                    f.write("1002,2025-01-01 12:05:00,Another test post with different content,Original comment 2\n")
-                    f.write("1003,2025-01-01 12:10:00,Third test post for validation purposes,Original comment 3\n")
-                    f.write("1004,2025-01-01 12:15:00,Fourth test post with unique content,Original comment 4\n")
-                    f.write("1005,2025-01-01 12:20:00,Fifth test post for comprehensive testing,Original comment 5\n")
-
-                # Copy mock data to main data directory for tests if complete_data.csv doesn't exist
-                complete_data_path = f"{paths['root_data_path']}/complete_data.csv"
-                if not os.path.exists(complete_data_path):
-                    shutil.copy(mock_data_path, complete_data_path)
-                    logger.info("Copied sample test data to complete_data.csv")
+        # Auto-detect environment
+        if is_replit_environment():
+            logger.info("Auto-detected Replit environment")
+            return 'replit'
+        elif os.path.exists('/.dockerenv') or any('docker' in line for line in open('/proc/1/cgroup', 'r').readlines() if 'docker' in line):
+            logger.info("Auto-detected Docker environment")
+            return 'docker'
         else:
-            logger.info("Mock data is disabled, skipping mock data creation")
-
-def is_scheduler_running() -> bool:
-    """Check if scheduler is already running."""
-    paths = get_environment_paths()
-    scheduler_marker = Path(paths['root_data_path']) / ".scheduler_running"
-    return scheduler_marker.exists()
-
-async def progress_logger(label: str, start_time: float, timeout: float):
-    """Logs progress every 5 seconds until the operation completes."""
-    process_id = os.getpid()
-    logger.info(f"Starting progress tracking for '{label}' (PID: {process_id})")
-    while True:
-        elapsed = asyncio.get_running_loop().time() - start_time
-        progress = min(100, int((elapsed / timeout) * 100))
-        remaining = max(0, timeout - elapsed)
-        logger.info(f"{label} progress: {progress}% ({elapsed:.1f} sec elapsed, ~{remaining:.1f} sec remaining) [PID: {process_id}]")
+            logger.info("No specific environment detected, using local environment")
+            return 'local'
+    
+    def _create_config(self) -> ChanScopeConfig:
+        """Create ChanScopeConfig with environment-specific settings"""
+        config = ChanScopeConfig.from_env(env_override=self.environment)
         
-        # Update the marker file with current progress
+        # Override config with command-line arguments
+        if self.args.force_refresh:
+            config.force_refresh = True
+        if self.args.filter_date:
+            config.filter_date = self.args.filter_date
+            
+        # Set any environment-specific optimizations
+        if self.environment == 'replit':
+            # Use smaller batch sizes and processing chunks for Replit
+            config.embedding_batch_size = int(os.environ.get('EMBEDDING_BATCH_SIZE', '5'))
+            config.embedding_chunk_size = int(os.environ.get('PROCESSING_CHUNK_SIZE', '1000'))
+            config.max_workers = 1  # Replit has limited resources
+            
+        logger.info(f"Using configuration: {config}")
+        return config
+    
+    def initialize_data_manager(self):
+        """Initialize the ChanScopeDataManager"""
         try:
-            paths = get_environment_paths()
-            marker_file = Path(paths['root_data_path']) / ".update_in_progress"
-            if marker_file.exists():
-                with open(marker_file, "a") as f:
-                    f.write(f"Progress [{datetime.now().isoformat()}]: {label} - {progress}%\n")
-        except Exception:
-            pass  # Silently ignore errors updating the marker file
+            self.data_manager = ChanScopeDataManager(self.config)
+            logger.info("ChanScopeDataManager initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize ChanScopeDataManager: {e}")
+            logger.error(traceback.format_exc())
+            raise
             
-        await asyncio.sleep(5)
-
-async def run_with_progress(coro, label: str, timeout: float):
-    """Runs a coroutine with a timeout and logs progress periodically."""
-    loop = asyncio.get_running_loop()
-    start_time = loop.time()
-    progress_task = asyncio.create_task(progress_logger(label, start_time, timeout))
-    try:
-        result = await asyncio.wait_for(coro, timeout=timeout)
-        progress_task.cancel()
-        return result
-    except asyncio.TimeoutError:
-        progress_task.cancel()
-        raise
-
-async def run_update():
-    """
-    Run data update following the Chanscope approach:
+    async def run_data_refresh(self) -> bool:
+        """Run full data refresh following Chanscope approach"""
+        logger.info(f"Running data refresh (force_refresh={self.config.force_refresh}, "
+                   f"skip_embeddings={self.args.skip_embeddings})")
+        
+        try:
+            # Create a marker file to indicate update in progress
+            marker_path = Path(self.config.root_data_path) / ".update_in_progress"
+            with open(marker_path, 'w') as f:
+                f.write(f"Update started at {datetime.now().isoformat()}")
+            
+            # Check current data status
+            row_count = await self.data_manager.complete_data_storage.get_row_count()
+            logger.info(f"Current complete data row count: {row_count}")
+            
+            # Force refresh for empty database
+            if row_count == 0 and not self.config.force_refresh:
+                logger.info("Database is empty, enabling force_refresh")
+                self.config.force_refresh = True
+            
+            # Ensure data is ready
+            success = await self.data_manager.ensure_data_ready(
+                force_refresh=self.config.force_refresh,
+                skip_embeddings=self.args.skip_embeddings
+            )
+            
+            # Remove marker file
+            if marker_path.exists():
+                marker_path.unlink()
+            
+            if success:
+                logger.info("Data refresh completed successfully")
+                await self._update_status_file(success=True)
+                return True
+            else:
+                logger.error("Data refresh failed")
+                await self._update_status_file(success=False, error="Data refresh operation failed")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error during data refresh: {e}")
+            logger.error(traceback.format_exc())
+            
+            # Remove marker file if it exists
+            if marker_path.exists():
+                marker_path.unlink()
+                
+            await self._update_status_file(success=False, error=str(e))
+            return False
     
-    1. On initial startup:
-       - Load data from S3 since DATA_RETENTION_DAYS ago
-       - Stratify the data
-       - Generate embeddings as a separate step
-       
-    2. On scheduled updates:
-       - Check for new data
-       - Only update if new data exists
-       - Follow force_refresh=False behavior
-    """
-    try:
-        # Get environment-specific paths
-        paths = get_environment_paths()
+    async def generate_embeddings(self) -> bool:
+        """Generate embeddings only"""
+        logger.info(f"Generating embeddings (force_refresh={self.config.force_refresh})")
         
-        # Get other settings from Config
-        processing_settings = Config.get_processing_settings()
-        sample_settings = Config.get_sample_settings()
-        column_settings = Config.get_column_settings()
-        
-        # Get data retention period from environment or config
-        data_retention_days = int(os.environ.get(
-            'DATA_RETENTION_DAYS', 
-            processing_settings.get('retention_days', 30)
-        ))
-        
-        logger.info(f"Data update process started (PID: {os.getpid()}) - Data retention period: {data_retention_days} days")
-        
-        # Calculate filter date if not set
-        filter_date = processing_settings.get('filter_date')
-        if not filter_date:
-            # Default to data_retention_days ago if not specified
-            retention_date = datetime.now(pytz.UTC) - timedelta(days=data_retention_days)
-            filter_date = retention_date.strftime('%Y-%m-%d %H:%M:%S')
-            logger.info(f"No filter date specified, using retention-based date: {filter_date}")
-        
-        # Create data configuration
-        data_config = DataConfig(
-            root_data_path=Path(paths['root_data_path']),
-            stratified_data_path=Path(paths['stratified']),
-            temp_path=Path(paths['temp']),
-            filter_date=filter_date,
-            sample_size=sample_settings['default_sample_size'],
-            time_column=column_settings['time_column'],
-            strata_column=column_settings['strata_column']
-        )
-        
-        # Initialize data operations
-        operations = DataOperations(data_config)
-        
-        # Step 1: Check if application is in initial startup mode
-        is_initial_startup = not Path(paths['root_data_path']).exists() or not (Path(paths['root_data_path']) / "complete_data.csv").exists()
-        
-        # Special handling for Replit in test mode
-        use_mock_data = os.environ.get('USE_MOCK_DATA', 'false').lower() in ('true', '1', 'yes')
-        logger.info(f"USE_MOCK_DATA is set to: {os.environ.get('USE_MOCK_DATA', 'not set')} (evaluated as: {use_mock_data})")
-        
-        if ENV_TYPE == "replit" and use_mock_data and is_initial_startup:
-            logger.info("Using mock data for Replit test environment")
-            # This would be handled by the setup_environment function which creates sample data
-            # Just need to ensure the data is properly stratified and embeddings are generated
-        elif ENV_TYPE == "replit" and not use_mock_data:
-            logger.info("Mock data is disabled in Replit environment, using real data from S3")
-        
-        if is_initial_startup:
-            logger.info("Initial startup detected. Following Chanscope startup approach...")
+        try:
+            # Create a marker file
+            marker_path = Path(self.config.root_data_path) / ".embeddings_in_progress"
+            with open(marker_path, 'w') as f:
+                f.write(f"Embedding generation started at {datetime.now().isoformat()}")
             
-            # For initial setup, perform complete data refresh but skip embedding generation
-            # to avoid long startup times (as per Chanscope approach)
-            logger.info("Phase 1: Loading and stratifying data (force_refresh=True, skip_embeddings=True) with progress tracking")
+            # Generate embeddings
+            success = await self.data_manager.generate_embeddings(force_refresh=self.config.force_refresh)
+            
+            # Remove marker file
+            if marker_path.exists():
+                marker_path.unlink()
+            
+            if success:
+                logger.info("Embedding generation completed successfully")
+                await self._update_status_file(success=True, operation="embeddings")
+                return True
+            else:
+                logger.error("Embedding generation failed")
+                await self._update_status_file(success=False, error="Embedding generation failed", operation="embeddings")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error during embedding generation: {e}")
+            logger.error(traceback.format_exc())
+            
+            # Remove marker file if it exists
+            if marker_path.exists():
+                marker_path.unlink()
+                
+            await self._update_status_file(success=False, error=str(e), operation="embeddings")
+            return False
+    
+    async def check_data_status(self) -> Dict[str, Any]:
+        """Check current data status"""
+        logger.info("Checking data status")
+        
+        try:
+            # Get row count
+            row_count = 0
             try:
-                await run_with_progress(operations.ensure_data_ready(force_refresh=True, skip_embeddings=True), "Data loading", 300)
-            except asyncio.TimeoutError:
-                logger.error("Timeout occurred during initial data loading (ensure_data_ready did not complete within 300 seconds)")
+                row_count = await self.data_manager.complete_data_storage.get_row_count()
+            except Exception as e:
+                logger.warning(f"Could not get row count: {e}")
             
-            # Schedule embedding generation as a second phase (as per Chanscope approach)
-            logger.info("Phase 2: Generating embeddings separately with progress tracking")
+            # Check if stratified sample exists
+            stratified_exists = False
             try:
-                embedding_result = await run_with_progress(operations.generate_embeddings(), "Embedding generation", 300)
-                logger.info(f"Embedding generation completed: {embedding_result}")
-            except asyncio.TimeoutError:
-                logger.error("Timeout occurred during embedding generation (did not complete within 300 seconds)")
-        else:
-            logger.info("Performing incremental update following Chanscope approach...")
-            # For scheduled updates, do incremental updates with force_refresh=False
-            # This follows the Chanscope approach for non-forced updates
-            result = await operations.ensure_data_ready(force_refresh=False)
-            logger.info(f"Incremental update completed: {result}")
+                stratified_exists = await self.data_manager.stratified_storage.sample_exists()
+            except Exception as e:
+                logger.warning(f"Could not check stratified sample: {e}")
             
-    except Exception as e:
-        logger.error(f"Error during scheduled data operation: {str(e)}", exc_info=True)
-        # Log additional diagnostic information
-        logger.error(f"Environment: {ENV_TYPE}")
-        logger.error(f"Hostname: {socket.gethostname()}")
-        logger.error(f"Python version: {sys.version}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise
+            # Check if embeddings exist
+            embeddings_exist = False
+            try:
+                embeddings_exist = await self.data_manager.embedding_storage.embeddings_exist()
+            except Exception as e:
+                logger.warning(f"Could not check embeddings: {e}")
+            
+            # Get processing state
+            state = None
+            try:
+                state = await self.data_manager.state_manager.get_state()
+            except Exception as e:
+                logger.warning(f"Could not get processing state: {e}")
+            
+            # Check if data is ready
+            data_ready = await self.data_manager.is_data_ready(skip_embeddings=False)
+            
+            # Compile status report
+            status = {
+                "timestamp": datetime.now().isoformat(),
+                "environment": self.environment,
+                "complete_data": {
+                    "exists": row_count > 0,
+                    "row_count": row_count
+                },
+                "stratified_sample": {
+                    "exists": stratified_exists
+                },
+                "embeddings": {
+                    "exists": embeddings_exist
+                },
+                "processing_state": state,
+                "data_ready": data_ready,
+                "config": {
+                    "force_refresh": self.config.force_refresh,
+                    "filter_date": self.config.filter_date,
+                    "sample_size": self.config.sample_size
+                }
+            }
+            
+            # Log status summary
+            logger.info(f"Complete data row count: {row_count}")
+            logger.info(f"Stratified sample exists: {stratified_exists}")
+            logger.info(f"Embeddings exist: {embeddings_exist}")
+            logger.info(f"Data is ready: {data_ready}")
+            
+            # Write status to file
+            status_path = Path(self.config.root_data_path) / "data_status.json"
+            with open(status_path, 'w') as f:
+                json.dump(status, f, indent=2)
+                
+            logger.info(f"Status saved to {status_path}")
+            return status
+            
+        except Exception as e:
+            logger.error(f"Error checking data status: {e}")
+            logger.error(traceback.format_exc())
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "environment": self.environment,
+                "error": str(e)
+            }
+    
+    async def _update_status_file(self, success: bool, error: Optional[str] = None, 
+                                 operation: str = "refresh") -> None:
+        """Update the status file with the result of the operation"""
+        try:
+            status_path = Path(self.config.root_data_path) / "last_update_status.json"
+            
+            status = {
+                "timestamp": datetime.now().isoformat(),
+                "operation": operation,
+                "success": success,
+                "environment": self.environment
+            }
+            
+            if error:
+                status["error"] = error
+                
+            with open(status_path, 'w') as f:
+                json.dump(status, f, indent=2)
+                
+            logger.info(f"Updated status file: {status_path}")
+        except Exception as e:
+            logger.warning(f"Could not update status file: {e}")
+
+    async def run_continuous_updates(self) -> None:
+        """Run continuous updates at the specified interval"""
+        interval = self.args.interval
+        logger.info(f"Starting continuous updates with interval {interval} seconds")
+        
+        while True:
+            try:
+                if self.args.command == "refresh":
+                    await self.run_data_refresh()
+                elif self.args.command == "embeddings":
+                    await self.generate_embeddings()
+                elif self.args.command == "status":
+                    await self.check_data_status()
+                else:
+                    logger.error(f"Unknown command for continuous mode: {self.args.command}")
+                    
+                logger.info(f"Waiting {interval} seconds until next update...")
+                await asyncio.sleep(interval)
+            except Exception as e:
+                logger.error(f"Error in update cycle: {e}")
+                logger.error(traceback.format_exc())
+                # Wait a bit before retrying to avoid rapid failure loops
+                await asyncio.sleep(60)
+                
+                # Re-initialize data manager in case of connection issues
+                try:
+                    self.initialize_data_manager()
+                except Exception as reinit_error:
+                    logger.error(f"Failed to re-initialize data manager: {reinit_error}")
+
+async def run_update(args):
+    """Main function to run the update based on command-line arguments"""
+    updater = ScheduledUpdater(args)
+    
+    if args.command == "refresh":
+        return await updater.run_data_refresh()
+    elif args.command == "embeddings":
+        return await updater.generate_embeddings()
+    elif args.command == "status":
+        await updater.check_data_status()
+        return True
+    else:
+        logger.error(f"Unknown command: {args.command}")
+        return False
+
+def parse_args():
+    """Parse command-line arguments"""
+    parser = argparse.ArgumentParser(
+        description='Unified scheduled data updates for Chanscope',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    
+    # Command to run
+    parser.add_argument('command', choices=['refresh', 'embeddings', 'status'], 
+                        help='Command to run (refresh=update all data, embeddings=generate embeddings, status=check status)')
+    
+    # Run mode
+    parser.add_argument('--continuous', action='store_true', 
+                        help='Run continuously at specified interval')
+    parser.add_argument('--interval', type=int, default=3600,
+                        help='Update interval in seconds (for continuous mode)')
+    
+    # Environment override
+    parser.add_argument('--env', choices=['docker', 'replit', 'local'], 
+                        help='Override environment detection')
+    
+    # Update options
+    parser.add_argument('--force-refresh', action='store_true',
+                        help='Force refresh of data and embeddings')
+    parser.add_argument('--skip-embeddings', action='store_true',
+                        help='Skip embedding generation when refreshing data')
+    parser.add_argument('--filter-date', type=str,
+                        help='Filter date for data (format: YYYY-MM-DD)')
+    
+    # Run options
+    parser.add_argument('--run-once', action='store_true',
+                        help='Alias for non-continuous mode (for backward compatibility)')
+    
+    return parser.parse_args()
 
 async def main():
-    parser = argparse.ArgumentParser(description='Run scheduled data updates')
-    parser.add_argument('--run_once', action='store_true', help='Run once and exit (for testing)')
-    parser.add_argument('--force_refresh', action='store_true', help='Force refresh of data and embeddings')
-    parser.add_argument('--env', choices=['docker', 'replit', 'local'], help='Override environment detection')
-    args = parser.parse_args()
+    """Main entry point"""
+    # Parse command-line arguments
+    args = parse_args()
     
-    # Override environment detection if specified
-    global ENV_TYPE
-    if args.env:
-        ENV_TYPE = args.env
-        logger.info(f"Environment manually set to: {ENV_TYPE}")
-    
-    # Set up environment-specific configuration
-    setup_environment()
-    
-    # Log environment and process information for all modes
-    process_id = os.getpid()
-    logger.info(f"Process started with PID: {process_id}")
-    logger.info(f"Environment: {ENV_TYPE}")
-    logger.info(f"Hostname: {socket.gethostname()}")
-    logger.info(f"Python version: {sys.version}")
-    
-    # Create paths for marker files
-    paths = get_environment_paths()
-    
-    # Create a marker file for the current execution
-    execution_marker = Path(paths['root_data_path']) / ".update_in_progress"
-    execution_marker.parent.mkdir(parents=True, exist_ok=True)
-    
-    try:
-        with open(execution_marker, "w") as f:
-            f.write(f"Started: {datetime.now().isoformat()}\n")
-            f.write(f"Environment: {ENV_TYPE}\n")
-            f.write(f"Hostname: {socket.gethostname()}\n")
-            f.write(f"PID: {process_id}\n")
-            f.write(f"Mode: {'single-execution' if args.run_once else 'scheduler'}\n")
-        logger.info(f"Created execution marker file: {execution_marker}")
-    except Exception as e:
-        logger.warning(f"Could not create execution marker: {e}")
-    
+    # Handle run-once flag (for backward compatibility)
     if args.run_once:
-        logger.info("Running in single-execution mode (--run_once)")
-        try:
-            await run_update()
-            # Remove the marker file when done
-            if execution_marker.exists():
-                execution_marker.unlink()
-        except Exception as e:
-            logger.error(f"Error in single-execution mode: {str(e)}", exc_info=True)
-            # Update marker file with error information
-            try:
-                with open(execution_marker, "a") as f:
-                    f.write(f"Error: {str(e)}\n")
-                    f.write(f"Completed with error: {datetime.now().isoformat()}\n")
-            except Exception:
-                pass
-        return
-    
-    # Get update interval from environment or default to 60 minutes
-    update_interval_seconds = int(os.environ.get('DATA_UPDATE_INTERVAL', 3600))
-    logger.info(f"Starting scheduled updates with interval: {update_interval_seconds} seconds")
-    
-    # Create a marker file to indicate the scheduler is running
-    scheduler_marker = Path(paths['root_data_path']) / ".scheduler_running"
+        args.continuous = False
     
     try:
-        with open(scheduler_marker, "w") as f:
-            f.write(f"Started: {datetime.now().isoformat()}\n")
-            f.write(f"Environment: {ENV_TYPE}\n")
-            f.write(f"Hostname: {socket.gethostname()}\n")
-            f.write(f"PID: {process_id}\n")
+        # Run the update
+        if args.continuous:
+            updater = ScheduledUpdater(args)
+            await updater.run_continuous_updates()
+            return 0
+        else:
+            success = await run_update(args)
+            return 0 if success else 1
+    except KeyboardInterrupt:
+        logger.info("Update process interrupted by user")
+        return 0
     except Exception as e:
-        logger.warning(f"Could not create scheduler marker: {e}")
-    
-    while True:
-        try:
-            await run_update()
-            logger.info(f"Waiting {update_interval_seconds} seconds until next update...")
-            await asyncio.sleep(update_interval_seconds)
-        except Exception as e:
-            logger.error(f"Error in update cycle: {str(e)}", exc_info=True)
-            # Wait a bit before retrying to avoid rapid failure loops
-            await asyncio.sleep(60)
+        logger.error(f"Unhandled error in update process: {e}")
+        logger.error(traceback.format_exc())
+        return 1
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    exit_code = asyncio.run(main())
+    sys.exit(exit_code)

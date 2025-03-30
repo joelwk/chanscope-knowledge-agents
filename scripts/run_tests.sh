@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Main test runner script for Chanscope
-# This script detects the current environment and calls the appropriate environment-specific test script
+# Unified test runner script for Chanscope
+# Auto-detects environment and runs appropriate tests with consistent interface
 
 set -e  # Exit on error
 
@@ -10,6 +10,21 @@ GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+
+# Determine script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Default values
+ENVIRONMENT="auto"
+DEBUG_MODE="false"
+TEST_TYPE="all"
+FORCE_REFRESH="false"
+AUTO_CHECK_DATA="true"
+CLEAN_VOLUMES="false"
+SHOW_LOGS="true"
+USE_MOCK_DATA="true"
+USE_MOCK_EMBEDDINGS="true"
 
 # Function to display usage information
 show_usage() {
@@ -20,7 +35,7 @@ show_usage() {
     echo "  --data-ingestion        Run only data ingestion tests"
     echo "  --embedding             Run only embedding tests"
     echo "  --endpoints             Run only API endpoint tests"
-    echo "  --chanscope-approach    Run only Chanscope approach tests"
+    echo "  --chanscope-approach    Run only Chanscope approach validation tests"
     echo "  --force-refresh         Force data refresh before tests"
     echo "  --no-auto-check-data    Disable automatic data checking"
     echo "  --no-mock-data          Use real data instead of mock data (local/Replit only)"
@@ -36,139 +51,419 @@ show_usage() {
     echo "  $0 --env=docker --clean"
 }
 
-# Determine script directory and project root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# Default environment is auto-detect
-ENVIRONMENT="auto"
-DEBUG_MODE="false"
-
-# Parse command line arguments to extract environment and debug flag
-for arg in "$@"; do
-    if [[ $arg == --env=* ]]; then
-        ENVIRONMENT="${arg#*=}"
-    elif [[ $arg == --debug ]]; then
-        DEBUG_MODE="true"
-        echo -e "${YELLOW}Debug mode enabled - verbose output will be shown${NC}"
-    fi
-done
+# Parse command line arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --all)
+                export TEST_TYPE="all"
+                shift
+                ;;
+            --data-ingestion)
+                export TEST_TYPE="data-ingestion"
+                shift
+                ;;
+            --embedding)
+                export TEST_TYPE="embedding"
+                shift
+                ;;
+            --endpoints)
+                export TEST_TYPE="endpoints"
+                shift
+                ;;
+            --chanscope-approach)
+                export TEST_TYPE="chanscope-approach"
+                shift
+                ;;
+            --force-refresh)
+                export FORCE_REFRESH="true"
+                shift
+                ;;
+            --auto-check-data)
+                export AUTO_CHECK_DATA="true"
+                shift
+                ;;
+            --no-auto-check-data)
+                export AUTO_CHECK_DATA="false"
+                shift
+                ;;
+            --no-mock-data)
+                export USE_MOCK_DATA="false"
+                shift
+                ;;
+            --no-mock-embeddings)
+                export USE_MOCK_EMBEDDINGS="false"
+                shift
+                ;;
+            --clean)
+                export CLEAN_VOLUMES="true"
+                shift
+                ;;
+            --no-logs)
+                export SHOW_LOGS="false"
+                shift
+                ;;
+            --debug)
+                export DEBUG_MODE="true"
+                shift
+                ;;
+            --env=*)
+                ENVIRONMENT="${1#*=}"
+                shift
+                ;;
+            --help)
+                show_usage
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+}
 
 # Auto-detect environment if not specified
-if [ "$ENVIRONMENT" = "auto" ]; then
-    # Check for Docker environment
-    if [ -f "/.dockerenv" ] || grep -q docker /proc/1/cgroup 2>/dev/null; then
-        ENVIRONMENT="docker"
-        echo -e "${YELLOW}Auto-detected Docker environment${NC}"
-    # Check for Replit environment - enhanced detection
-    elif [ -n "$REPL_ID" ] || [ -n "$REPL_SLUG" ] || [ -n "$REPL_OWNER" ] || [ "$REPLIT_ENV" = "replit" ] || [ -d "/home/runner" ]; then
-        ENVIRONMENT="replit"
-        echo -e "${YELLOW}Auto-detected Replit environment${NC}"
-    # Default to local environment
+detect_environment() {
+    if [ "$ENVIRONMENT" = "auto" ]; then
+        # Check for Docker environment
+        if [ -f "/.dockerenv" ] || grep -q docker /proc/1/cgroup 2>/dev/null; then
+            ENVIRONMENT="docker"
+            echo -e "${YELLOW}Auto-detected Docker environment${NC}"
+        # Check for Replit environment - enhanced detection
+        elif [ -n "$REPL_ID" ] || [ -n "$REPL_SLUG" ] || [ -n "$REPL_OWNER" ] || [ "$REPLIT_ENV" = "replit" ] || [ -d "/home/runner" ]; then
+            ENVIRONMENT="replit"
+            echo -e "${YELLOW}Auto-detected Replit environment${NC}"
+        # Default to local environment
+        else
+            ENVIRONMENT="local"
+            echo -e "${YELLOW}Auto-detected local environment${NC}"
+        fi
+    fi
+
+    # Allow manual override via environment variable
+    if [ -n "$FORCE_ENVIRONMENT" ]; then
+        echo -e "${YELLOW}Environment manually overridden to: $FORCE_ENVIRONMENT${NC}"
+        ENVIRONMENT="$FORCE_ENVIRONMENT"
+    fi
+
+    # Validate environment
+    if [ "$ENVIRONMENT" != "local" ] && [ "$ENVIRONMENT" != "docker" ] && [ "$ENVIRONMENT" != "replit" ]; then
+        echo -e "${RED}Error: Invalid environment specified: $ENVIRONMENT${NC}"
+        echo -e "${YELLOW}Valid environments are: local, docker, replit${NC}"
+        exit 1
+    fi
+}
+
+# Create directories needed for testing (with error handling)
+create_test_directories() {
+    local env_type=$1
+    echo -e "${YELLOW}Creating test directories for $env_type environment...${NC}"
+    
+    if [ "$env_type" = "docker" ]; then
+        # Docker directories are managed by docker-compose
+        return 0
+    fi
+    
+    # Common directories for local and Replit environments
+    mkdir -p "${PROJECT_ROOT}/data" || echo -e "${YELLOW}Warning: Failed to create data directory${NC}"
+    mkdir -p "${PROJECT_ROOT}/data/stratified" || echo -e "${YELLOW}Warning: Failed to create stratified directory${NC}"
+    mkdir -p "${PROJECT_ROOT}/data/shared" || echo -e "${YELLOW}Warning: Failed to create shared directory${NC}"
+    mkdir -p "${PROJECT_ROOT}/data/logs" || echo -e "${YELLOW}Warning: Failed to create data logs directory${NC}"
+    mkdir -p "${PROJECT_ROOT}/data/mock" || echo -e "${YELLOW}Warning: Failed to create mock data directory${NC}"
+    mkdir -p "${PROJECT_ROOT}/logs" || echo -e "${YELLOW}Warning: Failed to create logs directory${NC}"
+    mkdir -p "${PROJECT_ROOT}/temp_files" || echo -e "${YELLOW}Warning: Failed to create temp files directory${NC}"
+    mkdir -p "${PROJECT_ROOT}/test_results" || echo -e "${YELLOW}Warning: Failed to create test results directory${NC}"
+    
+    # Create mock data if needed and USE_MOCK_DATA is true
+    if [ "$USE_MOCK_DATA" = "true" ]; then
+        create_mock_data
+    fi
+}
+
+# Create mock data for testing
+create_mock_data() {
+    echo -e "${YELLOW}Creating sample test data...${NC}"
+    MOCK_DATA_FILE="${PROJECT_ROOT}/data/mock/sample_data.csv"
+    COMPLETE_DATA_FILE="${PROJECT_ROOT}/data/complete_data.csv"
+    
+    if [ ! -f "$MOCK_DATA_FILE" ]; then
+        cat > "$MOCK_DATA_FILE" << EOF
+thread_id,posted_date_time,text_clean,posted_comment
+1001,2025-01-01 12:00:00,This is a test post for embedding generation,Original comment 1
+1002,2025-01-01 12:05:00,Another test post with different content,Original comment 2
+1003,2025-01-01 12:10:00,Third test post for validation purposes,Original comment 3
+1004,2025-01-01 12:15:00,Fourth test post with unique content,Original comment 4
+1005,2025-01-01 12:20:00,Fifth test post for comprehensive testing,Original comment 5
+EOF
+        echo -e "${GREEN}Sample test data created successfully${NC}"
     else
-        ENVIRONMENT="local"
-        echo -e "${YELLOW}Auto-detected local environment${NC}"
+        echo -e "${YELLOW}Sample test data already exists, skipping creation${NC}"
     fi
-fi
 
-# Allow manual override via environment variable
-if [ -n "$FORCE_ENVIRONMENT" ]; then
-    echo -e "${YELLOW}Environment manually overridden to: $FORCE_ENVIRONMENT${NC}"
-    ENVIRONMENT="$FORCE_ENVIRONMENT"
-fi
-
-# Validate environment
-if [ "$ENVIRONMENT" != "local" ] && [ "$ENVIRONMENT" != "docker" ] && [ "$ENVIRONMENT" != "replit" ]; then
-    echo -e "${RED}Error: Invalid environment specified: $ENVIRONMENT${NC}"
-    echo -e "${YELLOW}Valid environments are: local, docker, replit${NC}"
-    exit 1
-fi
-
-# Debug output for environment detection
-if [ "$DEBUG_MODE" = "true" ]; then
-    echo -e "${YELLOW}Debug: Environment detection details:${NC}"
-    echo "REPL_ID=${REPL_ID:-not set}"
-    echo "REPL_SLUG=${REPL_SLUG:-not set}"
-    echo "REPL_OWNER=${REPL_OWNER:-not set}"
-    echo "REPLIT_ENV=${REPLIT_ENV:-not set}"
-    echo "FORCE_ENVIRONMENT=${FORCE_ENVIRONMENT:-not set}"
-    echo "Docker check: $([ -f "/.dockerenv" ] && echo "true" || echo "false")"
-    echo "Home directory: $HOME"
-    echo "Current directory: $(pwd)"
-    echo "Project root: $PROJECT_ROOT"
-    echo "Script directory: $SCRIPT_DIR"
-fi
-
-echo -e "${YELLOW}Running tests in $ENVIRONMENT environment${NC}"
-
-# Load environment-specific configuration from .env.test if it exists
-if [ -f "$PROJECT_ROOT/.env.test" ]; then
-    echo -e "${YELLOW}Loading configuration from .env.test${NC}"
-    
-    # Create a temporary file for environment variables
-    TEMP_ENV_FILE=$(mktemp)
-    
-    # Extract shared configuration (lines before any section header)
-    grep -B1000 "^\[" "$PROJECT_ROOT/.env.test" | grep -v "^\[" | grep -v "^$" | grep -v "^#" > "$TEMP_ENV_FILE"
-    
-    # Extract environment-specific configuration
-    grep -A1000 "^\[$ENVIRONMENT\]" "$PROJECT_ROOT/.env.test" | grep -v "^\[" | grep -v "^$" | grep -v "^#" >> "$TEMP_ENV_FILE"
-    
-    # Export variables from the temporary file
-    set -a
-    source "$TEMP_ENV_FILE"
-    set +a
-    
-    # Clean up
-    rm "$TEMP_ENV_FILE"
-    
-    # Debug output for loaded environment variables
-    if [ "$DEBUG_MODE" = "true" ]; then
-        echo -e "${YELLOW}Debug: Loaded environment variables from .env.test:${NC}"
-        echo "TEST_MODE=${TEST_MODE:-not set}"
-        echo "REPLIT_ENV=${REPLIT_ENV:-not set}"
-        echo "REPL_ID=${REPL_ID:-not set}"
-        echo "USE_MOCK_DATA=${USE_MOCK_DATA:-not set}"
-        echo "USE_MOCK_EMBEDDINGS=${USE_MOCK_EMBEDDINGS:-not set}"
+    # Copy mock data to main data directory for tests if needed
+    if [ ! -f "$COMPLETE_DATA_FILE" ]; then
+        if [ -f "$MOCK_DATA_FILE" ]; then
+            cp "$MOCK_DATA_FILE" "$COMPLETE_DATA_FILE"
+            echo -e "${GREEN}Copied mock data to complete_data.csv${NC}"
+        else
+            echo -e "${RED}Mock data file not found, cannot copy to complete_data.csv${NC}"
+        fi
+    else
+        echo -e "${YELLOW}complete_data.csv already exists, skipping copy${NC}"
     fi
-fi
+}
 
-# Export debug mode for environment-specific scripts
-export DEBUG_MODE="$DEBUG_MODE"
-
-# Filter out the --env option from arguments
-FILTERED_ARGS=()
-for arg in "$@"; do
-    if [[ ! $arg == --env=* ]]; then
-        FILTERED_ARGS+=("$arg")
+# Find the appropriate Python command (poetry or direct)
+find_python_command() {
+    if command -v poetry &> /dev/null; then
+        echo "poetry run python"
+    elif command -v python3 &> /dev/null; then
+        echo "python3"
+    elif command -v python &> /dev/null; then
+        echo "python"
+    else
+        echo -e "${RED}Error: Neither Python nor Poetry is available in your environment.${NC}"
+        exit 1
     fi
-done
+}
 
-# Call the appropriate environment-specific test script
-case "$ENVIRONMENT" in
-    local)
-        # Source the local test script and run tests
-        source "$SCRIPT_DIR/local_tests.sh"
-        run_local_tests "${FILTERED_ARGS[@]}"
-        EXIT_CODE=$?
-        ;;
-    docker)
-        # Source the Docker test script and run tests
-        source "$SCRIPT_DIR/docker_tests.sh"
-        run_docker_tests "${FILTERED_ARGS[@]}"
-        EXIT_CODE=$?
-        ;;
-    replit)
-        # Ensure Replit environment variables are set
-        export REPLIT_ENV="replit"
-        export REPL_ID="${REPL_ID:-replit_test_run}"
-        
-        # Source the Replit test script and run tests
-        source "$SCRIPT_DIR/replit_tests.sh"
-        run_replit_tests "${FILTERED_ARGS[@]}"
-        EXIT_CODE=$?
-        ;;
-esac
+# Run tests for Chanscope approach validation
+run_chanscope_validation() {
+    echo -e "${YELLOW}Running Chanscope approach validation tests...${NC}"
+    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+    VALIDATION_OUTPUT="${PROJECT_ROOT}/test_results/chanscope_validation_${ENVIRONMENT}_${TIMESTAMP}.json"
+    
+    PYTHON_CMD=$(find_python_command)
+    $PYTHON_CMD "${PROJECT_ROOT}/scripts/validate_chanscope_approach.py" --output "$VALIDATION_OUTPUT"
+    
+    local status=$?
+    if [ $status -eq 0 ]; then
+        echo -e "${GREEN}Chanscope validation tests passed!${NC}"
+    else
+        echo -e "${RED}Chanscope validation tests failed with exit code: $status${NC}"
+    fi
+    return $status
+}
 
-# Exit with the exit code from the environment-specific test script
-exit $EXIT_CODE 
+# Run Docker Tests
+run_docker_tests() {
+    echo -e "${YELLOW}Running tests in Docker environment...${NC}"
+    
+    # Create a timestamp for log files
+    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+    LOG_FILE="${PROJECT_ROOT}/test_results/chanscope_tests_docker_$TIMESTAMP.log"
+    
+    # Clean test volumes if requested
+    if [ "$CLEAN_VOLUMES" = "true" ]; then
+        echo -e "${YELLOW}Cleaning test volumes...${NC}"
+        docker-compose -f deployment/docker-compose.test.yml down -v
+        echo -e "${GREEN}Test volumes cleaned.${NC}"
+    fi
+    
+    # Build the test image
+    echo -e "${YELLOW}Building test Docker image...${NC}"
+    docker-compose -f deployment/docker-compose.test.yml build
+    
+    # Run the tests with appropriate environment variables
+    echo -e "${YELLOW}Running Docker tests with TEST_TYPE=$TEST_TYPE, FORCE_REFRESH=$FORCE_REFRESH, AUTO_CHECK_DATA=$AUTO_CHECK_DATA${NC}"
+    
+    # Special handling for Chanscope approach tests
+    if [ "$TEST_TYPE" = "chanscope-approach" ]; then
+        # For Chanscope approach tests, run validation script directly
+        docker-compose -f deployment/docker-compose.test.yml run --rm \
+            -e TEST_MODE=true \
+            -e FORCE_DATA_REFRESH="$FORCE_REFRESH" \
+            -e AUTO_CHECK_DATA="$AUTO_CHECK_DATA" \
+            chanscope-test python scripts/validate_chanscope_approach.py \
+            | tee "$LOG_FILE"
+        EXIT_CODE=${PIPESTATUS[0]}
+    else
+        # For regular tests, use the Docker test command
+        if [ "$SHOW_LOGS" = "true" ]; then
+            # Show logs in real-time
+            docker-compose -f deployment/docker-compose.test.yml run --rm \
+                -e TEST_MODE=true \
+                -e TEST_TYPE="$TEST_TYPE" \
+                -e FORCE_DATA_REFRESH="$FORCE_REFRESH" \
+                -e AUTO_CHECK_DATA="$AUTO_CHECK_DATA" \
+                chanscope-test | tee "$LOG_FILE"
+            EXIT_CODE=${PIPESTATUS[0]}
+        else
+            # Run silently and save logs to file
+            echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
+            docker-compose -f deployment/docker-compose.test.yml run --rm \
+                -e TEST_MODE=true \
+                -e TEST_TYPE="$TEST_TYPE" \
+                -e FORCE_DATA_REFRESH="$FORCE_REFRESH" \
+                -e AUTO_CHECK_DATA="$AUTO_CHECK_DATA" \
+                chanscope-test > "$LOG_FILE" 2>&1
+            EXIT_CODE=$?
+        fi
+    fi
+
+    # Display test results summary
+    if [ $EXIT_CODE -eq 0 ]; then
+        echo -e "${GREEN}✅ All tests passed successfully!${NC}"
+    else
+        echo -e "${RED}❌ Some tests failed with exit code: $EXIT_CODE${NC}"
+        echo -e "${YELLOW}Check the logs for details: $LOG_FILE${NC}"
+    fi
+
+    return $EXIT_CODE
+}
+
+# Run Local Tests
+run_local_tests() {
+    echo -e "${YELLOW}Running tests in local environment...${NC}"
+    
+    # Create a timestamp for log files
+    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+    LOG_FILE="${PROJECT_ROOT}/test_results/chanscope_tests_local_$TIMESTAMP.log"
+    
+    # Set local-specific test environment
+    export TEST_MODE=true
+    export FORCE_DATA_REFRESH=${FORCE_REFRESH:-false}
+    export AUTO_CHECK_DATA=${AUTO_CHECK_DATA:-true}
+    
+    # Set critical path environment variables for tests
+    export ROOT_DATA_PATH="${PROJECT_ROOT}/data"
+    export STRATIFIED_PATH="${PROJECT_ROOT}/data/stratified"
+    export PATH_TEMP="${PROJECT_ROOT}/temp_files"
+    export TEST_DATA_PATH="${PROJECT_ROOT}/data"
+    export STRATIFIED_DATA_PATH="${PROJECT_ROOT}/data/stratified"
+    
+    # Find Python executable
+    PYTHON_CMD=$(find_python_command)
+    
+    # Special handling for Chanscope approach tests
+    if [ "$TEST_TYPE" = "chanscope-approach" ]; then
+        run_chanscope_validation
+        EXIT_CODE=$?
+    else
+        # Run regular pytest tests
+        if [ "$SHOW_LOGS" = "true" ]; then
+            # Show logs in real-time
+            $PYTHON_CMD -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
+            EXIT_CODE=${PIPESTATUS[0]}
+        else
+            # Run silently and save logs to file
+            echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
+            $PYTHON_CMD -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
+            EXIT_CODE=$?
+        fi
+    fi
+
+    # Display test results summary
+    if [ $EXIT_CODE -eq 0 ]; then
+        echo -e "${GREEN}✅ All tests passed successfully!${NC}"
+    else
+        echo -e "${RED}❌ Some tests failed with exit code: $EXIT_CODE${NC}"
+        echo -e "${YELLOW}Check the logs for details: $LOG_FILE${NC}"
+    fi
+
+    return $EXIT_CODE
+}
+
+# Run Replit Tests
+run_replit_tests() {
+    echo -e "${YELLOW}Running tests in Replit environment...${NC}"
+    
+    # Create a timestamp for log files
+    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+    LOG_FILE="${PROJECT_ROOT}/test_results/chanscope_tests_replit_$TIMESTAMP.log"
+    
+    # Set Replit-specific environment variables
+    export REPLIT_ENV="replit"
+    export REPL_ID="${REPL_ID:-replit_test_run}"
+    export TEST_MODE=true
+    export FORCE_DATA_REFRESH=${FORCE_REFRESH:-false}
+    export AUTO_CHECK_DATA=${AUTO_CHECK_DATA:-true}
+    
+    # Set resource-optimized settings for Replit
+    export EMBEDDING_BATCH_SIZE=5
+    export CHUNK_BATCH_SIZE=5
+    export PROCESSING_CHUNK_SIZE=1000
+    export MAX_WORKERS=1
+    
+    # Set critical path environment variables for tests
+    export ROOT_DATA_PATH="${PROJECT_ROOT}/data"
+    export STRATIFIED_PATH="${PROJECT_ROOT}/data/stratified"
+    export PATH_TEMP="${PROJECT_ROOT}/temp_files"
+    export TEST_DATA_PATH="${PROJECT_ROOT}/data"
+    export STRATIFIED_DATA_PATH="${PROJECT_ROOT}/data/stratified"
+    
+    # Run Replit setup script if available
+    if [ -f "${SCRIPT_DIR}/replit_setup.sh" ]; then
+        echo -e "${YELLOW}Running Replit setup script...${NC}"
+        bash "${SCRIPT_DIR}/replit_setup.sh"
+    fi
+    
+    # Find Python executable
+    PYTHON_CMD=$(find_python_command)
+    
+    # Special handling for Chanscope approach tests
+    if [ "$TEST_TYPE" = "chanscope-approach" ]; then
+        run_chanscope_validation
+        EXIT_CODE=$?
+    else
+        # Run regular pytest tests
+        if [ "$SHOW_LOGS" = "true" ]; then
+            # Show logs in real-time
+            $PYTHON_CMD -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
+            EXIT_CODE=${PIPESTATUS[0]}
+        else
+            # Run silently and save logs to file
+            echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
+            $PYTHON_CMD -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
+            EXIT_CODE=$?
+        fi
+    fi
+
+    # Display test results summary
+    if [ $EXIT_CODE -eq 0 ]; then
+        echo -e "${GREEN}✅ All tests passed successfully!${NC}"
+    else
+        echo -e "${RED}❌ Some tests failed with exit code: $EXIT_CODE${NC}"
+        echo -e "${YELLOW}Check the logs for details: $LOG_FILE${NC}"
+    fi
+
+    return $EXIT_CODE
+}
+
+# Main function
+main() {
+    # Parse command line arguments
+    parse_args "$@"
+    
+    # Detect environment
+    detect_environment
+    
+    echo -e "${YELLOW}Running tests in $ENVIRONMENT environment${NC}"
+    
+    # Create test directories
+    create_test_directories "$ENVIRONMENT"
+    
+    # Run tests based on environment
+    case "$ENVIRONMENT" in
+        local)
+            run_local_tests
+            EXIT_CODE=$?
+            ;;
+        docker)
+            run_docker_tests
+            EXIT_CODE=$?
+            ;;
+        replit)
+            run_replit_tests
+            EXIT_CODE=$?
+            ;;
+    esac
+    
+    return $EXIT_CODE
+}
+
+# Run main function with all arguments
+main "$@"
+exit $? 

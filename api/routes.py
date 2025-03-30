@@ -39,7 +39,7 @@ from config.settings import Config
 from config.config_utils import (
     QueryRequest,
     BatchQueryRequest,
-    build_model_config)
+    build_unified_config)
 
 from config.logging_config import get_logger
 from api.models import HealthResponse, StratificationResponse, log_endpoint_call
@@ -585,9 +585,7 @@ async def base_query(
         # Get required services
         agent = await get_agent()
         data_ops = await get_data_ops()
-        
-        # Get configuration
-        config = build_model_config()
+        config = build_unified_config(request)
         
         if request.use_background:
             # Add task to background processing
@@ -623,21 +621,62 @@ async def base_query(
                 # Process query
                 # First ensure data is ready if needed
                 if request.force_refresh or not await data_ops.is_data_ready(skip_embeddings=request.skip_embeddings):
+                    logger.info(f"Data not ready or force_refresh={request.force_refresh}, preparing data...")
                     await data_ops.ensure_data_ready(
                         force_refresh=request.force_refresh,
                         skip_embeddings=request.skip_embeddings
                     )
                 
                 # Load the stratified data
+                logger.info("Loading stratified data for processing...")
                 library_df = await data_ops.load_stratified_data()
                 
+                # Log information about the data
+                logger.info(f"Loaded stratified data with {len(library_df)} rows and columns: {list(library_df.columns)}")
+                
+                # Verify embeddings are present
+                if 'embedding' not in library_df.columns:
+                    logger.warning("Embeddings not present in loaded data, checking if they need to be loaded separately")
+                    # Check if embeddings need to be loaded separately
+                    embeddings, thread_map = await data_ops.embedding_storage.get_embeddings()
+                    if embeddings is not None and thread_map is not None:
+                        logger.info(f"Merging {len(embeddings)} embeddings with stratified data...")
+                        library_df["embedding"] = None
+                        
+                        # Add embeddings to the DataFrame
+                        matched = 0
+                        for idx, row in library_df.iterrows():
+                            thread_id = str(row["thread_id"])
+                            if thread_id in thread_map:
+                                emb_idx = thread_map[thread_id]
+                                if isinstance(emb_idx, (int, str)) and str(emb_idx).isdigit():
+                                    emb_idx = int(emb_idx)
+                                    if 0 <= emb_idx < len(embeddings):
+                                        library_df.at[idx, "embedding"] = embeddings[emb_idx]
+                                        matched += 1
+                        
+                        logger.info(f"Successfully matched {matched} embeddings out of {len(library_df)} rows")
+                    else:
+                        logger.warning("Failed to load separate embeddings, proceeding with potentially limited functionality")
+                
+                # Ensure we have the necessary text field for inference
+                if "text_clean" not in library_df.columns and "content" in library_df.columns:
+                    logger.info("Adding text_clean field from content field")
+                    library_df["text_clean"] = library_df["content"]
+                
                 # Now process the query with the loaded data
+                logger.info(f"Processing query: '{request.query[:50]}...'")
+                processing_start = time.time()
+                
                 result = await process_query(
                     query=request.query,
                     agent=agent,
                     library_df=library_df,
                     config=config
                 )
+                
+                processing_time = round((time.time() - processing_start) * 1000, 2)
+                logger.info(f"Query processed in {processing_time}ms with {len(result.get('chunks', []))} chunks")
                 
                 # Store result
                 success = await _store_batch_result(
@@ -771,21 +810,62 @@ async def _process_single_query(
         # Process the query
         # First ensure data is ready if needed
         if force_refresh or not await data_ops.is_data_ready(skip_embeddings=skip_embeddings):
+            logger.info(f"Data not ready or force_refresh={force_refresh}, preparing data...")
             await data_ops.ensure_data_ready(
                 force_refresh=force_refresh,
                 skip_embeddings=skip_embeddings
             )
         
         # Load the stratified data
+        logger.info("Loading stratified data for background processing...")
         library_df = await data_ops.load_stratified_data()
         
-        # Now process the query with the loaded data
+        # Log information about the data
+        logger.info(f"Loaded stratified data with {len(library_df)} rows and columns: {list(library_df.columns)}")
+        
+        # Verify embeddings are present
+        if 'embedding' not in library_df.columns:
+            logger.warning("Embeddings not present in loaded data, checking if they need to be loaded separately")
+            # Check if embeddings need to be loaded separately
+            embeddings, thread_map = await data_ops.embedding_storage.get_embeddings()
+            if embeddings is not None and thread_map is not None:
+                logger.info(f"Merging {len(embeddings)} embeddings with stratified data...")
+                library_df["embedding"] = None
+                
+                # Add embeddings to the DataFrame
+                matched = 0
+                for idx, row in library_df.iterrows():
+                    thread_id = str(row["thread_id"])
+                    if thread_id in thread_map:
+                        emb_idx = thread_map[thread_id]
+                        if isinstance(emb_idx, (int, str)) and str(emb_idx).isdigit():
+                            emb_idx = int(emb_idx)
+                            if 0 <= emb_idx < len(embeddings):
+                                library_df.at[idx, "embedding"] = embeddings[emb_idx]
+                                matched += 1
+                
+                logger.info(f"Successfully matched {matched} embeddings out of {len(library_df)} rows")
+            else:
+                logger.warning("Failed to load separate embeddings, proceeding with potentially limited functionality")
+        
+        # Ensure we have the necessary text field for inference
+        if "text_clean" not in library_df.columns and "content" in library_df.columns:
+            logger.info("Adding text_clean field from content field")
+            library_df["text_clean"] = library_df["content"]
+        
+        # Now process the query with the loaded data - Using the config directly
+        logger.info(f"Processing background query: '{query[:50]}...'")
+        processing_start = time.time()
+        
         result = await process_query(
             query=query,
             agent=agent,
             library_df=library_df,
             config=config
         )
+        
+        processing_time = round((time.time() - processing_start) * 1000, 2)
+        logger.info(f"Background query processed in {processing_time}ms with {len(result.get('chunks', []))} chunks")
         
         # Create complete response
         response = {

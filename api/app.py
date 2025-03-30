@@ -1,223 +1,260 @@
-"""FastAPI application configuration and middleware."""
+"""
+Main API module for the Chanscope application.
+
+This module provides the FastAPI application for the Chanscope approach,
+supporting both file-based storage (Docker) and database storage (Replit).
+"""
+
 import os
-from typing import Any
-from fastapi import FastAPI, Request
+import logging
+from typing import Dict, Any, Optional
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
 import time
-import traceback
-import json
 from datetime import datetime
+
+# Import configuration utilities
+from config.env_loader import load_environment, detect_environment
+from config.logging_config import setup_logging
+
+# Import the unified data manager
+from knowledge_agents.data_processing.chanscope_manager import ChanScopeDataManager
+from config.chanscope_config import ChanScopeConfig
+
+# Import API router from routes.py
 from .routes import router as api_router
-from .exceptions import BaseAppException  # Updated import
-from config.logging_config import get_logger
-from . import get_environment  # Import from __init__.py
-from config.env_loader import is_replit_environment, configure_replit_environment
-from knowledge_agents.data_ops import DataOperations, DataConfig
 
-logger = get_logger(__name__)
+# Set up logging
+setup_logging()
+logger = logging.getLogger("api")
 
-# Performance monitoring middleware
-def add_middleware(app: FastAPI) -> None:
-    """Add middleware to FastAPI app."""
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+# Initialize environment variables
+load_environment()
 
-    @app.middleware("http")
-    async def add_process_time_header(request: Request, call_next: Any) -> Any:
-        """Add processing time to response headers."""
-        try:
-            start_time = time.time()
-            response = await call_next(request)
-            process_time = time.time() - start_time
-            response.headers["X-Process-Time"] = str(process_time)
-            return response
-        except Exception as e:
-            logger.error(f"Error in process time middleware: {str(e)}")
-            return JSONResponse(
-                status_code=500,
-                content={"detail": "Internal server error in middleware"}
-            )
+# Create FastAPI application
+app = FastAPI(
+    title="Chanscope API",
+    description="API for the Chanscope data processing and query system.",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
-    @app.middleware("http")
-    async def error_handling_middleware(request: Request, call_next: Any) -> Any:
-        """Global error handling middleware."""
-        try:
-            return await call_next(request)
-        except BaseAppException as e:  # Updated to use BaseAppException
-            logger.error(f"API error: {str(e)}")
-            return JSONResponse(
-                status_code=e.status_code,
-                content=e.to_response().dict()  # Use the standardized response format
-            )
-        except Exception as e:
-            logger.error(f"Unhandled error: {str(e)}")
-            logger.debug(traceback.format_exc())
-            return JSONResponse(
-                status_code=500,
-                content={"detail": "Internal server error"}
-            )
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    @app.on_event("shutdown")
-    async def shutdown_event() -> None:
-        """Clean up resources on shutdown."""
-        try:
-            logger.info("Shutting down Knowledge Agents API")
-            # Add any cleanup code here
-        except Exception as e:
-            logger.error(f"Error during shutdown: {str(e)}")
-            logger.debug(traceback.format_exc())
+# Create configuration and data manager
+chanscope_config = ChanScopeConfig.from_env()
+logger.info(f"Initialized ChanScopeConfig: {chanscope_config}")
 
-async def initialize_data_in_background(data_config: DataConfig):
-    """Initialize data in background without blocking API startup.
-    
-    This implementation uses improved locking mechanisms to ensure
-    only one worker performs initialization.
+# Create data manager using factory method for the appropriate environment
+environment = detect_environment()
+logger.info(f"Detected environment: {environment}")
+data_manager = ChanScopeDataManager.create_for_environment(chanscope_config)
+logger.info(f"Initialized ChanScopeDataManager for {environment} environment")
+
+# Include API router with proper prefix
+app.include_router(api_router, prefix="/api/v1", tags=["knowledge_agents"])
+
+# Define request models
+class QueryRequest(BaseModel):
+    """Query request model."""
+    query: str
+    top_k: int = 5
+    force_refresh: bool = False
+    skip_embeddings: bool = False
+
+class QueryResponse(BaseModel):
+    """Query response model."""
+    status: str = "completed"
+    query: str
+    top_k: int
+    chunks: list = []
+    summary: str = ""
+    metadata: Dict[str, Any]
+
+# Dependency for data readiness
+async def ensure_data_ready(
+    force_refresh: bool = False,
+    skip_embeddings: bool = False
+) -> bool:
     """
-    worker_id = os.getenv("WORKER_ID", str(os.getpid()))
-    logger.info(f"Worker {worker_id} starting data initialization")
+    Ensure data is ready for use.
     
-    try:
-        # Create proper directory structure if needed
-        data_dir = data_config.root_data_path
-        data_dir.mkdir(parents=True, exist_ok=True)
+    Args:
+        force_refresh: Whether to force refresh all data
+        skip_embeddings: Whether to skip embedding generation
         
-        # Use more robust initialization markers
-        initialization_marker = data_dir / '.initialization_in_progress'
-        completion_marker = data_dir / '.initialization_complete'
-        state_file = data_dir / '.initialization_state'
-        
-        # Check if initialization is already complete with fresh data
-        if completion_marker.exists() and state_file.exists():
-            try:
-                state_age = time.time() - state_file.stat().st_mtime
-                if state_age < 3600:  # Less than 1 hour old
-                    logger.info(f"Recent initialization found (age: {state_age:.1f}s), skipping")
-                    return
-            except Exception as e:
-                logger.warning(f"Error checking initialization state age: {e}")
-                
-        # Create marker to prevent duplicate initialization
-        with open(initialization_marker, "w") as f:
-            json.dump({
-                "start": datetime.now().isoformat(),
-                "pid": os.getpid(),
-                "worker_id": worker_id
-            }, f)
-
-        # Initialize data operations
-        data_ops = DataOperations(data_config)
-
-        # Run data initialization
-        await data_ops.ensure_data_ready(force_refresh=True, skip_embeddings=False)
-
-        # Create completion marker and state file when done
-        with open(completion_marker, "w") as f:
-            f.write(datetime.now().isoformat())
-            
-        # Write detailed state information
-        with open(state_file, "w") as f:
-            json.dump({
-                "timestamp": datetime.now().isoformat(),
-                "worker_id": worker_id,
-                "pid": os.getpid(),
-                "data_path": str(data_config.root_data_path)
-            }, f)
-
-        # Remove in-progress marker when done
-        if initialization_marker.exists():
-            initialization_marker.unlink()
-
-        logger.info("Background data initialization completed successfully")
-    except Exception as e:
-        logger.error(f"Error in background data initialization: {e}", exc_info=True)
-        # Make sure to clean up the initialization marker on error
-        try:
-            if initialization_marker.exists():
-                initialization_marker.unlink()
-        except Exception as cleanup_error:
-            logger.warning(f"Error cleaning up initialization marker: {cleanup_error}")
-
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
-    # Configure Replit environment if needed
-    if is_replit_environment():
-        configure_replit_environment()
-
-    # Get port configuration
-    port = int(os.getenv("PORT", "80"))
-    host = os.getenv("HOST", "0.0.0.0")
-
-    # Log startup configuration
-    logger.info(f"Starting application on {host}:{port}")
-    logger.info(f"Environment: {get_environment()}")
-    logger.info(f"Replit mode: {is_replit_environment()}")
-
-    # Create FastAPI app with enhanced metadata
-    app = FastAPI(
-        title="Knowledge Agent API",
-        description="API for processing and analyzing text using AI models",
-        version="1.0.0",
-        docs_url="/docs",  # Always enable docs
-        redoc_url="/redoc"  # Always enable redoc
-    )
-
-    # Add middleware
-    add_middleware(app)
-
-    # Include API routes with proper prefix
-    app.include_router(api_router, prefix="/api/v1", tags=["knowledge_agents"])
-
-    # Add root redirect to docs
-    @app.get("/")
-    async def root_redirect():
-        """Redirect root to docs."""
-        return RedirectResponse(url="/docs")
-
-    # Add health check endpoint
-    @app.get("/healthz")
-    async def healthz():
-        """Simple health check endpoint."""
-        return {
-            "status": "ok",
-            "timestamp": datetime.now().isoformat(),
-            "port": port,
-            "host": host
-        }
-
-    return app
-
-# Create the FastAPI application instance
-app = create_app()
-
-# Function to get the app instance for module-level imports
-def get_app() -> FastAPI:
-    """Get the FastAPI application instance.
-    
     Returns:
-        The configured FastAPI application
+        True if data is ready
+        
+    Raises:
+        HTTPException: If data is not ready
     """
-    return app
+    # Check if data is ready
+    data_ready = await data_manager.is_data_ready(skip_embeddings=skip_embeddings)
+    
+    if not data_ready:
+        # Start data preparation in the background
+        await data_manager.ensure_data_ready(
+            force_refresh=force_refresh,
+            skip_embeddings=skip_embeddings
+        )
+        
+        # Check if data is ready now
+        data_ready = await data_manager.is_data_ready(skip_embeddings=skip_embeddings)
+        
+        if not data_ready:
+            raise HTTPException(
+                status_code=503,
+                detail="Data is being prepared. Please try again later."
+            )
+    
+    return True
 
-# Entry point for running the application directly
+# Background data initialization function used by __init__.py
+async def initialize_data_in_background(data_config):
+    """
+    Initialize data processing in the background.
+    
+    This function is called by __init__.py's startup handler to prepare
+    data asynchronously without blocking the API startup.
+    
+    Args:
+        data_config: Configuration for data initialization
+    """
+    logger.info("Starting background data initialization...")
+    try:
+        # Use the existing data manager to initialize data
+        force_refresh = os.environ.get('FORCE_DATA_REFRESH', 'false').lower() in ('true', '1', 'yes')
+        skip_embeddings = os.environ.get('SKIP_EMBEDDINGS', 'false').lower() in ('true', '1', 'yes')
+        environment = detect_environment()
+        
+        # Mark the operation in progress
+        await data_manager.state_manager.mark_operation_start("background_initialization")
+        
+        # Log environment and configuration
+        logger.info(f"Environment: {environment}")
+        logger.info(f"Force refresh: {force_refresh}")
+        logger.info(f"Skip embeddings: {skip_embeddings}")
+        
+        # If in Replit, verify PostgreSQL schema first
+        if environment == 'replit':
+            logger.info("Ensuring PostgreSQL schema is initialized for Replit environment")
+            from config.replit import PostgresDB
+            try:
+                db = PostgresDB()
+                db.initialize_schema()
+                logger.info("PostgreSQL schema is ready")
+            except Exception as e:
+                logger.error(f"Error initializing PostgreSQL schema: {e}")
+                # Still continue with data initialization
+        
+        # Initialize data using the unified data manager
+        logger.info("Starting data initialization using the unified data manager")
+        success = await data_manager.ensure_data_ready(
+            force_refresh=force_refresh,
+            skip_embeddings=skip_embeddings
+        )
+        
+        if success:
+            logger.info("Background data initialization completed successfully")
+        else:
+            logger.warning("Background data initialization completed with warnings")
+        
+        # Mark operation complete
+        await data_manager.state_manager.mark_operation_complete("background_initialization", success)
+    except Exception as e:
+        logger.error(f"Error during background data initialization: {e}", exc_info=True)
+        if data_manager and data_manager.state_manager:
+            await data_manager.state_manager.mark_operation_complete("background_initialization", False, str(e))
+
+# API routes
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return RedirectResponse(url="/docs")
+
+@app.get("/healthz")
+async def healthz():
+    """Simple health check endpoint for Replit's health check system."""
+    return {
+        "status": "ok", 
+        "timestamp": datetime.now().isoformat(),
+        "environment": os.getenv("REPLIT_ENV", "development")
+    }
+
+# Run on startup
+@app.on_event("startup")
+async def startup_event():
+    """Run on startup."""
+    logger.info("Starting Chanscope API...")
+    
+    # Initialize data in the background
+    try:
+        # Only initialize if specified in environment
+        auto_check_data = os.environ.get('AUTO_CHECK_DATA', 'true').lower() in ('true', '1', 'yes')
+        
+        if auto_check_data:
+            logger.info("AUTO_CHECK_DATA is enabled, initiating data preparation")
+            # Get environment type from centralized function
+            env_type = detect_environment()
+            force_refresh = os.environ.get('FORCE_DATA_REFRESH', 'false').lower() in ('true', '1', 'yes')
+            skip_embeddings = os.environ.get('SKIP_EMBEDDINGS', 'false').lower() in ('true', '1', 'yes')
+            
+            if env_type == 'replit':
+                logger.info("Running in Replit environment, ensuring PostgreSQL schema is prepared")
+                # Initialize PostgreSQL schema if needed
+                from config.replit import PostgresDB
+                try:
+                    db = PostgresDB()
+                    # Check if schema needs initialization
+                    db.initialize_schema()
+                    logger.info("PostgreSQL schema verified/initialized")
+                    
+                    # Check if database is empty and we need to load data
+                    row_count = await data_manager.complete_data_storage.get_row_count()
+                    if row_count == 0:
+                        logger.info("PostgreSQL database is empty, force-refreshing data")
+                        # Force refresh to ensure data is loaded
+                        force_refresh = True
+                except Exception as e:
+                    logger.error(f"Error initializing PostgreSQL schema: {e}")
+            
+            # Use the unified data manager approach to ensure data is ready
+            success = await data_manager.ensure_data_ready(force_refresh=force_refresh, skip_embeddings=skip_embeddings)
+            if success:
+                logger.info("Data preparation completed successfully via the unified data manager")
+            else:
+                logger.warning("Data preparation completed with warnings")
+        else:
+            logger.info("AUTO_CHECK_DATA is disabled, skipping initial data preparation")
+    except Exception as e:
+        logger.error(f"Error during startup: {e}", exc_info=True)
+
+# Run server directly if module is executed
 if __name__ == "__main__":
     import uvicorn
+    
+    # Get port from environment or use default
+    port = int(os.environ.get('API_PORT', 80))
+    host = os.environ.get('API_HOST', '0.0.0.0')
+    
+    # Run server
+    uvicorn.run(app, host=host, port=port)
 
-    # Get port configuration
-    port = int(os.getenv("PORT", "80"))
-    host = os.getenv("HOST", "0.0.0.0")
-
-    # Run the application
-    uvicorn.run(
-        "api.app:app",
-        host=host,
-        port=port,
-        log_level="info",
-        reload=get_environment() == "development"
-    )
+def create_app() -> FastAPI:
+    """Factory function to create the FastAPI app.
+    
+    Returns:
+        FastAPI: The configured FastAPI application instance
+    """
+    return app

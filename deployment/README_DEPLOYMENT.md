@@ -188,4 +188,4 @@ For Replit deployment, the project includes specialized configuration:
 - Memory management is optimized for Replit's constraints
 - Startup is handled through Replit's run button
 
-The Knowledge Agent should work seamlessly on Replit with minimal configuration changes. 
+The Knowledge Agent should work seamlessly on Replit with minimal configuration changes.

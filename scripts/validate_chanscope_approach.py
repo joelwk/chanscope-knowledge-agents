@@ -26,6 +26,9 @@ from datetime import datetime
 import pytz
 from typing import Dict, Any, Optional, List, Tuple
 
+# Import environment detection from the centralized location
+from config.env_loader import detect_environment
+
 # Set environment variables for testing
 os.environ['USE_MOCK_EMBEDDINGS'] = 'true'
 
@@ -36,16 +39,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Detect environment
-def detect_environment() -> str:
-    """Detect the current execution environment."""
-    if os.path.exists('/.dockerenv'):
-        return "docker"
-    elif os.environ.get('REPL_ID'):
-        return "replit"
-    else:
-        return "local"
-
+# Use the centralized environment detection
 ENV_TYPE = detect_environment()
 logger.info(f"Detected environment: {ENV_TYPE}")
 

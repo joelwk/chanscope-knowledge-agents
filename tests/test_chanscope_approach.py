@@ -23,6 +23,9 @@ from datetime import datetime
 import pytz
 from dotenv import load_dotenv
 
+# Import centralized environment detection
+from config.env_loader import detect_environment
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -46,17 +49,9 @@ from knowledge_agents.data_ops import DataConfig, DataOperations
 from config.settings import Config
 from knowledge_agents.model_ops import ModelProvider
 
-# Detect environment
-def detect_environment() -> str:
-    """Detect the current execution environment."""
-    if os.path.exists('/.dockerenv'):
-        return "docker"
-    elif os.environ.get('REPL_ID'):
-        return "replit"
-    else:
-        return "local"
-
+# Use centralized environment detection
 ENV_TYPE = detect_environment()
+logger.info(f"Detected environment: {ENV_TYPE}")
 
 def create_mock_data(test_root: Path) -> None:
     """Create mock data files for testing."""

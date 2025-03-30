@@ -3,21 +3,10 @@ description:
 globs: 
 alwaysApply: false
 ---
----
-description: This rule establishes a complete and robust pipeline for the Chanscope application by ensuring that data is ingested, stratified, and embedded on startup, and that queries are processed consistently—refreshing data when forced and using pre-processed data otherwise—while preserving context, maintaining transparency, and enforcing rigorous error handling in line with Cursor best practices.
-globs: 
-alwaysApply: true
----
----
-description: This rule establishes a complete and robust pipeline for the Chanscope application by ensuring that data is ingested, stratified, and embedded on startup, and that queries are processed consistently—refreshing data when forced and using pre-processed data otherwise—while preserving context, maintaining transparency, and enforcing rigorous error handling in line with Cursor best practices.
-globs: 
-alwaysApply: false
----
-# Chanscope Rules
 
-These rules define the operational and data-processing guidelines for the Chanscope application. They integrate best practices from Cursor context rules with a clearly defined orchestration for data ingestion, sampling, embedding generation, and query processing.
+# Updated Chanscope Approach
 
----
+Based on my review of the current codebase and recent implementation changes, I've updated the Chanscope approach document to better align with the actual implementation.
 
 ## 1. Data Processing Orchestration
 
@@ -29,6 +18,8 @@ These rules define the operational and data-processing guidelines for the Chansc
 - **Data Preparation:**
   - **Stratification:** Sample the complete dataset using stratification (via `sampler.py`).
   - **Embedding Generation:** Create embeddings from the stratified data using `embedding_ops.py`.
+    - Embeddings are stored in **`.npz` format** (compressed NumPy format) in the `data/stratified/embeddings.npz` file.
+    - Thread ID mappings are stored in `data/stratified/thread_id_map.json`.
 
 ---
 
@@ -43,7 +34,7 @@ The application's behavior when processing a query depends on the `force_refresh
   - If it exists and is current, _do not refresh_ the complete data file.
 - **Processing Pipeline:**
   1. **Stratified Sampling:** Create a new stratified sample using `sampler.py`.
-  2. **Embedding Refresh:** Generate new embeddings using `embedding_ops.py`.
+  2. **Embedding Refresh:** Generate new embeddings using `embedding_ops.py`, storing them in `.npz` format.
   3. **Query Search:** Use the input query to search the embeddings (via `inference_ops.py`) for related chunks.
   4. **Chunk Summarization:** Send each related chunk to the chunk LLM for summarization using `model_ops.py`.
   5. **Final Summarization:** Combine the chunk summaries and the original query, then use the summary LLM (guided by `prompt.yaml`) to produce a final summary.
@@ -68,22 +59,54 @@ The application's behavior when processing a query depends on the `force_refresh
 
 ## 3. Expected Generative Pipeline Behavior
 
-When executing a query (via the `./query` endpoint), the pipeline behaves as follows:
+When executing a query (via the `/api/v1/query` endpoint), the pipeline behaves as follows:
 
 1. **Data Preparedness:**
    - Ensure that stratified data and embeddings are available from the initial ingestion and processing.
+   - Verify that embeddings are available in the `.npz` format and can be properly loaded.
+
 2. **Query Execution:**
    - Use the input query to search the embeddings (using `inference_ops.py`) for related strings (chunks).
+   - The semantic search implementation correctly identifies related content using cosine similarity.
+
 3. **Chunk Processing:**
    - Send each related string (chunk) to the chunk LLM for summarization (via `model_ops.py`).
+   - Ensure batch processing is properly handled with appropriate error recovery.
+
 4. **Final Aggregation:**
    - Submit the collection of chunk summaries and the original query to the summary LLM, following the instructions in `prompt.yaml`.
+   - Handle prompt formatting including temporal context and metadata.
+
 5. **Response Generation:**
    - Return a result that includes the individual chunks, the final summary, and metadata detailing the process.
+   - The complete generative pipeline must be fully executed for each query, not just the semantic search portion.
 
 ---
 
-## 4. Integration with Cursor Context Rules
+## 4. Embedding Management
+
+The system handles embeddings in the following manner:
+
+1. **Embedding Format:**
+   - Embeddings are stored in `.npz` format (compressed NumPy format) instead of the older `.npy` format.
+   - This format allows for storing multiple arrays in a single file, along with metadata.
+
+2. **Storage Structure:**
+   - Embeddings file: `data/stratified/embeddings.npz`
+   - Thread ID mapping: `data/stratified/thread_id_map.json`
+   - The thread ID mapping provides a lookup from thread IDs to embedding indices.
+
+3. **Error Handling:**
+   - Robust error handling detects and addresses file corruption issues (like CRC-32 errors).
+   - Fallback mechanisms, including mock embedding generation, ensure the system can operate even when embedding services are unavailable.
+
+4. **Validation:**
+   - Embeddings are validated for proper dimensions and vector normalization.
+   - Thread ID mapping ensures proper association between embeddings and their source content.
+
+---
+
+## 5. Integration with Cursor Context Rules
 
 In addition to the operational guidelines above, the following Cursor context rules apply:
 
@@ -104,19 +127,20 @@ In addition to the operational guidelines above, the following Cursor context ru
 
 ---
 
-## 5. Testing and Validation Framework
+## 6. Testing and Validation Framework
 
 To ensure the Chanscope approach is correctly implemented, a comprehensive testing framework validates the following behaviors:
 
-### 5.1 Critical Test Cases
+### 6.1 Critical Test Cases
 1. **Initial Data Load Test**: 
    - Verify that on startup, data is properly ingested from S3
    - Confirm that stratification is performed correctly
-   - Validate that embedding generation can be deferred when needed
+   - Validate that embedding generation creates properly formatted `.npz` files
 
 2. **Embedding Generation Test**:
-   - Verify embeddings can be generated as a separate process
-   - Ensure embedding quality and correctness for query processing
+   - Verify embeddings can be generated and saved in `.npz` format
+   - Ensure thread ID mapping is correctly generated and stored
+   - Validate the consistency between embeddings and thread ID mappings
 
 3. **Incremental Processing Test**:
    - When `force_refresh=false` is specified, confirm existing data is used
@@ -128,13 +152,18 @@ To ensure the Chanscope approach is correctly implemented, a comprehensive testi
    - Verify embeddings are regenerated
    - Validate the complete pipeline functions correctly with fresh data
 
-### 5.2 Testing Environments
+5. **Generative Pipeline Test**:
+   - Verify that semantic search correctly identifies related content
+   - Ensure chunk processing and summarization are both correctly executed
+   - Validate that the full generative pipeline (not just semantic search) completes for each query
+
+### 6.2 Testing Environments
 Tests run consistently across all deployment environments:
 - **Local Environment**: For development testing
 - **Docker Environment**: For containerized validation
 - **Replit Environment**: For cloud deployment validation
 
-### 5.3 Test Result Documentation
+### 6.3 Test Result Documentation
 All tests generate comprehensive logs and structured output files:
 - Detailed log files with timestamps and process information
 - JSON-formatted test results for programmatic analysis
@@ -144,4 +173,10 @@ All tests generate comprehensive logs and structured output files:
 
 ## Conclusion
 
-These rules ensure that the Chanscope application follows a rigorous and transparent data-processing orchestration and generative pipeline. By incorporating these guidelines with the foundational Cursor context rules, the system achieves clarity, consistency, and robustness in its operations.
+These updated rules ensure that the Chanscope application follows a rigorous and transparent data-processing orchestration and generative pipeline. By incorporating these guidelines with the foundational Cursor context rules, the system achieves clarity, consistency, and robustness in its operations.
+
+Key improvements include:
+- Standardized embedding storage in `.npz` format with proper thread ID mapping
+- Complete end-to-end generative pipeline execution for every query
+- Robust error handling and recovery mechanisms
+- Clear documentation of the data flow and processing stages

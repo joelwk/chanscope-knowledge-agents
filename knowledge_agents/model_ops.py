@@ -55,8 +55,19 @@ class ModelProvider(Enum):
     VENICE = "venice"
 
     @classmethod
-    def from_str(cls, value: str) -> 'ModelProvider':
-        """Convert string to ModelProvider enum, handling carriage returns."""
+    def from_str(cls, value: str, **kwargs) -> 'ModelProvider':
+        """Convert string to ModelProvider enum, handling carriage returns.
+        
+        Args:
+            value: String value to convert to ModelProvider
+            **kwargs: Additional keyword arguments (ignored)
+        
+        Returns:
+            Corresponding ModelProvider enum member
+            
+        Raises:
+            ValueError: If value is None or not a valid provider
+        """
         if value is None:
             raise ValueError("Provider value cannot be None")
         # Clean the value of any carriage returns or whitespace
@@ -194,6 +205,55 @@ class ModelConfig:
             # Return a basic config with defaults
             logger.warning("Falling back to default configuration")
             return cls()
+
+    @classmethod
+    def from_request(cls, request):
+        """Create configuration from a QueryRequest object.
+        
+        Properly handles provider parameters by converting them to strings rather than
+        attempting to create provider objects directly, which would cause the
+        "embedding_provider" keyword argument error.
+        
+        Args:
+            request: A QueryRequest object containing configuration options
+            
+        Returns:
+            A ModelConfig object configured with the request parameters
+        """
+        logger.debug("Building ModelConfig from request parameters")
+        # Start with base settings
+        settings = {
+            'model': {},
+            'processing': {},
+            'paths': {}
+        }
+        
+        # Add provider settings as strings
+        if getattr(request, 'embedding_provider', None):
+            settings['model']['default_embedding_provider'] = request.embedding_provider
+        if getattr(request, 'chunk_provider', None):
+            settings['model']['default_chunk_provider'] = request.chunk_provider
+        if getattr(request, 'summary_provider', None):
+            settings['model']['default_summary_provider'] = request.summary_provider
+            
+        # Add batch size settings
+        if getattr(request, 'embedding_batch_size', None):
+            settings['model']['embedding_batch_size'] = request.embedding_batch_size
+        if getattr(request, 'chunk_batch_size', None):
+            settings['model']['chunk_batch_size'] = request.chunk_batch_size
+        if getattr(request, 'summary_batch_size', None):
+            settings['model']['summary_batch_size'] = request.summary_batch_size
+            
+        # Add processing settings
+        if getattr(request, 'filter_date', None):
+            settings['processing']['filter_date'] = request.filter_date
+        if getattr(request, 'sample_size', None):
+            settings['processing']['sample_size'] = request.sample_size
+        if getattr(request, 'max_workers', None):
+            settings['processing']['max_workers'] = request.max_workers
+            
+        # Create and return ModelConfig
+        return cls(**settings)
 
     def get_provider(self, operation: ModelOperation) -> ModelProvider:
         """Get the configured provider for a given operation."""

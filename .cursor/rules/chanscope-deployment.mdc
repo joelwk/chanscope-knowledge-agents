@@ -1,11 +1,12 @@
 ---
 description: These rules define the operational requirements for containerized deployment of the Chanscope application, ensuring that Docker configurations properly support the data ingestion, processing, and query pipeline defined in the Chanscope approach.
-globs: **/docker-compose*.yml,*/Docker* ,*/deployment/**/*.sh
+globs: **/docker-compose*.yml,*/Docker*,**/deployment
 alwaysApply: false
 ---
+
 # Chanscope Deployment Rules
 
-This file provides guidelines for Chanscope deployment with Docker, ensuring alignment between infrastructure components and the core Chanscope approach.
+This file provides guidelines for Chanscope deployment with Docker and Replit, ensuring alignment between infrastructure components and the core Chanscope approach.
 
 ## Production Deployment Requirements
 
@@ -81,7 +82,7 @@ The container startup process includes data processing steps that must be proper
 1. **Initial Data Check**: The container checks if data exists and is up-to-date
 2. **Data Ingestion**: If data is missing or outdated, it fetches data from S3
 3. **Data Stratification**: The complete dataset is stratified according to Chanscope approach
-4. **Embedding Generation**: Embeddings are generated for the stratified data
+4. **Embedding Generation**: Embeddings are generated for the stratified data in `.npz` format
 5. **Initialization Marker**: The `.initialization_in_progress` marker is removed when complete
 
 **Important considerations:**
@@ -123,16 +124,95 @@ When working with `docker-compose.test.yml`, ensure:
 - **Memory Limits**: Minimum 4GB for testing, 8GB for production.
 - **CPU Limits**: Appropriate for workload (2 cores for test, 4 for production).
 
+## Replit Deployment Requirements
+
+### 1. Environment Setup
+
+- **Replit Secrets**: Store sensitive environment variables as Replit Secrets:
+  - `OPENAI_API_KEY` - Required for model operations
+  - `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` - Required for S3 access
+  - Additional API keys for alternative model providers (optional)
+
+- **Environment Variables**: Configure in `.replit` or directly via the Replit environment UI:
+  - `DATA_RETENTION_DAYS=14` - Controls how far back to fetch data
+  - `ENABLE_DATA_SCHEDULER=true` - Enables automatic data updates
+  - `DATA_UPDATE_INTERVAL=3600` - Interval for data updates (in seconds)
+  - `RUN_TESTS_ON_STARTUP=false` - Normally disabled in production
+
+### 2. Storage Management
+
+- **Replit Database**: Use for small metadata and configuration
+- **Replit File System**:
+  - `/app/data` - For storing complete and stratified data
+  - `/app/data/stratified` - For storing embeddings in `.npz` format and thread ID mappings
+  - `/app/logs` - For application logs
+  - `/app/temp_files` - For temporary processing files
+
+- **Storage Considerations**:
+  - Use `.replit/replit.nix` to install necessary system dependencies
+  - Keep embeddings in compressed `.npz` format to conserve space
+  - Implement cleanup routines for temporary files
+  - Consider S3 for larger datasets that exceed Replit storage limits
+
+### 3. Service Configuration
+
+- **Entry Point**: Configure in `replit.nix` or `.replit`:
+  ```
+  run = "poetry run uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}"
+  ```
+
+- **Poetry Setup**:
+  ```
+  [tool.poetry]
+  name = "chanscope"
+  version = "0.1.0"
+  description = "Chanscope application for semantic search and inference"
+  ```
+
+- **Dependencies**:
+  - Ensure all dependencies are in `pyproject.toml`
+  - Include development dependencies in a separate group
+  - Specify Python version compatible with Replit
+
+### 4. Replit-Specific Optimizations
+
+- **Memory Management**:
+  - Implement batch processing for embedding generation
+  - Use memory-efficient data structures
+  - Implement garbage collection calls at appropriate points
+
+- **Performance Tuning**:
+  - Use async processing where possible
+  - Implement caching for frequently accessed data
+  - Consider smaller sample sizes for stratification
+
+- **API Rate Limiting**:
+  - Implement rate limiting for API endpoints
+  - Add backoff strategies for external API calls
+  - Use circuit breakers for unstable dependencies
+
+### 5. Testing on Replit
+
+- **Test Execution**:
+  - Create a dedicated test entry point: `poetry run pytest`
+  - Use environment variable `TEST_MODE=true` for test runs
+  - Implement test fixtures that clean up after themselves
+
+- **CI Integration**:
+  - Configure GitHub Actions to run tests on Replit
+  - Use Replit's headless mode for CI/CD pipelines
+  - Set up automatic deployment to Replit from CI
+
 ## Alignment with Chanscope Approach
 
-All Docker configurations must support the Chanscope approach requirements:
+All deployment configurations must support the Chanscope approach requirements:
 
 ### 1. Data Processing Pipeline
 
-- **Startup Data Flow**: Containers must support:
+- **Startup Data Flow**:
   - Initial data ingestion from S3
   - Data stratification
-  - Embedding generation
+  - Embedding generation in `.npz` format with thread ID mapping
 
 ### 2. Query Processing Requirements
 
@@ -140,13 +220,39 @@ All Docker configurations must support the Chanscope approach requirements:
   - `force_refresh=true`: Re-stratify and regenerate embeddings
   - `force_refresh=false`: Use existing embeddings
 
-### 3. Testing Framework Support
+### 3. Complete Generative Pipeline Support
+
+- **End-to-End Processing**: Ensure infrastructure supports the complete generative pipeline:
+  1. Semantic search to find related content
+  2. Chunk processing with LLM for each related string
+  3. Final aggregation with summary LLM
+  4. Complete response generation with all components
+
+- **Resource Requirements**: Ensure sufficient resources for the complete generative pipeline:
+  - Memory for embedding operations
+  - API rate limits for model providers
+  - Timeout configurations for longer processing sequences
+
+### 4. Embedding Management
+
+- **Storage Format**: Ensure proper handling of `.npz` format embeddings:
+  - Compressed numpy arrays for space efficiency
+  - Proper thread ID mapping
+  - Robust error handling for corruption issues (like CRC-32 errors)
+
+- **Fallback Mechanisms**: Support mock embedding generation when needed:
+  - When embedding services are unavailable
+  - During testing without API access
+  - For development environments
+
+### 5. Testing Framework Support
 
 - The test environment must validate:
   - Initial data load functionality
-  - Embedding generation
+  - Embedding generation in `.npz` format
   - Incremental processing
   - Force refresh behavior
+  - Complete generative pipeline execution
 
 ## Security Considerations
 
@@ -168,7 +274,7 @@ When encountering linter errors in Docker Compose files, validate:
 
 ## Deployment Workflow
 
-### 1. Standard Deployment
+### 1. Docker Deployment
 
 For standard production deployment:
 
@@ -178,7 +284,24 @@ docker-compose -f deployment/docker-compose.yml build
 docker-compose -f deployment/docker-compose.yml up -d
 ```
 
-### 2. Testing Before Deployment
+### 2. Replit Deployment
+
+For deploying to Replit:
+
+```bash
+# Clone the repository
+git clone https://github.com/your-org/chanscope.git
+
+# Configure Replit environment
+# 1. Add secrets via Replit UI
+# 2. Configure environment variables
+# 3. Install dependencies with Poetry
+
+# Start the application
+poetry run uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}
+```
+
+### 3. Testing Before Deployment
 
 For testing before deployment:
 
@@ -192,7 +315,7 @@ docker-compose -f deployment/docker-compose.yml build
 docker-compose -f deployment/docker-compose.yml up -d
 ```
 
-### 3. Integrated Test and Deploy
+### 4. Integrated Test and Deploy
 
 For integrated test and deploy workflow:
 
@@ -209,7 +332,7 @@ This will:
 4. Continue to application deployment if tests pass
 5. Log test results for review
 
-### 4. Clean Deployment
+### 5. Clean Deployment
 
 For a clean deployment that removes all existing data:
 
@@ -331,9 +454,33 @@ If you encounter errors like `[Errno 16] Device or resource busy: '/app/data'`:
 5. Use separate data directories for tests to avoid contention
 6. Add retry logic for operations that may fail due to resource contention
 
+### 7. Embedding Format Issues
+
+If you encounter errors like `Bad CRC-32` when loading embeddings:
+
+1. This indicates corruption in the embedding file format
+2. Verify that embeddings are being saved in `.npz` format, not `.npy`
+3. Check for proper file locking during embedding save operations
+4. Ensure proper atomic write operations for embedding files
+5. Validate that the thread ID mapping matches the embedding indices
+6. Use the backup mechanism to restore from previous versions
+
+### 8. Generative Pipeline Issues
+
+If the generative pipeline produces incomplete results:
+
+1. Verify that all stages of the pipeline are being executed:
+   - Semantic search for related content
+   - Chunk processing for each related string
+   - Final aggregation and summarization
+2. Check for timeout issues during longer processing sequences
+3. Ensure sufficient memory is available for embedding operations
+4. Validate API rate limits for model providers
+5. Check for proper error handling in each stage of the pipeline
+
 ## Example Configurations
 
-### Production Configuration
+### Production Docker Configuration
 
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
@@ -389,7 +536,7 @@ services:
       - TEST_MODE=false
 ```
 
-### Test Configuration
+### Test Docker Configuration
 
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
@@ -433,24 +580,37 @@ services:
     command: ["bash", "/app/scripts/run_tests.sh", "--all"]
 ```
 
-### Integrated Test and Deploy
+### Replit Configuration
 
-```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
-# The version attribute is now auto-detected and the explicit declaration is obsolete
+```toml
+# .replit
+run = "poetry run uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}"
+language = "python3"
 
-services:
-  app:
-    build:
-      context: ..
-      dockerfile: deployment/Dockerfile
-    environment:
-      - RUN_TESTS_ON_STARTUP=true
-      - TEST_TYPE=all
-      - AUTO_CHECK_DATA=true
-      - ABORT_ON_TEST_FAILURE=false
-    healthcheck:
-      start_period: 300s  # Extended to account for test execution
+[env]
+DATA_RETENTION_DAYS = "14"
+ENABLE_DATA_SCHEDULER = "true"
+DATA_UPDATE_INTERVAL = "3600"
+RUN_TESTS_ON_STARTUP = "false"
+TEST_MODE = "false"
+PYTHONPATH = "${REPL_HOME}"
+
+[nix]
+channel = "stable-22_11"
+
+[packager]
+language = "python3"
+
+[packager.features]
+packageSearch = true
+guessImports = true
+
+[unitTest]
+language = "python3"
+
+[deployment]
+run = ["sh", "-c", "poetry run uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}"]
+deploymentTarget = "cloudrun"
 ```
 
 ## Windows-Specific Considerations
