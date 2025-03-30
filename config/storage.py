@@ -523,44 +523,180 @@ class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
             logger.error(f"Error checking if sample exists: {e}")
             return False
 
-class ReplitEmbeddingStorage(EmbeddingStorage):
-    """Replit Key-Value store implementation of embedding storage."""
+class ReplitObjectEmbeddingStorage(EmbeddingStorage):
+    """Object Storage-based implementation of embedding storage for Replit."""
     
     def __init__(self, config):
+        """Initialize Object Storage client."""
         self.config = config
-        self.kv_store = KeyValueStore()
+        self.embeddings_key = "embeddings.npy"
+        self.thread_map_key = "thread_id_map.json"
+        self.replit_kv = None  # For state tracking only
+        self.default_bucket = "knowledge-agent-embeddings"  # Default bucket name
     
     async def store_embeddings(self, embeddings: np.ndarray, thread_id_map: Dict[str, int]) -> bool:
-        """Store embeddings to Key-Value store."""
+        """Store embeddings to Object Storage and thread ID map."""
         if embeddings.size == 0 or not thread_id_map:
             logger.warning("Empty embeddings or thread ID map, nothing to store")
             return False
         
         try:
-            self.kv_store.store_embeddings(embeddings, thread_id_map)
-            logger.info(f"Stored embeddings with shape {embeddings.shape} and {len(thread_id_map)} thread IDs to Key-Value store")
+            # Import Object Storage client
+            from replit.object_storage import Client
+            
+            try:
+                # Try to initialize with default bucket
+                object_client = Client()
+            except ValueError as bucket_error:
+                # If error mentions 'no default bucket', use our default
+                if "no default bucket" in str(bucket_error).lower():
+                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'. "
+                                  f"Please configure a bucket in .replit file with: bucket = \"{self.default_bucket}\"")
+                    try:
+                        # Try to use the default bucket name
+                        object_client = Client(bucket=self.default_bucket)
+                    except Exception as e:
+                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
+                        return False
+                else:
+                    # Re-raise other errors
+                    raise
+            
+            # Convert thread_id_map to serializable format
+            clean_thread_map = {str(k): v for k, v in thread_id_map.items()}
+            thread_map_json = json.dumps(clean_thread_map)
+            
+            # Save thread map to Object Storage
+            object_client.upload_from_text(self.thread_map_key, thread_map_json)
+            logger.info(f"Stored thread ID map with {len(clean_thread_map)} entries to Object Storage")
+            
+            # Save embeddings to Object Storage
+            # First, save embeddings to a temporary file
+            temp_file = "/tmp/embeddings.npy"
+            np.save(temp_file, embeddings)
+            
+            # Upload the file to Object Storage using upload_from_bytes
+            with open(temp_file, "rb") as f:
+                embedding_bytes = f.read()
+                object_client.upload_from_bytes(self.embeddings_key, embedding_bytes)
+            
+            # Clean up temp file
+            os.remove(temp_file)
+            
+            # Store metadata (shape, timestamp) in key-value store for quick access
+            try:
+                from replit import db as kv_db
+                self.replit_kv = kv_db
+                
+                # Store minimal metadata in KV store
+                kv_db["embeddings_metadata"] = {
+                    "shape": embeddings.shape,
+                    "timestamp": datetime.now().isoformat(),
+                    "storage_type": "object_storage"
+                }
+                logger.info(f"Stored embeddings metadata in key-value store")
+            except Exception as kv_error:
+                logger.warning(f"Could not store metadata in key-value store: {kv_error}")
+                
+            logger.info(f"Successfully stored embeddings with shape {embeddings.shape} to Object Storage")
             return True
         except Exception as e:
-            logger.error(f"Error storing embeddings: {e}")
+            logger.error(f"Error storing embeddings in Object Storage: {e}")
             return False
     
     async def get_embeddings(self) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
-        """Retrieve embeddings from Key-Value store."""
+        """Retrieve embeddings and thread ID map from Object Storage."""
         try:
-            return self.kv_store.get_embeddings()
+            # Import Object Storage client
+            from replit.object_storage import Client
+            
+            try:
+                # Try to initialize with default bucket
+                object_client = Client()
+            except ValueError as bucket_error:
+                # If error mentions 'no default bucket', use our default
+                if "no default bucket" in str(bucket_error).lower():
+                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'. "
+                                  f"Please configure a bucket in .replit file with: bucket = \"{self.default_bucket}\"")
+                    try:
+                        # Try to use the default bucket name
+                        object_client = Client(bucket=self.default_bucket)
+                    except Exception as e:
+                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
+                        return None, None
+                else:
+                    # Re-raise other errors
+                    raise
+            
+            # Check if files exist in Object Storage
+            objects = object_client.list()
+            object_names = [obj.name for obj in objects]
+            
+            if self.embeddings_key not in object_names or self.thread_map_key not in object_names:
+                logger.warning("Embeddings or thread map not found in Object Storage")
+                return None, None
+            
+            # Download thread ID map
+            thread_map_json = object_client.download_as_text(self.thread_map_key)
+            thread_id_map = json.loads(thread_map_json)
+            
+            # Download embeddings using download_as_bytes
+            temp_file = "/tmp/embeddings.npy"
+            embedding_bytes = object_client.download_as_bytes(self.embeddings_key)
+            
+            # Write bytes to temporary file
+            with open(temp_file, "wb") as f:
+                f.write(embedding_bytes)
+            
+            # Load embeddings from temp file
+            embeddings = np.load(temp_file)
+            
+            # Clean up temp file
+            os.remove(temp_file)
+            
+            logger.info(f"Retrieved embeddings with shape {embeddings.shape} from Object Storage")
+            return embeddings, thread_id_map
         except Exception as e:
-            logger.error(f"Error retrieving embeddings: {e}")
+            logger.error(f"Error retrieving embeddings from Object Storage: {e}")
             return None, None
     
     async def embeddings_exist(self) -> bool:
-        """Check if embeddings exist in Key-Value store."""
+        """Check if embeddings exist in Object Storage."""
         try:
-            # Try to get the embeddings metadata
-            meta_key = f"{self.kv_store.EMBEDDINGS_KEY}_meta"
-            from replit import db as kv_db
-            return meta_key in kv_db
+            # Import Object Storage client
+            from replit.object_storage import Client
+            
+            try:
+                # Try to initialize with default bucket
+                object_client = Client()
+            except ValueError as bucket_error:
+                # If error mentions 'no default bucket', use our default
+                if "no default bucket" in str(bucket_error).lower():
+                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'. "
+                                  f"Please configure a bucket in .replit file with: bucket = \"{self.default_bucket}\"")
+                    try:
+                        # Try to use the default bucket name
+                        object_client = Client(bucket=self.default_bucket)
+                    except Exception as e:
+                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
+                        return False
+                else:
+                    # Re-raise other errors
+                    raise
+            
+            # List objects and check if embeddings and thread map exist
+            objects = object_client.list()
+            object_names = [obj.name for obj in objects]
+            
+            exists = self.embeddings_key in object_names and self.thread_map_key in object_names
+            if exists:
+                logger.info("Embeddings found in Object Storage")
+            else:
+                logger.info("Embeddings not found in Object Storage")
+            
+            return exists
         except Exception as e:
-            logger.error(f"Error checking if embeddings exist: {e}")
+            logger.error(f"Error checking if embeddings exist in Object Storage: {e}")
             return False
 
 class ReplitStateManager(StateManager):
@@ -664,7 +800,7 @@ class StorageFactory:
             return {
                 'complete_data': ReplitCompleteDataStorage(config),
                 'stratified_sample': ReplitStratifiedSampleStorage(config),
-                'embeddings': ReplitEmbeddingStorage(config),
+                'embeddings': ReplitObjectEmbeddingStorage(config),
                 'state': ReplitStateManager(config)
             }
         else:

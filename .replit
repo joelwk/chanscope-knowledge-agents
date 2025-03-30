@@ -1,16 +1,13 @@
-# =============================================
-# Basic Configuration
-# =============================================
-entrypoint = "main.py"
-modules = ["python-3.10:v18-20230807-322e88b"]
+modules = ["python-3.11", "postgresql-16"]
 hidden = [".pythonlibs"]
 run = "bash scripts/replit_init.sh && poetry run python -m uvicorn api.app:app --host 0.0.0.0 --port 80"
+entrypoint = "api/app.py"
 
 # =============================================
 # Nix Configuration
 # =============================================
 [nix]
-channel = "stable-23_05"
+channel = "stable-23_11"
 
 # =============================================
 # Environment Variables
@@ -27,8 +24,13 @@ SKIP_EMBEDDINGS = "false"
 PYTHONPATH = "${REPL_HOME}"
 PYTHONUNBUFFERED = "1"
 
+# Data Scheduler Configuration
+ENABLE_DATA_SCHEDULER = "true"  # Enable automatic data updates
+DATA_UPDATE_INTERVAL = "3600"   # Update interval in seconds (1 hour)
+DATA_RETENTION_DAYS = "14"      # Keep data for 14 days
+
 # Testing Configuration
-TEST_MODE = "false"  # Default to false for deployment
+TEST_MODE = "false"           # Default to false for deployment
 USE_MOCK_DATA = "false"
 USE_MOCK_EMBEDDINGS = "false"
 
@@ -36,7 +38,21 @@ USE_MOCK_EMBEDDINGS = "false"
 # Deployment Configuration
 # =============================================
 [deployment]
-run = ["bash", "scripts/replit_init.sh", "&&", "poetry", "run", "python", "-m", "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "80"]
+run = [
+  "bash",
+  "scripts/replit_init.sh",
+  "&&",
+  "poetry",
+  "run",
+  "python",
+  "-m",
+  "uvicorn",
+  "api.app:app",
+  "--host",
+  "0.0.0.0",
+  "--port",
+  "80",
+]
 deploymentTarget = "cloudrun"
 
 # =============================================
@@ -45,16 +61,15 @@ deploymentTarget = "cloudrun"
 [deployment.healthCheck]
 path = "/api/v1/health"
 port = 80
-initialDelay = 15    # Increased to allow for startup operations with Poetry
-timeout = 5          # Increased for Poetry initialization
-period = 30          # More frequent checks
-consecutiveSuccesses = 1  # Only need one success to confirm health
-consecutiveFailures = 3   # Increased for Poetry stability
+initialDelay = 15        # Increased to allow for startup operations with Poetry
+timeout = 5              # Increased for Poetry initialization
+period = 30              # More frequent checks
+consecutiveSuccesses = 1 # Only need one success to confirm health
+consecutiveFailures = 3  # Increased for Poetry stability
 
 [[ports]]
 localPort = 80
 externalPort = 80
-exposeLocalhost = true
 
 # =============================================
 # Language Configuration
@@ -88,10 +103,9 @@ language = "python3"
 # Interpreter Configuration
 # =============================================
 [interpreter]
-command = ["poetry", "run", "python", "-u"]
+command = ["python3", "-u"]
 
 [workflows]
-runButton = "deploy"
 
 [[workflows.workflow]]
 name = "deploy"
@@ -100,7 +114,7 @@ author = 38779469
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "bash scripts/replit_init.sh && poetry run python -m uvicorn api.app:app --host 0.0.0.0 --port 80"
+args = "bash deployment/setup.sh"
 
 [[workflows.workflow]]
 name = "test"
@@ -109,10 +123,16 @@ author = 38779469
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "poetry run bash scripts/run_tests.sh --env=replit"
+args = "bash scripts/run_tests.sh --env=replit"
 
-[gitHubImport]
-requiredFiles = [".replit", "replit.nix"]
+[[workflows.workflow]]
+name = "Check DB"
+mode = "sequential"
+author = 38779469
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "poetry run python scripts/check_replit_db.py"
 
 [server]
 host = "0.0.0.0"
@@ -147,7 +167,7 @@ command = "poetry run python scripts/process_data.py"
 description = "Check the status of data processing pipeline"
 command = "poetry run python scripts/process_data.py --check"
 
-[commands.force-data-refresh] 
+[commands.force-data-refresh]
 description = "Force a complete data refresh including stratification and embeddings"
 command = "poetry run python scripts/process_data.py --force-refresh"
 
@@ -162,3 +182,19 @@ command = "poetry run python scripts/test_stratification.py --stratification-onl
 [commands.test-embeddings-only]
 description = "Test only the embedding generation process"
 command = "poetry run python scripts/test_stratification.py --embeddings-only"
+
+# Scheduler Commands
+[commands.scheduler-start]
+description = "Start the data scheduler"
+command = "poetry run python scripts/scheduled_update.py refresh --continuous --interval=3600"
+
+[commands.scheduler-status]
+description = "Check the status of the data scheduler"
+command = "ps aux | grep scheduled_update.py"
+
+[commands.scheduler-logs]
+description = "View the scheduler logs"
+command = "tail -n 50 logs/scheduler.log"
+
+[replit]
+bucket = "knowledge-agent-embeddings"

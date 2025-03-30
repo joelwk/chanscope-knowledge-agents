@@ -8,6 +8,10 @@ AUTO_CHECK_DATA=${AUTO_CHECK_DATA:-true}
 ABORT_ON_TEST_FAILURE=${ABORT_ON_TEST_FAILURE:-false}
 TEST_RESULTS_DIR=${TEST_RESULTS_DIR:-"$PWD/test_results"}
 
+# Data scheduler configuration
+ENABLE_DATA_SCHEDULER=${ENABLE_DATA_SCHEDULER:-true}
+DATA_UPDATE_INTERVAL=${DATA_UPDATE_INTERVAL:-3600}  # 1 hour in seconds
+
 # Define colors for output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -132,6 +136,25 @@ if [ "$IS_REPLIT" = true ]; then
     export PORT="80"  # Replit expects port 80
     export API_PORT="80"
     echo "Set Replit environment variables"
+    
+    # Install Replit-specific packages if needed
+    if ! poetry run python -c "import replit.object_storage" &>/dev/null; then
+        echo -e "${YELLOW}Installing replit-object-storage package for embedding storage...${NC}"
+        poetry add replit-object-storage
+    else
+        echo -e "${GREEN}replit-object-storage package is already installed${NC}"
+    fi
+    
+    # Verify Object Storage is available
+    poetry run python -c "
+try:
+    from replit.object_storage import Client
+    client = Client()
+    print('✅ Replit Object Storage is available for embedding storage')
+except Exception as e:
+    print(f'❌ Error: Replit Object Storage is not available: {e}')
+    print('Large embeddings may fail to store properly')
+"
 fi
 
 # Verify required environment variables
@@ -229,319 +252,133 @@ rm -f "$DATA_DIR/.primary_worker"
 
 # Clean up embedding worker lock files
 echo "Cleaning up stale embedding worker lock files..."
-find "$DATA_DIR" -type f -name ".worker_*_in_progress" -delete 2>/dev/null || echo "Warning: Could not clean up embedding worker lock files"
-find "$DATA_DIR/stratified" -type f -name ".worker_*_in_progress" -delete 2>/dev/null || echo "Warning: Could not clean up stratified embedding worker lock files"
 
-# Clean up any temporary files older than 7 days
-if [ -d "$TEMP_DIR" ]; then
-    echo "Cleaning up old temporary files..."
-    find "$TEMP_DIR" -type f -mtime +7 -delete 2>/dev/null || echo "Warning: Could not clean up old temporary files"
-fi
+# Add your additional cleanup tasks here if needed
 
-# Clean up old log files (keep last 5 days)
-if [ -d "$LOGS_DIR" ]; then
-    echo "Cleaning up old log files..."
-    find "$LOGS_DIR" -type f -name "*.log" -mtime +5 -delete 2>/dev/null || echo "Warning: Could not clean up old log files"
-    find "$LOGS_DIR" -type f -name "*.log.*" -mtime +5 -delete 2>/dev/null || echo "Warning: Could not clean up old rotated log files"
-fi
-
-# Clean up old test results (keep last 3 days)
-if [ -d "$TEST_RESULTS_DIR" ]; then
-    echo "Cleaning up old test results..."
-    find "$TEST_RESULTS_DIR" -type f -mtime +3 -delete 2>/dev/null || echo "Warning: Could not clean up old test results"
-fi
-
-# Create logs directory
-mkdir -p "$DATA_DIR/logs"
-SCHEDULER_LOG="$DATA_DIR/logs/scheduler.log"
-
-# Create setup complete marker
-echo "Creating setup complete marker"
-touch "$DATA_DIR/.setup_complete"
-echo "Setup completed successfully"
-
-# Define data directories
-STRATIFIED_DIR="${DATA_DIR}/stratified"
-COMPLETE_DATA_FILE="${DATA_DIR}/complete_data.csv"
-EMBEDDINGS_DIR="${DATA_DIR}/embeddings"
-
-# Create required directories
-mkdir -p "${STRATIFIED_DIR}"
-mkdir -p "${EMBEDDINGS_DIR}"
-mkdir -p "${LOGS_DIR}"
-mkdir -p "${TEMP_DIR}"
-touch "${SCHEDULER_LOG}"
-
-# Check and create necessary file ownership
-echo "Setting appropriate permissions on data directories..."
-if [ "$(id -u)" = "0" ]; then
-    # If running as root, change ownership to nobody:nogroup (65534:65534)
-    chown -R 65534:65534 "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}" "${POETRY_CACHE_DIR}" || true
-    chmod -R 775 "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}" "${POETRY_CACHE_DIR}" || true
-else
-    # If not running as root, ensure we at least have write permissions
-    chmod -R 775 "${DATA_DIR}" "${LOGS_DIR}" "${TEMP_DIR}" "${POETRY_CACHE_DIR}" || true
-fi
-
-# Run the log fix script to ensure logs are properly consolidated
-echo -e "${YELLOW}Running log fix script to consolidate logs...${NC}"
-if [ -f "$APP_ROOT/scripts/fix_log_locations.py" ]; then
-    poetry run python "$APP_ROOT/scripts/fix_log_locations.py"
-    echo -e "${GREEN}Log consolidation completed.${NC}"
-else
-    echo -e "${YELLOW}Log fix script not found, skipping log consolidation.${NC}"
-fi
-
-# Function to check if data needs to be refreshed based on Chanscope approach rules
-check_data_status() {
-    echo "Checking data status according to Chanscope approach..."
-
-    # If force refresh is enabled, always return need for refresh
-    if [ "$FORCE_DATA_REFRESH" = "true" ]; then
-        echo "Force data refresh is enabled, will refresh data regardless of current status."
-        return 1
+# Function to start the data scheduler
+start_data_scheduler() {
+    local interval="${1:-3600}"
+    local scheduler_pid_file="${DATA_DIR}/.scheduler_pid"
+    local scheduler_log="${LOGS_DIR}/scheduler.log"
+    
+    # Check if scheduler is already running
+    if [ -f "$scheduler_pid_file" ]; then
+        local pid=$(cat "$scheduler_pid_file")
+        if ps -p "$pid" > /dev/null 2>&1; then
+            echo -e "${YELLOW}Data scheduler is already running with PID: $pid${NC}"
+            return 0
+        else
+            echo -e "${YELLOW}Found stale scheduler PID file, cleaning up...${NC}"
+            rm -f "$scheduler_pid_file"
+        fi
     fi
+    
+    echo -e "${YELLOW}Starting data scheduler with interval: ${interval}s${NC}"
+    
+    # Start the scheduler in background
+    nohup python scripts/scheduled_update.py refresh --continuous --interval="$interval" > "$scheduler_log" 2>&1 &
+    
+    # Save the PID
+    local scheduler_pid=$!
+    echo "$scheduler_pid" > "$scheduler_pid_file"
+    
+    echo -e "${GREEN}Data scheduler started with PID: $scheduler_pid${NC}"
+    echo -e "${YELLOW}Scheduler will update data every $interval seconds${NC}"
+    echo -e "${YELLOW}Scheduler logs available at: $scheduler_log${NC}"
+}
 
-    # Check AWS credentials for S3 access
-    if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$S3_BUCKET" ]; then
-        echo "Missing required AWS credentials or S3 bucket configuration"
-        echo "AWS_ACCESS_KEY_ID is set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo "yes" || echo "no")"
-        echo "AWS_SECRET_ACCESS_KEY is set: $([ -n "$AWS_SECRET_ACCESS_KEY" ] && echo "yes" || echo "no")"
-        echo "S3_BUCKET is set: $([ -n "$S3_BUCKET" ] && echo "yes" || echo "no")"
-        echo "Will continue without data refresh"
+# Function to stop the data scheduler
+stop_data_scheduler() {
+    local scheduler_pid_file="${DATA_DIR}/.scheduler_pid"
+    
+    if [ ! -f "$scheduler_pid_file" ]; then
+        echo -e "${YELLOW}Scheduler PID file not found, no scheduler to stop${NC}"
         return 0
     fi
-
-    # For Replit environment, check PostgreSQL directly
-    if [ "$IS_REPLIT" = true ] && [ -n "$DATABASE_URL" ]; then
-        # We need to check the database directly
-        echo "Replit environment detected with PostgreSQL database"
-        
-        # Use Python to check PostgreSQL database status
-        ROW_COUNT=$(python -c "
-import os
-import psycopg2
-import sys
-
-try:
-    # Connect to the PostgreSQL database
-    conn = psycopg2.connect(os.environ.get('DATABASE_URL'))
-    cursor = conn.cursor()
     
-    # Check if table exists
-    cursor.execute(\"\"\"
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_name = 'complete_data'
-        );
-    \"\"\")
-    table_exists = cursor.fetchone()[0]
-    
-    if not table_exists:
-        print('0')
-        sys.exit(0)
-    
-    # Check row count
-    cursor.execute('SELECT COUNT(*) FROM complete_data')
-    row_count = cursor.fetchone()[0]
-    print(row_count)
-    
-    conn.close()
-except Exception as e:
-    print(f'Error checking PostgreSQL: {e}')
-    print('0')
-    sys.exit(0)
-")
-        
-        # Check if there was an error message
-        if [[ $ROW_COUNT == Error* ]]; then
-            echo "Error connecting to PostgreSQL: $ROW_COUNT"
-            # Assume we need to refresh in case of error
-            return 1
-        fi
-        
-        echo "PostgreSQL database has $ROW_COUNT rows"
-        
-        if [ "$ROW_COUNT" = "0" ]; then
-            echo "PostgreSQL database is empty, data ingestion required."
-            return 1
-        fi
-    else
-        # Standard file-based check
-        # Check if complete_data.csv exists
-        if [ ! -f "$COMPLETE_DATA_FILE" ]; then
-            echo "Complete data file not found, data ingestion required."
-            return 1
-        fi
-
-        # Check if embeddings exist
-        if [ -z "$(ls -A $EMBEDDINGS_DIR 2>/dev/null)" ]; then
-            echo "Embeddings not found, embedding generation required."
-            return 1
-        fi
-
-        # Check if data is too old (based on file modification time and DATA_RETENTION_DAYS)
-        if [ -n "$DATA_RETENTION_DAYS" ]; then
-            # Get file modification time in seconds since epoch
-            file_time=$(stat -c %Y "$COMPLETE_DATA_FILE" 2>/dev/null || stat -f %m "$COMPLETE_DATA_FILE" 2>/dev/null)
-            current_time=$(date +%s)
-            max_age_seconds=$((DATA_RETENTION_DAYS * 24 * 60 * 60))
-
-            if (( current_time - file_time > max_age_seconds )); then
-                echo "Complete data file is older than $DATA_RETENTION_DAYS days, refresh required."
-                return 1
-            fi
-        fi
+    local pid=$(cat "$scheduler_pid_file")
+    if ! ps -p "$pid" > /dev/null 2>&1; then
+        echo -e "${YELLOW}Scheduler process not found, cleaning up PID file${NC}"
+        rm -f "$scheduler_pid_file"
+        return 0
     fi
-
-    echo "Data is up-to-date according to Chanscope approach rules."
-    return 0
+    
+    echo -e "${YELLOW}Stopping data scheduler with PID: $pid${NC}"
+    kill "$pid" || true
+    
+    # Wait for the process to terminate
+    for i in {1..5}; do
+        if ! ps -p "$pid" > /dev/null 2>&1; then
+            break
+        fi
+        echo "Waiting for scheduler to terminate... ($i/5)"
+        sleep 1
+    done
+    
+    # If process is still running, force kill
+    if ps -p "$pid" > /dev/null 2>&1; then
+        echo -e "${YELLOW}Force killing scheduler process...${NC}"
+        kill -9 "$pid" || true
+    fi
+    
+    rm -f "$scheduler_pid_file"
+    echo -e "${GREEN}Data scheduler stopped${NC}"
 }
 
-# Function to run tests and handle results
-run_tests() {
-    local test_type="$1"
-    local timestamp=$(date +"%Y%m%d_%H%M%S")
-    local test_log_file="${TEST_RESULTS_DIR}/chanscope_tests_${timestamp}.log"
-    local test_json_file="${TEST_RESULTS_DIR}/chanscope_validation_${timestamp}.json"
-
-    # Create test results directory if it doesn't exist
-    mkdir -p "${TEST_RESULTS_DIR}"
-
-    # Set the appropriate test argument
-    if [ "$test_type" = "all" ]; then
-        TEST_ARG="--all"
-    else
-        TEST_ARG="--${test_type}"
-    fi
-
-    echo -e "${YELLOW}Running tests with argument: $TEST_ARG${NC}"
-    echo -e "${YELLOW}Test results will be saved to: $test_log_file${NC}"
-
-    # Choose the appropriate test script based on environment
-    if [ "$IS_REPLIT" = true ]; then
-        TEST_SCRIPT="$APP_ROOT/scripts/run_replit_tests.sh"
-    else
-        TEST_SCRIPT="$APP_ROOT/scripts/run_tests.sh"
-    fi
-
-    # Run the tests
-    if [ -f "$TEST_SCRIPT" ]; then
-        echo -e "${YELLOW}Starting test execution at $(date) using ${TEST_SCRIPT}${NC}" | tee -a "$test_log_file"
-        bash "$TEST_SCRIPT" "$TEST_ARG" 2>&1 | tee -a "$test_log_file"
-        TEST_EXIT_CODE=${PIPESTATUS[0]}
-
-        if [ $TEST_EXIT_CODE -eq 0 ]; then
-            echo -e "${GREEN}All tests passed successfully!${NC}" | tee -a "$test_log_file"
-            # Create a simple JSON result file
-            cat > "$test_json_file" << EOF
-{
-  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "test_type": "$test_type",
-  "status": "success",
-  "exit_code": $TEST_EXIT_CODE,
-  "environment": "$([ "$IS_REPLIT" = true ] && echo "replit" || echo "docker")",
-  "message": "All tests passed successfully"
-}
-EOF
-        else
-            echo -e "${RED}Some tests failed with exit code: $TEST_EXIT_CODE${NC}" | tee -a "$test_log_file"
-            # Create a simple JSON result file
-            cat > "$test_json_file" << EOF
-{
-  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "test_type": "$test_type",
-  "status": "failure",
-  "exit_code": $TEST_EXIT_CODE,
-  "environment": "$([ "$IS_REPLIT" = true ] && echo "replit" || echo "docker")",
-  "message": "Tests failed with exit code $TEST_EXIT_CODE"
-}
-EOF
+# If running tests at startup is enabled, execute tests
+if [ "$RUN_TESTS_ON_STARTUP" = "true" ]; then
+    echo "Running tests on startup..."
+    
+    # Create test results directory
+    mkdir -p "$TEST_RESULTS_DIR"
+    
+    TEST_SCRIPT_PATH="$APP_ROOT/scripts/run_tests.sh"
+    
+    if [ -f "$TEST_SCRIPT_PATH" ]; then
+        echo "Running tests with script: $TEST_SCRIPT_PATH"
+        bash "$TEST_SCRIPT_PATH" --type="$TEST_TYPE" || {
             if [ "$ABORT_ON_TEST_FAILURE" = "true" ]; then
-                echo -e "${RED}Aborting startup due to test failures (ABORT_ON_TEST_FAILURE=true)${NC}" | tee -a "$test_log_file"
-                exit $TEST_EXIT_CODE
+                echo "Tests failed and ABORT_ON_TEST_FAILURE is true, exiting"
+                exit 1
+            else
+                echo "Tests failed but continuing anyway"
             fi
-        fi
+        }
     else
-        echo -e "${RED}Test script not found: $TEST_SCRIPT${NC}"
-        return 1
+        echo "Test script not found at: $TEST_SCRIPT_PATH"
     fi
-
-    echo -e "${YELLOW}Tests completed at $(date), continuing with normal startup...${NC}" | tee -a "$test_log_file"
-    return $TEST_EXIT_CODE
-}
-
-# Run tests if enabled
-if [ "$RUN_TESTS_ON_STARTUP" = "true" ] || [ "$TEST_MODE" = "true" ]; then
-    echo -e "${YELLOW}Test execution on startup is enabled.${NC}"
-    # Run tests in background to not block port opening
-    (run_tests "$TEST_TYPE" &)
 fi
 
-# Start data initialization in the background
+# Initialize data if auto-check is enabled
 if [ "$AUTO_CHECK_DATA" = "true" ]; then
-    if ! check_data_status; then
-        echo -e "${YELLOW}Data refresh needed. Starting initial data update in background...${NC}"
-        if [ "$IS_REPLIT" = true ]; then
-            # Use environment-specific parameters for Replit with explicit force-refresh for empty database
-            (cd "${APP_ROOT}" && python scripts/scheduled_update.py refresh --env=replit --force-refresh 2>&1 | tee -a "${SCHEDULER_LOG}" &)
+    echo "Checking data status..."
+    
+    # Run data processing script to check data and initialize if needed
+    python scripts/process_data.py --check || {
+        echo "Data status check failed, attempting to process data..."
+        
+        # Force refresh if needed
+        if [ "$FORCE_DATA_REFRESH" = "true" ]; then
+            echo "Running data processing with force refresh..."
+            python scripts/process_data.py --force-refresh || echo "Warning: Data processing failed"
         else
-            # Standard docker environment
-            (cd "${APP_ROOT}" && python scripts/scheduled_update.py refresh 2>&1 | tee -a "${SCHEDULER_LOG}" &)
+            echo "Running data processing without force refresh..."
+            python scripts/process_data.py || echo "Warning: Data processing failed"
         fi
-        echo -e "${GREEN}Data initialization started in background.${NC}"
-    else
-        echo -e "${GREEN}Using existing data as it's up-to-date.${NC}"
-    fi
+    }
 fi
 
-# Start the FastAPI application
-echo -e "${YELLOW}Starting FastAPI application...${NC}"
-echo -e "${YELLOW}Host: $HOST, Port: $API_PORT, Workers: $API_WORKERS, Log level: $LOG_LEVEL${NC}"
-echo -e "${YELLOW}Environment: $ENVIRONMENT, Replit: $IS_REPLIT${NC}"
-
-# Make sure Poetry knows to use virtualenvs in project
-export POETRY_VIRTUALENVS_IN_PROJECT=true
-
-# Main entry point
-if [ "$IS_REPLIT" = true ]; then
-    echo -e "${YELLOW}Starting with Replit-specific configuration${NC}"
-    
-    # Log the current data retention settings
-    echo -e "${YELLOW}Using Replit environment with DATA_RETENTION_DAYS=${DATA_RETENTION_DAYS} and FILTER_DATE=${FILTER_DATE}${NC}"
-    
-    # Initialize PostgreSQL schema if needed
-    if [ -n "$DATABASE_URL" ] || [ -n "$PGHOST" ]; then
-        echo -e "${YELLOW}Initializing PostgreSQL schema if needed...${NC}"
-        poetry run python -c "
-import asyncio
-from config.replit import PostgresDB
-
-async def initialize_db():
-    try:
-        db = PostgresDB()
-        db.initialize_schema()
-        print('PostgreSQL schema initialized successfully')
-    except Exception as e:
-        print(f'Error initializing PostgreSQL schema: {e}')
-
-# Run the async function
-asyncio.run(initialize_db())
-" || echo -e "${YELLOW}PostgreSQL schema initialization failed, but continuing startup...${NC}"
-    fi
-    
-    # Reduced worker count and added --reload-delay to optimize startup
-    exec poetry run python -m uvicorn api.app:app --host "$HOST" --port "$API_PORT" --log-level "$LOG_LEVEL" --reload-delay 5 --workers 1 --timeout-keep-alive 30
+# Start the data scheduler if enabled
+if [ "$ENABLE_DATA_SCHEDULER" = "true" ]; then
+    echo "Data scheduler is enabled, starting..."
+    start_data_scheduler "$DATA_UPDATE_INTERVAL"
 else
-    # In Docker/local, use the standard approach but match the same import pattern as Replit
-    echo -e "${YELLOW}Starting with standard configuration${NC}"
-    
-    # Verify that uvicorn is available in the virtual environment
-    if ! poetry run python -c "import uvicorn" 2>/dev/null; then
-        echo -e "${RED}Error: uvicorn module not found in the Poetry virtual environment.${NC}"
-        echo -e "${YELLOW}Installing missing dependencies...${NC}"
-        poetry install --no-interaction
-    fi
-    
-    exec poetry run python -m uvicorn api.app:app --host "$HOST" --port "$API_PORT" --workers "$API_WORKERS" --log-level "$LOG_LEVEL"
+    echo "Data scheduler is disabled, skipping..."
 fi
+
+# Register a trap to cleanup on exit
+trap stop_data_scheduler EXIT
+
+# Start the API server
+echo "Starting API server on $HOST:$API_PORT with $API_WORKERS workers..."
+PYTHONUNBUFFERED=1 uvicorn api.app:app --host "$HOST" --port "$API_PORT" --workers "$API_WORKERS" --log-level "$LOG_LEVEL"

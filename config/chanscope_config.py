@@ -122,6 +122,7 @@ class ChanScopeConfig:
         if self.env == 'replit':
             return {
                 'use_replit_db': True,
+                'use_object_storage': True,  # Flag to use Replit Object Storage for embeddings
                 'database_url': os.environ.get('DATABASE_URL', ''),
                 'pghost': os.environ.get('PGHOST', ''),
                 'pguser': os.environ.get('PGUSER', ''),
@@ -131,6 +132,7 @@ class ChanScopeConfig:
         else:
             return {
                 'use_replit_db': False,
+                'use_object_storage': False,
                 'complete_data_file': self.root_data_path / 'complete_data.csv',
                 'stratified_file': self.stratified_data_path / 'stratified_sample.csv',
                 'embeddings_file': self.stratified_data_path / 'embeddings.npz',

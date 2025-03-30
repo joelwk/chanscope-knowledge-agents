@@ -76,6 +76,18 @@ async def check_data_status():
         embeddings_available = await data_manager.check_embeddings_available()
         print(f"Embeddings available: {embeddings_available}")
         
+        # Check storage backend type
+        if hasattr(data_manager, 'embedding_storage'):
+            storage_type = data_manager.embedding_storage.__class__.__name__
+            print(f"Embedding storage backend: {storage_type}")
+            
+            # Verify Object Storage is being used in Replit environment
+            if os.environ.get('REPLIT_ENV') or os.environ.get('REPL_ID'):
+                if "Object" in storage_type:
+                    print("✅ Using Object Storage for embeddings (recommended for large embeddings)")
+                else:
+                    print("⚠️ WARNING: Not using Object Storage for embeddings. Large embeddings may fail to store.")
+        
         # Return overall status
         return row_count > 0 and strat_row_count > 0 and embeddings_available
         

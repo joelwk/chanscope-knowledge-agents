@@ -145,6 +145,44 @@ def check_keyvalue_store():
         logger.error(f"❌ Key-Value store test failed: {e}")
         return False
 
+def check_object_storage():
+    """Check if Replit Object Storage is accessible."""
+    logger.info("Checking Replit Object Storage...")
+    
+    try:
+        # Try to import Object Storage
+        try:
+            from replit.object_storage import Client
+        except ImportError:
+            logger.error("❌ replit-object-storage package not installed, run 'pip install replit-object-storage'")
+            return False
+            
+        # Initialize client
+        client = Client()
+        
+        # Create a test file
+        test_key = f"test_object_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
+        test_content = "This is a test object for embedding storage"
+        
+        # Upload to Object Storage
+        client.upload_from_text(test_key, test_content)
+        
+        # Verify content was stored correctly
+        retrieved_content = client.download_as_text(test_key)
+        
+        if retrieved_content == test_content:
+            logger.info("✅ Replit Object Storage is working")
+            
+            # Clean up test object
+            client.delete(test_key)
+            return True
+        else:
+            logger.error("❌ Object Storage test failed: content mismatch")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Object Storage test failed: {e}")
+        return False
+
 def test_data_loading():
     """Test the data loading process."""
     logger.info("Testing data loading process...")
@@ -194,6 +232,7 @@ def main():
         ("PostgreSQL Connection", check_postgres_connection()),
         ("Database Schema", check_database_schema()),
         ("Key-Value Store", check_keyvalue_store()),
+        ("Object Storage", check_object_storage()),
         ("Data Loading Process", test_data_loading())
     ]
     

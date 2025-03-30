@@ -1439,6 +1439,87 @@ class DataOperations:
         """Load stratified data and merge with embeddings using vectorized operations."""
         async with self._stratified_lock:
             try:
+                # Check if we're in Replit environment
+                from config.env_loader import detect_environment
+                env_type = detect_environment()
+                
+                if env_type.lower() == 'replit':
+                    self._logger.info("Replit environment detected, using Replit storage implementations")
+                    
+                    # Use Replit storage implementation
+                    from config.storage import StorageFactory
+                    storage = StorageFactory.create(self.config, 'replit')
+                    stratified_storage = storage['stratified_sample']
+                    embedding_storage = storage['embeddings']
+                    
+                    # Get stratified sample from Replit Key-Value store
+                    stratified_df = await stratified_storage.get_sample()
+                    if stratified_df is None or stratified_df.empty:
+                        raise ValueError("Stratified sample not found in Replit Key-Value store")
+                    
+                    self._logger.info(f"Retrieved stratified sample with {len(stratified_df)} rows from Replit Key-Value store")
+                    
+                    # Get embeddings from Replit Object Storage
+                    embeddings, thread_id_map = await embedding_storage.get_embeddings()
+                    if embeddings is None or thread_id_map is None:
+                        self._logger.warning("Embeddings or thread ID map not found in Replit Object Storage")
+                        return stratified_df
+                    
+                    # Merge embeddings with stratified data
+                    self._logger.info(f"Merging embeddings with shape {embeddings.shape} into stratified data")
+                    
+                    # Ensure thread_id is string type for consistent comparison
+                    stratified_df['thread_id'] = stratified_df['thread_id'].astype(str)
+                    
+                    # Initialize embedding column with None
+                    stratified_df['embedding'] = None
+                    
+                    # Create a mapping dictionary for fast lookup
+                    embedding_dict = {}
+                    valid_embedding_count = 0
+                    thread_id_map = {str(k): v for k, v in thread_id_map.items()}
+                    
+                    for thread_id, idx in thread_id_map.items():
+                        if idx < len(embeddings):
+                            embedding = embeddings[idx]
+                            
+                            # Handle various embedding formats
+                            if isinstance(embedding, (float, int)):
+                                self._logger.warning(f"Converting single float value for thread_id {thread_id} to array")
+                                try:
+                                    embedding = [float(embedding), 0.0, 0.0]
+                                    valid_embedding_count += 1
+                                except Exception as e:
+                                    self._logger.warning(f"Failed to convert float to array for thread_id {thread_id}: {e}")
+                                    continue
+                            elif isinstance(embedding, np.ndarray):
+                                if embedding.size == 1:
+                                    self._logger.warning(f"Single-item array for thread_id {thread_id}, expanding")
+                                    embedding = [float(embedding.item()), 0.0, 0.0]
+                                else:
+                                    embedding = embedding.tolist()
+                                valid_embedding_count += 1
+                            elif isinstance(embedding, list):
+                                if not embedding:
+                                    self._logger.warning(f"Empty list embedding for thread_id {thread_id}")
+                                    continue
+                                valid_embedding_count += 1
+                            else:
+                                self._logger.warning(f"Unexpected embedding format for thread_id {thread_id}: {type(embedding)}")
+                                continue
+                            
+                            embedding_dict[thread_id] = embedding
+                    
+                    # Apply the mapping to the dataframe
+                    stratified_df['embedding'] = stratified_df['thread_id'].map(embedding_dict)
+                    
+                    with_emb = stratified_df['embedding'].notna().sum()
+                    total = len(stratified_df)
+                    self._logger.info(f"Added embeddings to {with_emb}/{total} rows ({with_emb/total*100:.1f}% coverage)")
+                    
+                    return stratified_df
+                
+                # If not in Replit, use the original file-based implementation
                 stratified_file = self.config.stratified_data_path / 'stratified_sample.csv'
                 embeddings_path = self.config.stratified_data_path / 'embeddings.npz'
                 thread_id_map_path = self.config.stratified_data_path / 'thread_id_map.json'

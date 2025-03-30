@@ -71,8 +71,8 @@ services:
       - ENABLE_DATA_SCHEDULER=true
       - DATA_UPDATE_INTERVAL=3600
       - AUTO_CHECK_DATA=true
-      - FORCE_DATA_REFRESH=true
-      - LOG_LEVEL=debug
+      - FORCE_DATA_REFRESH=false
+      - LOG_LEVEL=info
       
       # API configuration
       - API_PORT=80

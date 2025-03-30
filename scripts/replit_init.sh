@@ -138,6 +138,38 @@ async def process_data():
 asyncio.run(process_data())
 "
 
+# Configure and start the data scheduler if enabled
+ENABLE_DATA_SCHEDULER="${ENABLE_DATA_SCHEDULER:-true}"
+DATA_UPDATE_INTERVAL="${DATA_UPDATE_INTERVAL:-3600}"
+
+if [ "$ENABLE_DATA_SCHEDULER" = "true" ]; then
+    echo -e "${YELLOW}Setting up the data scheduler...${NC}"
+    
+    # Check if scheduler is already running
+    SCHEDULER_PID_FILE="$WORKSPACE_ROOT/data/.scheduler_pid"
+    
+    if [ -f "$SCHEDULER_PID_FILE" ]; then
+        echo -e "${YELLOW}Cleaning up previous scheduler instance...${NC}"
+        rm -f "$SCHEDULER_PID_FILE"
+    fi
+    
+    # Start the scheduler in background using nohup
+    echo -e "${YELLOW}Starting data scheduler with interval: ${DATA_UPDATE_INTERVAL}s${NC}"
+    
+    # Create a background task that runs the scheduler
+    nohup poetry run python scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$WORKSPACE_ROOT/logs/scheduler.log" 2>&1 &
+    
+    # Save the PID
+    SCHEDULER_PID=$!
+    echo $SCHEDULER_PID > "$SCHEDULER_PID_FILE"
+    
+    echo -e "${GREEN}Data scheduler started with PID: $SCHEDULER_PID${NC}"
+    echo -e "${GREEN}Scheduler will update data every ${DATA_UPDATE_INTERVAL} seconds${NC}"
+    echo -e "${YELLOW}Scheduler logs available at: $WORKSPACE_ROOT/logs/scheduler.log${NC}"
+else
+    echo -e "${YELLOW}Data scheduler is disabled. Set ENABLE_DATA_SCHEDULER=true to enable automatic updates.${NC}"
+fi
+
 # Create initialization marker
 echo -e "${YELLOW}Creating initialization markers...${NC}"
 echo "Initialized at $(date)" > "$WORKSPACE_ROOT/data/.replit_init_complete"

@@ -103,6 +103,11 @@ def setup_logging() -> None:
             _is_logging_configured = True
             logging.info(f"Logging configuration applied successfully for worker {worker_id}")
             
+            # Set up sensitive data filtering
+            from config.logging_utils import setup_sensitive_data_filter
+            setup_sensitive_data_filter()
+            logging.info("Sensitive data filtering enabled for all loggers")
+            
         except ValueError as e:
             # If there's an error with the logging configuration, set up a basic config
             logging.basicConfig(
@@ -114,6 +119,14 @@ def setup_logging() -> None:
                 ]
             )
             logging.error(f"Error configuring logging: {str(e)}. Using basic configuration.")
+            
+            # Even with basic config, try to set up sensitive data filtering
+            try:
+                from config.logging_utils import setup_sensitive_data_filter
+                setup_sensitive_data_filter()
+                logging.info("Sensitive data filtering enabled with basic logging configuration")
+            except Exception as filter_error:
+                logging.error(f"Could not set up sensitive data filtering: {filter_error}")
 
 def get_logger(name: str, level: str = None) -> logging.Logger:
     """Get a logger instance with the specified name and optional level.
