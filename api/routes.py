@@ -13,7 +13,7 @@ import shutil
 from filelock import FileLock
 import pytz
 import pandas as pd
-from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Depends
+from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Depends, Query
 from fastapi.responses import JSONResponse
 import secrets
 import re
@@ -45,7 +45,7 @@ from config.logging_config import get_logger
 from api.models import HealthResponse, StratificationResponse, log_endpoint_call
 from api.cache import CACHE_HITS, CACHE_MISSES, CACHE_ERRORS, cache
 
-from config.env_loader import is_replit_environment, get_replit_paths
+from config.env_loader import is_replit_environment, get_replit_paths, detect_environment
 from knowledge_agents.utils import save_query_output
 
 logger = get_logger(__name__)
@@ -619,13 +619,47 @@ async def base_query(
                     }
                 
                 # Process query
-                # First ensure data is ready if needed
-                if request.force_refresh or not await data_ops.is_data_ready(skip_embeddings=request.skip_embeddings):
-                    logger.info(f"Data not ready or force_refresh={request.force_refresh}, preparing data...")
-                    await data_ops.ensure_data_ready(
-                        force_refresh=request.force_refresh,
-                        skip_embeddings=request.skip_embeddings
-                    )
+                # Check environment type to use appropriate data readiness methods
+                from config.env_loader import detect_environment
+                env_type = detect_environment()
+                
+                if env_type.lower() == 'replit':
+                    logger.info("Using Replit-specific storage for data readiness check")
+                    # Initialize storage implementations for Replit
+                    from config.storage import StorageFactory
+                    storage = StorageFactory.create(config, 'replit')
+                    
+                    # Check if data is ready using appropriate storage implementations
+                    complete_data_storage = storage['complete_data']
+                    stratified_storage = storage['stratified_sample']
+                    
+                    row_count = await complete_data_storage.get_row_count()
+                    logger.info(f"PostgreSQL database has {row_count} rows")
+                    
+                    stratified_exists = await stratified_storage.sample_exists()
+                    logger.info(f"Stratified sample exists: {stratified_exists}")
+                    
+                    # Force refresh if stratified sample doesn't exist
+                    if not stratified_exists:
+                        logger.info("Stratified sample doesn't exist in Replit storage, forcing refresh")
+                        request.force_refresh = True
+                    
+                    # Check if we need to prepare data
+                    data_is_ready = (row_count > 0 and stratified_exists)
+                    if not data_is_ready or request.force_refresh:
+                        logger.info(f"Data not ready or force_refresh={request.force_refresh}, preparing data...")
+                        await data_ops.ensure_data_ready(
+                            force_refresh=request.force_refresh,
+                            skip_embeddings=request.skip_embeddings
+                        )
+                else:
+                    # Use standard file-based checks for Docker/local environment
+                    if request.force_refresh or not await data_ops.is_data_ready(skip_embeddings=request.skip_embeddings):
+                        logger.info(f"Data not ready or force_refresh={request.force_refresh}, preparing data...")
+                        await data_ops.ensure_data_ready(
+                            force_refresh=request.force_refresh,
+                            skip_embeddings=request.skip_embeddings
+                        )
                 
                 # Load the stratified data
                 logger.info("Loading stratified data for processing...")
@@ -716,7 +750,8 @@ async def base_query(
                         response=response,
                         base_path=base_path,
                         logger=logger,
-                        query=request.query
+                        query=request.query,
+                        task_id=task_id
                     )
                     
                     # Add file paths to response metadata
@@ -791,14 +826,16 @@ async def _process_single_query(
     query: str,
     agent: KnowledgeAgent,
     config: ModelConfig,
-    use_batching: bool,
-    data_ops: DataOperations,
+    use_batching: bool = True,
+    data_ops: Optional[DataOperations] = None,
     force_refresh: bool = False,
     skip_embeddings: bool = False
-) -> None:
-    """Process a single query and store the results."""
+) -> Dict[str, Any]:
+    """Process a single query asynchronously."""
+    logger.info(f"Processing query {task_id}: {query[:50]}...")
+    
     try:
-        # Update task status to processing
+        # Update task status
         async with _tasks_lock:
             _background_tasks[task_id] = {
                 "status": "processing",
@@ -807,123 +844,121 @@ async def _process_single_query(
                 "progress": 10
             }
         
-        # Process the query
-        # First ensure data is ready if needed
-        if force_refresh or not await data_ops.is_data_ready(skip_embeddings=skip_embeddings):
-            logger.info(f"Data not ready or force_refresh={force_refresh}, preparing data...")
-            await data_ops.ensure_data_ready(
-                force_refresh=force_refresh,
-                skip_embeddings=skip_embeddings
-            )
+        # Check environment type to determine storage approach
+        from config.env_loader import detect_environment
+        env_type = detect_environment()
         
-        # Load the stratified data
+        # Get data operations if not provided
+        if data_ops is None:
+            data_ops = await get_data_ops()
+        
+        # Ensure data is ready based on environment
+        if env_type.lower() == 'replit':
+            logger.info("Using Replit-specific storage for data readiness check")
+            # Initialize storage implementations for Replit
+            from config.storage import StorageFactory
+            storage = StorageFactory.create(data_ops.config, 'replit')
+            
+            # Check if data preparation is needed
+            complete_data_storage = storage['complete_data']
+            stratified_storage = storage['stratified_sample']
+            
+            row_count = await complete_data_storage.get_row_count()
+            logger.info(f"PostgreSQL database has {row_count} rows")
+            
+            stratified_exists = await stratified_storage.sample_exists()
+            logger.info(f"Stratified sample exists: {stratified_exists}")
+            
+            # Force refresh if stratified sample doesn't exist
+            if not stratified_exists:
+                logger.info("Stratified sample doesn't exist in Replit storage, forcing refresh")
+                force_refresh = True
+            
+            # Check if we need to prepare data
+            data_is_ready = (row_count > 0 and stratified_exists)
+            if not data_is_ready or force_refresh:
+                logger.info(f"Data not ready or force_refresh={force_refresh}, preparing data...")
+                await data_ops.ensure_data_ready(
+                    force_refresh=force_refresh,
+                    skip_embeddings=skip_embeddings
+                )
+        else:
+            # Use standard file-based checks for Docker/local environment
+            if force_refresh or not await data_ops.is_data_ready(skip_embeddings=skip_embeddings):
+                logger.info(f"Data not ready or force_refresh={force_refresh}, preparing data...")
+                await data_ops.ensure_data_ready(
+                    force_refresh=force_refresh,
+                    skip_embeddings=skip_embeddings
+                )
+        
+        # Load stratified data for background processing
         logger.info("Loading stratified data for background processing...")
         library_df = await data_ops.load_stratified_data()
+        logger.info(f"Loaded {len(library_df)} rows from stratified data")
         
-        # Log information about the data
-        logger.info(f"Loaded stratified data with {len(library_df)} rows and columns: {list(library_df.columns)}")
+        # Update task status
+        async with _tasks_lock:
+            if task_id in _background_tasks:
+                _background_tasks[task_id]["progress"] = 30
         
-        # Verify embeddings are present
-        if 'embedding' not in library_df.columns:
-            logger.warning("Embeddings not present in loaded data, checking if they need to be loaded separately")
-            # Check if embeddings need to be loaded separately
-            embeddings, thread_map = await data_ops.embedding_storage.get_embeddings()
-            if embeddings is not None and thread_map is not None:
-                logger.info(f"Merging {len(embeddings)} embeddings with stratified data...")
-                library_df["embedding"] = None
-                
-                # Add embeddings to the DataFrame
-                matched = 0
-                for idx, row in library_df.iterrows():
-                    thread_id = str(row["thread_id"])
-                    if thread_id in thread_map:
-                        emb_idx = thread_map[thread_id]
-                        if isinstance(emb_idx, (int, str)) and str(emb_idx).isdigit():
-                            emb_idx = int(emb_idx)
-                            if 0 <= emb_idx < len(embeddings):
-                                library_df.at[idx, "embedding"] = embeddings[emb_idx]
-                                matched += 1
-                
-                logger.info(f"Successfully matched {matched} embeddings out of {len(library_df)} rows")
-            else:
-                logger.warning("Failed to load separate embeddings, proceeding with potentially limited functionality")
-        
-        # Ensure we have the necessary text field for inference
-        if "text_clean" not in library_df.columns and "content" in library_df.columns:
-            logger.info("Adding text_clean field from content field")
-            library_df["text_clean"] = library_df["content"]
-        
-        # Now process the query with the loaded data - Using the config directly
-        logger.info(f"Processing background query: '{query[:50]}...'")
-        processing_start = time.time()
-        
-        result = await process_query(
-            query=query,
-            agent=agent,
-            library_df=library_df,
-            config=config
-        )
-        
-        processing_time = round((time.time() - processing_start) * 1000, 2)
-        logger.info(f"Background query processed in {processing_time}ms with {len(result.get('chunks', []))} chunks")
-        
-        # Create complete response
-        response = {
-            "status": "completed",
-            "task_id": task_id,
-            "chunks": result.get("chunks", []),
-            "summary": result.get("summary", ""),
-            "metadata": result.get("metadata", {})
-        }
-        
-        # Save complete response
-        try:
-            base_path = Path(Config.get_paths()["generated_data"])
-            json_path, embeddings_path = save_query_output(
-                response=response,
-                base_path=base_path,
-                logger=logger,
-                query=query
+        # Process query efficiently (with batching if enabled)
+        if use_batching:
+            # Use efficient batched processing
+            start_time = time.time()
+            result = await process_query(
+                query=query,
+                agent=agent,
+                library_df=library_df,
+                config=config,
             )
-            
-            # Add file paths to response metadata
-            if "metadata" not in response:
-                response["metadata"] = {}
-            response["metadata"]["saved_files"] = {
-                "json": str(json_path)
-            }
-            if embeddings_path:
-                response["metadata"]["saved_files"]["embeddings"] = str(embeddings_path)
-                
-        except Exception as e:
-            logger.error(f"Error saving query output: {e}")
-            # Continue processing even if saving fails
+            processing_time = round((time.time() - start_time) * 1000, 2)
+            logger.info(f"Query processed in {processing_time}ms with batching")
+        else:
+            # Use standard processing
+            result = await agent.process_query(
+                query=query,
+                df=library_df,
+                model=config.get_provider(ModelOperation.SUMMARIZATION)
+            )
         
-        # Store the result
+        # Update task status
+        async with _tasks_lock:
+            if task_id in _background_tasks:
+                _background_tasks[task_id]["progress"] = 80
+        
+        # Store result for retrieval
         success = await _store_batch_result(
             batch_id=task_id,
-            result=response,  # Pass the complete response
+            result=result,
             config=config
         )
         
-        if success:
-            processing_time = result.get("metadata", {}).get("processing_time_ms", 0)
-            logger.info(f"Query {task_id} processed successfully in {processing_time/1000:.2f}s")
-            
-            # Update task status to completed
-            async with _tasks_lock:
-                if task_id in _background_tasks:
-                    _background_tasks[task_id]["status"] = "completed"
-                    _background_tasks[task_id]["progress"] = 100
-        else:
-            logger.error(f"Failed to store results for query {task_id}")
-            
-            # Update task status to failed
-            async with _tasks_lock:
-                if task_id in _background_tasks:
-                    _background_tasks[task_id]["status"] = "failed"
-                    _background_tasks[task_id]["error"] = "Failed to store results"
-            
+        if not success:
+            logger.warning(f"Failed to store results for task {task_id}")
+        
+        # Update task status
+        async with _tasks_lock:
+            if task_id in _background_tasks:
+                _background_tasks[task_id]["status"] = "completed"
+                _background_tasks[task_id]["progress"] = 100
+                _background_tasks[task_id]["completed_at"] = time.time()
+        
+        # Save query output for analysis
+        try:
+            await save_query_output(
+                result=result,
+                task_id=task_id,
+                query=query,
+                base_path=Path(Config.get_paths()["generated_data"])
+            )
+        except Exception as e:
+            logger.warning(f"Error saving query output: {e}")
+        
+        return {
+            "task_id": task_id,
+            "status": "completed",
+            "result": result
+        }
     except Exception as e:
         logger.error(f"Error processing query {task_id}: {str(e)}")
         logger.error(traceback.format_exc())
@@ -933,6 +968,8 @@ async def _process_single_query(
             if task_id in _background_tasks:
                 _background_tasks[task_id]["status"] = "failed"
                 _background_tasks[task_id]["error"] = str(e)
+                _background_tasks[task_id]["progress"] = 100
+                _background_tasks[task_id]["completed_at"] = time.time()
         
         # Store error result
         error_result = {
@@ -949,6 +986,12 @@ async def _process_single_query(
             result=error_result,
             config=config
         )
+        
+        return {
+            "task_id": task_id,
+            "status": "failed",
+            "error": str(e)
+        }
 
 @router.post("/batch_process")
 async def batch_process_queries(
@@ -1191,7 +1234,10 @@ async def process_recent_query(
     agent: KnowledgeAgent = Depends(get_agent),
     data_ops: DataOperations = Depends(get_data_ops),
     select_board: Optional[str] = None,
-    task_id: Optional[str] = None
+    task_id: Optional[str] = None,
+    use_background: bool = Query(False, title="Run in background", description="Process the query in the background"),
+    filter_date: Optional[str] = None,
+    force_refresh: bool = Query(False, title="Force refresh", description="Force data refresh")
 ):
     """Process a query using recent data from the last 6 hours with batch processing.
     
@@ -1204,56 +1250,110 @@ async def process_recent_query(
         data_ops: Data operations for preparation
         select_board: Optional board ID to filter data
         task_id: Optional user-provided task ID
+        use_background: Whether to process the query in the background
+        filter_date: Optional date filter to override the default 6-hour window
+        force_refresh: Whether to force data refresh
     """
     try:
+        # Check environment type to determine if we need to force refresh data
+        from config.env_loader import detect_environment
+        env_type = detect_environment()
+        
+        if env_type.lower() == 'replit':
+            # Check if stratified sample exists in Replit storage
+            from config.storage import StorageFactory
+            storage = StorageFactory.create(data_ops.config, 'replit')
+            stratified_storage = storage['stratified_sample']
+            
+            stratified_exists = await stratified_storage.sample_exists()
+            if not stratified_exists:
+                logger.info("Stratified sample doesn't exist in Replit storage, forcing refresh")
+                force_refresh = True
+        
         # Calculate time range
         end_time = datetime.now(pytz.UTC)
-        start_time = end_time - timedelta(hours=6)
-        filter_date = start_time.strftime('%Y-%m-%d %H:%M:%S+00:00')
+        
+        # Use provided filter_date or default to 6 hours ago
+        if filter_date:
+            try:
+                start_time = pd.to_datetime(filter_date, utc=True)
+                logger.info(f"Using provided filter_date: {filter_date}")
+            except Exception as e:
+                logger.warning(f"Invalid filter_date format: {filter_date}. Error: {e}. Using default 6-hour window.")
+                start_time = end_time - timedelta(hours=6)
+        else:
+            start_time = end_time - timedelta(hours=6)
+            
+        query_filter_date = start_time.strftime('%Y-%m-%d %H:%M:%S+00:00')
 
         # Get base settings and paths
         base_settings = get_base_settings()
         paths = base_settings.get('paths', {})
         stored_queries_path = Path(paths.get('config', 'config')) / 'stored_queries.yaml'
-
-        # Load stored query
-        try:
-            with open(stored_queries_path, 'r') as f:
-                stored_queries = yaml.safe_load(f)
-            if not stored_queries or 'query' not in stored_queries or 'example' not in stored_queries['query']:
-                raise ValidationError(
-                    message="No example queries found in stored_queries.yaml",
-                    field="stored_queries",
-                    value=None
-                )
-            query = stored_queries['query']['example'][0]
-        except FileNotFoundError as e:
-            raise ConfigurationError(
-                message="Stored queries file not found",
-                config_key="stored_queries_path",
-                config_value=str(stored_queries_path))
-        except yaml.YAMLError as e:
-            raise ConfigurationError(
-                message="Invalid YAML format in stored queries",
-                config_key="stored_queries",
-                original_error=e)
+        
+        # Load stored query based on environment
+        if env_type.lower() == 'replit':
+            logger.info("Using Replit environment, loading query from configuration")
+            # In Replit, we may not have direct file access, use a default query if file can't be accessed
+            try:
+                with open(stored_queries_path, 'r') as f:
+                    stored_queries = yaml.safe_load(f)
+                if not stored_queries or 'query' not in stored_queries or 'example' not in stored_queries['query']:
+                    # Use a default query if file is malformed
+                    query = "Current events with financial market impact and cryptocurrency developments"
+                    logger.info(f"Using default query: {query}")
+                else:
+                    query = stored_queries['query']['example'][0]
+                    logger.info(f"Loaded query from stored_queries.yaml: {query}")
+            except FileNotFoundError:
+                # Use default query if file doesn't exist
+                query = "Current events with financial market impact and cryptocurrency developments"
+                logger.info(f"Using default query (file not found): {query}")
+            except Exception as e:
+                logger.warning(f"Error loading stored queries: {e}. Using default query.")
+                query = "Current events with financial market impact and cryptocurrency developments"
+        else:
+            # In Docker/local environment, try to load from file
+            try:
+                with open(stored_queries_path, 'r') as f:
+                    stored_queries = yaml.safe_load(f)
+                if not stored_queries or 'query' not in stored_queries or 'example' not in stored_queries['query']:
+                    raise ValidationError(
+                        message="No example queries found in stored_queries.yaml",
+                        field="stored_queries",
+                        value=None
+                    )
+                query = stored_queries['query']['example'][0]
+            except FileNotFoundError as e:
+                raise ConfigurationError(
+                    message="Stored queries file not found",
+                    config_key="stored_queries_path",
+                    config_value=str(stored_queries_path))
+            except yaml.YAMLError as e:
+                raise ConfigurationError(
+                    message="Invalid YAML format in stored queries",
+                    config_key="stored_queries",
+                    original_error=e)
 
         # Create request object with consistent parameters and pass task_id
         request = QueryRequest(
             query=query,
-            filter_date=filter_date,
-            force_refresh=False,
+            filter_date=query_filter_date,
+            force_refresh=force_refresh,
             skip_embeddings=True,
             skip_batching=False,
             select_board=select_board,
-            task_id=task_id
+            task_id=task_id,
+            use_background=use_background
         )
 
         # Log request
         log_params = {
             "time_range": f"{start_time.isoformat()} to {end_time.isoformat()}",
-            "filter_date": filter_date,
-            "select_board": select_board
+            "filter_date": query_filter_date,
+            "select_board": select_board,
+            "use_background": use_background,
+            "force_refresh": force_refresh
         }
         log_endpoint_call(
             logger=logger,
@@ -1269,7 +1369,7 @@ async def process_recent_query(
             background_tasks=background_tasks)
 
         # Add time range information while maintaining batch processing response format
-        if isinstance(result, dict) and "status" in result and result["status"] == "queued":
+        if isinstance(result, dict) and "status" in result:
             result["time_range"] = {
                 "start": start_time.isoformat(),
                 "end": end_time.isoformat()
@@ -1519,7 +1619,7 @@ async def debug_request(request: Request):
 
 @router.get("/health/cache")
 async def cache_health() -> Dict[str, Any]:
-    """Check health of the in-memory cache."""
+    """Health check for cache."""
     try:
         # Get cache metrics from simple counters
         # Handle both SimpleCounter class and global variable implementations
@@ -1563,6 +1663,15 @@ async def cache_health() -> Dict[str, Any]:
             status_code=error.status_code,
             detail=error.to_dict()
         )
+
+@router.get("/api_health")
+async def api_health():
+    """Simple health check endpoint for API health checks."""
+    return {
+        "status": "ok", 
+        "timestamp": datetime.now(pytz.UTC).isoformat(),
+        "environment": os.getenv("REPLIT_ENV", "development")
+    }
 
 @router.get("/health/embeddings", response_model=Dict[str, Any])
 async def embedding_health(
@@ -1695,137 +1804,97 @@ async def _prepare_data_if_needed(
     force_refresh: bool = False,
     skip_embeddings: bool = False
 ) -> pd.DataFrame:
-    """Prepare data for inference with enhanced reliability and performance.
-    
-    This function implements the Chanscope approach for data preparation:
-    
-    For force_refresh=True:
-    - Verify that complete_data.csv exists and is updated with latest S3 data
-    - Create a new stratified sample and generate new embeddings
-    - Search embeddings for related chunks
-    
-    For force_refresh=False:
-    - Check if complete_data.csv exists (but don't verify updates)
-    - Use existing stratified data and embeddings
-    - If data doesn't exist, proceed as if force_refresh=True
+    """
+    Ensures data is ready and loads the stratified dataset.
     
     Args:
-        config: Model configuration with processing settings
-        data_ops: Data operations for data preparation
+        config: Model configuration
+        data_ops: Data operations instance
         force_refresh: Whether to force data refresh
-        skip_embeddings: Whether to skip embedding generation (for testing)
+        skip_embeddings: Whether to skip embedding generation
         
     Returns:
-        DataFrame containing prepared stratified data
-        
-    Raises:
-        HTTPException: If data preparation fails
-        ProcessingError: If specific processing steps fail
+        Stratified data with embeddings
     """
-    start_time = time.time()
+    # Check environment type to use appropriate data readiness methods
+    from config.env_loader import detect_environment
+    env_type = detect_environment()
+    logger.info(f"Preparing data in {env_type} environment (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})")
+    
+    # Step 1: Check if data is ready (using environment-appropriate methods)
+    if env_type.lower() == 'replit':
+        logger.info("Using Replit-specific storage for data readiness check")
+        # Initialize storage implementations for Replit
+        from config.storage import StorageFactory
+        storage = StorageFactory.create(data_ops.config, 'replit')
+        
+        # Check if data is ready using appropriate storage implementations
+        complete_data_storage = storage['complete_data']
+        stratified_storage = storage['stratified_sample']
+        
+        row_count = await complete_data_storage.get_row_count()
+        logger.info(f"PostgreSQL database has {row_count} rows")
+        
+        stratified_exists = await stratified_storage.sample_exists()
+        logger.info(f"Stratified sample exists: {stratified_exists}")
+        
+        data_is_ready = (row_count > 0 and stratified_exists)
+        if not data_is_ready or force_refresh:
+            logger.info(f"Data not ready or force_refresh={force_refresh}, preparing data...")
+            success = await data_ops.ensure_data_ready(
+                force_refresh=force_refresh,
+                skip_embeddings=skip_embeddings
+            )
+            if not success:
+                logger.error("Failed to prepare data")
+                raise HTTPException(
+                    status_code=500,
+                    detail={"error": "Failed to prepare data", "status": "error"}
+                )
+    else:
+        # Use standard file-based checks for Docker/local environment
+        is_ready = await data_ops.is_data_ready(skip_embeddings=skip_embeddings)
+        if not is_ready or force_refresh:
+            logger.info(f"Data not ready or force_refresh={force_refresh}, preparing data...")
+            success = await data_ops.ensure_data_ready(
+                force_refresh=force_refresh,
+                skip_embeddings=skip_embeddings
+            )
+            if not success:
+                logger.error("Failed to prepare data")
+                raise HTTPException(
+                    status_code=500,
+                    detail={"error": "Failed to prepare data", "status": "error"}
+                )
+    
+    # Step 2: Load stratified data
+    logger.info("Loading stratified data...")
     try:
-        logger.info(f"Preparing data (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})")
+        # Use data_ops method to load stratified data (handles both environments)
+        stratified_data = await data_ops.load_stratified_data()
+        logger.info(f"Loaded stratified data with {len(stratified_data)} rows")
         
-        # Step 1: Check data freshness to determine if update is needed
-        data_freshness_check = await data_ops.check_data_freshness()
-        
-        # Get paths for validation
-        complete_data_path = data_ops.config.root_data_path / "complete_data.csv"
-        stratified_path = data_ops.config.stratified_data_path / "stratified_sample.csv"
-        embeddings_path = data_ops.config.stratified_data_path / "embeddings.npz"
-        
-        # Case A: force_refresh=True - Follow Chanscope approach for forced refresh
-        if force_refresh:
-            logger.info("Force refresh requested, implementing Chanscope forced refresh approach")
-            
-            # Check if complete_data.csv exists and is up-to-date with S3
-            # Only refresh if it doesn't exist or isn't current
-            if not complete_data_path.exists():
-                logger.info("Complete data file doesn't exist, fetching from source")
-                needs_data_update = True
-            else:
-                # Check if data is current with S3
-                is_current = await data_ops._is_data_up_to_date_with_s3()
-                needs_data_update = not is_current
-                logger.info(f"Complete data exists, is current with S3: {is_current}")
-            
-            # If data needs update, use ensure_data_ready with force_refresh=True
-            # to properly fetch and process according to the Chanscope approach
-            if needs_data_update:
-                logger.info("Data needs update, performing complete refresh")
-                await data_ops.ensure_data_ready(force_refresh=True, skip_embeddings=skip_embeddings)
-            else:
-                logger.info("Complete data is current, performing stratification and embedding refresh only")
-                # Even if data is current, with force_refresh=True we still refresh stratification and embeddings
-                # Create new stratified sample
-                await data_ops._create_stratified_dataset()
-                
-                # Generate new embeddings unless explicitly skipped
-                if not skip_embeddings:
-                    await data_ops.generate_embeddings(force_refresh=True)
-        
-        # Case B: force_refresh=False - Follow Chanscope approach for regular processing
-        else:
-            logger.info("Using existing data (force_refresh=false), checking data existence")
-            
-            # Check if complete_data.csv exists
-            if not complete_data_path.exists():
-                logger.info("Complete data file doesn't exist, proceeding as if force_refresh=True")
-                # If it doesn't exist, proceed as if force_refresh=True 
-                await data_ops.ensure_data_ready(force_refresh=True, skip_embeddings=skip_embeddings)
-            else:
-                logger.info("Complete data exists, checking stratified data and embeddings")
-                
-                # Check if stratified data exists
-                if not stratified_path.exists():
-                    logger.info("Stratified data doesn't exist, creating it")
-                    await data_ops._create_stratified_dataset()
-                
-                # Check if embeddings exist and generate if needed (unless skipped)
-                if not skip_embeddings and not embeddings_path.exists():
-                    logger.info("Embeddings don't exist, generating them")
-                    await data_ops.generate_embeddings(force_refresh=False)
-        
-        # Load stratified data for use in inference
-        stratified_data = await data_ops._load_stratified_data()
-        
-        # Check data validity
-        if stratified_data is None or stratified_data.empty:
-            raise ProcessingError(
-                message="Stratified data is empty or not available",
-                operation="load_stratified_data"
+        # Ensure we have the necessary columns
+        required_columns = ['thread_id', 'text_clean']
+        missing_columns = [col for col in required_columns if col not in stratified_data.columns]
+        if missing_columns:
+            logger.error(f"Missing required columns: {missing_columns}")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": f"Missing required columns in stratified data: {missing_columns}",
+                    "status": "error"
+                }
             )
         
-        data_rows = len(stratified_data)
-        processing_time = round((time.time() - start_time) * 1000, 2)
-        logger.info(f"Data preparation complete: {data_rows} rows available (took {processing_time}ms)")
-        
-        # Return data for use in inference
         return stratified_data
-        
-    except FileNotFoundError as e:
-        logger.error(f"Data file not found: {str(e)}")
-        raise ProcessingError(
-            message=f"Required data file not found: {str(e)}",
-            operation="data_preparation",
-            resource=str(e.filename) if hasattr(e, 'filename') else None,
-            original_error=e
-        )
-    except pd.errors.EmptyDataError as e:
-        logger.error(f"Empty data file: {str(e)}")
-        raise ProcessingError(
-            message="Data file is empty",
-            operation="data_preparation",
-            original_error=e
-        )
     except Exception as e:
-        logger.error(f"Error during data preparation: {str(e)}", exc_info=True)
-        raise ProcessingError(
-            message=f"Data preparation failed: {str(e)}",
-            operation="data_preparation",
-            original_error=e
+        logger.error(f"Error loading stratified data: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"Error loading stratified data: {str(e)}", "status": "error"}
         )
-
 
 async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]], config: Union[Dict[str, Any], ModelConfig]) -> bool:
     """Store batch processing results for later retrieval.
@@ -2092,4 +2161,30 @@ def _check_task_id_collision(task_id: str) -> bool:
             return True
     
     return False
+
+@router.post("/api/v1/data/prepare")
+async def prepare_data(request: Request):
+    """Prepare data for inference."""
+    try:
+        config = ChanScopeConfig.from_env()
+        
+        # Initialize storage with environment detection
+        from config.storage import StorageFactory
+        storage = StorageFactory.create(config)
+
+        # TODO: Implement this
+    except Exception as e:
+        handle_error(e)
+
+@router.post("/api/v1/data/stratify")
+async def stratify_data(request: Request):
+    """Create stratified sample."""
+    try:
+        # Initialize storage with environment detection
+        from config.storage import StorageFactory
+        storage = StorageFactory.create(data_ops.config)
+
+        # TODO: Implement this
+    except Exception as e:
+        handle_error(e)
 

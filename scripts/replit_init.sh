@@ -151,4 +151,19 @@ echo -e "${YELLOW}Creating initialization markers...${NC}"
 echo "Initialized at $(date)" > "$WORKSPACE_ROOT/data/.replit_init_complete"
 
 echo -e "${GREEN}Replit initialization completed successfully!${NC}"
-echo -e "${YELLOW}You can now run the application with: poetry run python -m uvicorn api.app:app --host 0.0.0.0 --port 80${NC}" 
+echo -e "${YELLOW}You can now run the application with: poetry run python -m uvicorn api.app:app --host 0.0.0.0 --port 80${NC}"
+
+# Verify root endpoint health check if app is already running
+if curl -s http://localhost:80/ > /dev/null; then
+    echo -e "${YELLOW}Testing root endpoint health check...${NC}"
+    response=$(curl -s http://localhost:80/)
+    if [[ $response == *"status"* ]]; then
+        echo -e "${GREEN}Root endpoint health check is working correctly!${NC}"
+        echo -e "${GREEN}Response: $response${NC}"
+    else
+        echo -e "${RED}Root endpoint health check is not returning the expected response${NC}"
+        echo -e "${RED}Response: $response${NC}"
+    fi
+else
+    echo -e "${YELLOW}Application is not running, skipping root endpoint health check${NC}"
+fi 

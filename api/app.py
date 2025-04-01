@@ -180,7 +180,13 @@ async def initialize_data_in_background(data_config):
 # API routes
 @app.get("/")
 async def root():
-    """Root endpoint."""
+    """Root endpoint for health checks."""
+    # Simplified response to ensure fastest possible response for health checks
+    return {"status": "ok"}
+
+@app.get("/docs-redirect")
+async def docs_redirect():
+    """Redirect to docs."""
     return RedirectResponse(url="/docs")
 
 @app.get("/healthz")
@@ -198,47 +204,78 @@ async def startup_event():
     """Run on startup."""
     logger.info("Starting Chanscope API...")
     
-    # Initialize data in the background
+    # Initialize data in the background - don't block API startup
     try:
         # Only initialize if specified in environment
         auto_check_data = os.environ.get('AUTO_CHECK_DATA', 'true').lower() in ('true', '1', 'yes')
         
         if auto_check_data:
-            logger.info("AUTO_CHECK_DATA is enabled, initiating data preparation")
-            # Get environment type from centralized function
-            env_type = detect_environment()
-            force_refresh = os.environ.get('FORCE_DATA_REFRESH', 'false').lower() in ('true', '1', 'yes')
-            skip_embeddings = os.environ.get('SKIP_EMBEDDINGS', 'false').lower() in ('true', '1', 'yes')
-            
-            if env_type == 'replit':
-                logger.info("Running in Replit environment, ensuring PostgreSQL schema is prepared")
-                # Initialize PostgreSQL schema if needed
-                from config.replit import PostgresDB
-                try:
-                    db = PostgresDB()
-                    # Check if schema needs initialization
-                    db.initialize_schema()
-                    logger.info("PostgreSQL schema verified/initialized")
-                    
-                    # Check if database is empty and we need to load data
-                    row_count = await data_manager.complete_data_storage.get_row_count()
-                    if row_count == 0:
-                        logger.info("PostgreSQL database is empty, force-refreshing data")
-                        # Force refresh to ensure data is loaded
-                        force_refresh = True
-                except Exception as e:
-                    logger.error(f"Error initializing PostgreSQL schema: {e}")
-            
-            # Use the unified data manager approach to ensure data is ready
-            success = await data_manager.ensure_data_ready(force_refresh=force_refresh, skip_embeddings=skip_embeddings)
-            if success:
-                logger.info("Data preparation completed successfully via the unified data manager")
-            else:
-                logger.warning("Data preparation completed with warnings")
+            logger.info("AUTO_CHECK_DATA is enabled, initiating data preparation in background")
+            # Don't wait for this to complete - run in background
+            import asyncio
+            asyncio.create_task(initialize_background_data())
         else:
             logger.info("AUTO_CHECK_DATA is disabled, skipping initial data preparation")
     except Exception as e:
         logger.error(f"Error during startup: {e}", exc_info=True)
+
+async def initialize_background_data():
+    """Initialize data in background without blocking API startup."""
+    try:
+        # Get environment type from centralized function
+        env_type = detect_environment()
+        force_refresh = os.environ.get('FORCE_DATA_REFRESH', 'false').lower() in ('true', '1', 'yes')
+        skip_embeddings = os.environ.get('SKIP_EMBEDDINGS', 'false').lower() in ('true', '1', 'yes')
+        
+        if env_type == 'replit':
+            logger.info("Running in Replit environment, ensuring PostgreSQL schema is prepared")
+            # Initialize PostgreSQL schema if needed
+            from config.replit import PostgresDB
+            try:
+                db = PostgresDB()
+                # Check if schema needs initialization
+                db.initialize_schema()
+                logger.info("PostgreSQL schema verified/initialized")
+                
+                # Check if database is empty and we need to load data
+                row_count = await data_manager.complete_data_storage.get_row_count()
+                if row_count == 0:
+                    logger.info("PostgreSQL database is empty, force-refreshing data")
+                    # Force refresh to ensure data is loaded
+                    force_refresh = True
+                else:
+                    # Check if data is already fresh
+                    is_fresh = await data_manager.complete_data_storage.is_data_fresh()
+                    if is_fresh:
+                        logger.info(f"Database already contains {row_count} rows and data is fresh. Skipping data preparation.")
+                        # Check if stratified sample exists
+                        strat_exists = await data_manager.stratified_storage.sample_exists()
+                        if strat_exists:
+                            # Check if embeddings exist
+                            embeddings_exist = await data_manager.embedding_storage.embeddings_exist()
+                            if embeddings_exist or skip_embeddings:
+                                logger.info("All required data components already exist. No data preparation needed.")
+                                return
+                            else:
+                                logger.info("Embeddings missing, will only generate embeddings")
+                                skip_embeddings = False
+                                force_refresh = False
+                        else:
+                            logger.info("Stratified sample missing, will prepare stratified data")
+                            # Don't need to refresh complete data
+                            force_refresh = False
+            except Exception as e:
+                logger.error(f"Error initializing PostgreSQL schema: {e}")
+        
+        # Use the unified data manager approach to ensure data is ready
+        logger.info(f"Starting data preparation with force_refresh={force_refresh}, skip_embeddings={skip_embeddings}")
+        success = await data_manager.ensure_data_ready(force_refresh=force_refresh, skip_embeddings=skip_embeddings)
+        if success:
+            logger.info("Data preparation completed successfully via the unified data manager")
+        else:
+            logger.warning("Data preparation completed with warnings")
+    except Exception as e:
+        logger.error(f"Error during background data initialization: {e}", exc_info=True)
 
 # Run server directly if module is executed
 if __name__ == "__main__":

@@ -18,8 +18,10 @@ import traceback
 
 from config.storage import StorageFactory, CompleteDataStorage, StratifiedSampleStorage, EmbeddingStorage, StateManager
 from config.env_loader import detect_environment
+from config.settings import Config
 from knowledge_agents.data_processing.sampler import Sampler
 from knowledge_agents.embedding_ops import get_relevant_content, process_batch
+from knowledge_agents.data_processing.cloud_handler import S3Handler, load_all_csv_data_from_s3
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -230,6 +232,8 @@ class ChanScopeDataManager:
         Load data from S3 into the complete data storage.
         
         This method handles the S3 data loading process based on environment configuration.
+        It loads all CSV files within the retention period, matching the behavior
+        of the query endpoint in routes.py.
         
         Returns:
             bool: True if data was loaded successfully, False otherwise
@@ -237,127 +241,92 @@ class ChanScopeDataManager:
         logger.info("Loading data from S3")
         
         try:
-            # Import boto3 here to avoid unnecessary imports if not used
-            import boto3
-            import io
+            # Calculate retention period from current date
+            current_time = pd.Timestamp.now(tz='UTC')
+            retention_settings = Config.get_retention_settings()
+            retention_days = retention_settings.get('retention_days', 30)  # Default to 30 days if not specified
             
-            # Get AWS settings from environment variables
-            aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
-            aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
-            aws_region = os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
-            s3_bucket = os.environ.get('S3_BUCKET')
-            s3_prefix = os.environ.get('S3_BUCKET_PREFIX', 'data/')
+            # Calculate start_time as current_time minus retention_days
+            start_time = current_time - pd.Timedelta(days=retention_days)
             
-            if not all([aws_access_key, aws_secret_key, s3_bucket]):
-                logger.error("Missing required AWS credentials or S3 bucket name")
+            logger.info(f"Using retention period of {retention_days} days")
+            logger.info(f"Data range: from {start_time.isoformat()} to {current_time.isoformat()}")
+            
+            # Check S3 connectivity
+            s3_handler = S3Handler()
+            if not s3_handler.is_configured:
+                logger.error("S3 is not properly configured")
                 return False
             
-            # Create S3 client
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=aws_access_key,
-                aws_secret_access_key=aws_secret_key,
-                region_name=aws_region
-            )
+            # Initialize counters
+            record_count = 0
+            files_processed = 0
+            files_skipped = 0
             
-            # List objects in the S3 bucket to find the data file
-            response = s3_client.list_objects_v2(
-                Bucket=s3_bucket,
-                Prefix=s3_prefix
-            )
-            
-            # Find the most recent CSV file
-            csv_objects = []
-            for obj in response.get('Contents', []):
-                if obj['Key'].endswith('.csv'):
-                    csv_objects.append(obj)
-            
-            if not csv_objects:
-                logger.error(f"No CSV files found in S3 bucket {s3_bucket} with prefix {s3_prefix}")
+            # Get list of relevant files within retention period
+            csv_files = s3_handler._get_filtered_csv_files(latest_date=start_time)
+            if not csv_files:
+                logger.error("No CSV files found in S3 for the specified date range")
                 return False
             
-            # Sort by last modified date (newest first)
-            csv_objects.sort(key=lambda x: x['LastModified'], reverse=True)
+            logger.info(f"Found {len(csv_files)} CSV files in S3 within the retention period")
             
-            # Get the most recent CSV file
-            latest_csv = csv_objects[0]
-            csv_key = latest_csv['Key']
+            # Process each file that might contain data in our date range
+            for file_path in csv_files:
+                logger.info(f"Processing file: {file_path}")
+                try:
+                    # Create generator for this specific file
+                    file_data_generator = load_all_csv_data_from_s3(
+                        latest_date_processed=start_time.isoformat(),
+                        chunk_size=getattr(self.config, 'processing_chunk_size', 10000),
+                        board_id=getattr(self.config, 'board_id', None)
+                    )
+                    
+                    file_record_count = 0
+                    async for chunk in file_data_generator:
+                        # Process date column
+                        time_column = getattr(self.config, 'time_column', 'posted_date_time')
+                        chunk[time_column] = pd.to_datetime(
+                            chunk[time_column], 
+                            format='mixed',
+                            utc=True,
+                            errors='coerce'
+                        )
+                        
+                        # Filter by date range (keep data between start_time and current_time)
+                        date_mask = (chunk[time_column] >= start_time) & (chunk[time_column] <= current_time)
+                        filtered_chunk = chunk[date_mask]
+                        
+                        if not filtered_chunk.empty:
+                            file_record_count += len(filtered_chunk)
+                            # Store chunk in database
+                            await self.complete_data_storage.store_data(filtered_chunk)
+                            logger.info(f"Processed chunk with {len(filtered_chunk)} rows from file {file_path}")
+                        
+                        # Yield to other tasks
+                        await asyncio.sleep(0)
+                    
+                    # Update counters
+                    record_count += file_record_count
+                    files_processed += 1
+                    logger.info(f"Completed file {file_path} with {file_record_count} records in retention period")
+                except Exception as e:
+                    logger.error(f"Error processing file {file_path}: {e}")
+                    logger.error(traceback.format_exc())
+                    files_skipped += 1
+                    # Continue with other files
             
-            logger.info(f"Loading most recent CSV file from S3: {csv_key}")
+            # Log final stats
+            logger.info(f"Data loading summary:")
+            logger.info(f"- Files processed: {files_processed}")
+            logger.info(f"- Files skipped: {files_skipped}")
+            logger.info(f"- Total records loaded: {record_count}")
             
-            # Download the CSV file
-            s3_object = s3_client.get_object(Bucket=s3_bucket, Key=csv_key)
-            csv_data = s3_object['Body'].read()
+            if record_count == 0:
+                logger.error("No data fetched from S3 within retention period")
+                return False
             
-            # Create DataFrame from CSV data
-            buffer = io.BytesIO(csv_data)
-            df = pd.read_csv(buffer)
-            
-            # Check and rename columns to match expected schema
-            column_mapping = {
-                'message': 'content',               # Map message to content
-                'text': 'content',                  # Map text to content
-                'text_clean': 'content',            # Map text_clean to content 
-                'date': 'posted_date_time',         # Map date to posted_date_time
-                'timestamp': 'posted_date_time',    # Map timestamp to posted_date_time
-                'id': 'thread_id',                  # Map id to thread_id
-                'message_id': 'thread_id'           # Map message_id to thread_id
-            }
-            
-            # Log the original columns for debugging
-            logger.info(f"Original columns in S3 data: {list(df.columns)}")
-            
-            # Rename columns using the mapping
-            for source, target in column_mapping.items():
-                if source in df.columns and target not in df.columns:
-                    df = df.rename(columns={source: target})
-            
-            # Ensure required columns exist
-            required_columns = ['thread_id', 'content', 'posted_date_time']
-            missing_columns = [col for col in required_columns if col not in df.columns]
-            
-            if missing_columns:
-                # Create missing columns with default values
-                for col in missing_columns:
-                    if col == 'thread_id':
-                        # Generate sequential thread IDs if missing
-                        df['thread_id'] = [f"generated-{i}" for i in range(len(df))]
-                        logger.warning("Generated synthetic thread_ids for data")
-                    elif col == 'content':
-                        # If no content column, try to use a text column or create empty
-                        text_cols = [c for c in df.columns if 'text' in c.lower() or 'message' in c.lower() or 'content' in c.lower()]
-                        if text_cols:
-                            df['content'] = df[text_cols[0]]
-                            logger.warning(f"Using {text_cols[0]} column as content")
-                        else:
-                            # Last resort - create empty content
-                            df['content'] = "No content available"
-                            logger.warning("Created empty content column")
-                    elif col == 'posted_date_time':
-                        # Create timestamp column with current time
-                        df['posted_date_time'] = datetime.now().isoformat()
-                        logger.warning("Created default posted_date_time column with current time")
-            
-            # Log the final columns for debugging
-            logger.info(f"Final columns after mapping: {list(df.columns)}")
-            
-            # Ensure thread_id is string type
-            df['thread_id'] = df['thread_id'].astype(str)
-            
-            # Filter data if needed
-            if self.config.filter_date:
-                logger.info(f"Filtering data by date: {self.config.filter_date}")
-                df['posted_date_time'] = pd.to_datetime(df['posted_date_time'], errors='coerce')
-                # Handle null values after conversion
-                df = df.dropna(subset=['posted_date_time'])
-                filter_date = pd.to_datetime(self.config.filter_date)
-                df = df[df['posted_date_time'] >= filter_date]
-            
-            # Store the DataFrame in the complete data storage
-            logger.info(f"Storing {len(df)} rows with columns {list(df.columns)}")
-            await self.complete_data_storage.store_data(df)
-            
-            logger.info(f"Successfully loaded {len(df)} rows from S3")
+            logger.info(f"Successfully processed and stored {record_count} total rows")
             return True
             
         except Exception as e:

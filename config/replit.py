@@ -453,6 +453,9 @@ class PostgresDB:
             logger.warning("Empty DataFrame provided, nothing to sync")
             return 0
         
+        # Create a copy of the DataFrame to avoid SettingWithCopyWarning
+        df = df.copy()
+        
         # Log incoming data information
         logger.info(f"Syncing data with shape {df.shape} and columns {list(df.columns)}")
         
@@ -467,14 +470,14 @@ class PostgresDB:
                     # Map a text-like column to content
                     for possible_col in ['text', 'text_clean', 'message']:
                         if possible_col in df.columns:
-                            df['content'] = df[possible_col]
+                            df.loc[:, 'content'] = df[possible_col]
                             logger.info(f"Mapped {possible_col} to content column")
                             break
                 elif missing_col == 'thread_id' and any(col in df.columns for col in ['id', 'message_id', 'post_id']):
                     # Map an ID-like column to thread_id
                     for possible_col in ['id', 'message_id', 'post_id']:
                         if possible_col in df.columns:
-                            df['thread_id'] = df[possible_col]
+                            df.loc[:, 'thread_id'] = df[possible_col]
                             logger.info(f"Mapped {possible_col} to thread_id column")
                             break
             
@@ -488,19 +491,19 @@ class PostgresDB:
         # Ensure posted_date_time is present or create it
         if 'posted_date_time' not in df.columns:
             if 'date' in df.columns:
-                df['posted_date_time'] = df['date']
+                df.loc[:, 'posted_date_time'] = df['date']
                 logger.info("Mapped date to posted_date_time column")
             elif 'timestamp' in df.columns:
-                df['posted_date_time'] = df['timestamp']
+                df.loc[:, 'posted_date_time'] = df['timestamp']
                 logger.info("Mapped timestamp to posted_date_time column")
             else:
                 # Create a default timestamp
-                df['posted_date_time'] = pd.Timestamp.now()
+                df.loc[:, 'posted_date_time'] = pd.Timestamp.now()
                 logger.info("Created default posted_date_time column with current time")
         
         # Format posted_date_time as timestamp if it's not already
         if not pd.api.types.is_datetime64_dtype(df['posted_date_time']):
-            df['posted_date_time'] = pd.to_datetime(df['posted_date_time'], errors='coerce')
+            df.loc[:, 'posted_date_time'] = pd.to_datetime(df['posted_date_time'], errors='coerce')
             # Drop rows with invalid dates
             invalid_dates = df['posted_date_time'].isna().sum()
             if invalid_dates > 0:
@@ -508,14 +511,14 @@ class PostgresDB:
                 df = df.dropna(subset=['posted_date_time'])
         
         # Make sure thread_id is string
-        df['thread_id'] = df['thread_id'].astype(str)
+        df.loc[:, 'thread_id'] = df['thread_id'].astype(str)
         
         # Add optional columns if not present
         if 'channel_name' not in df.columns:
-            df['channel_name'] = 'default'
+            df.loc[:, 'channel_name'] = 'default'
         
         if 'author' not in df.columns:
-            df['author'] = 'unknown'
+            df.loc[:, 'author'] = 'unknown'
         
         # Get existing thread_ids
         existing_thread_ids = set()

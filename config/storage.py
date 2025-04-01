@@ -16,8 +16,11 @@ from typing import Dict, List, Tuple, Optional, Union, Any, Callable, Awaitable
 from pathlib import Path
 from datetime import datetime, timedelta
 from filelock import FileLock
+import asyncio
+import traceback
 
 from config.env_loader import detect_environment
+from config.settings import Config
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -437,6 +440,121 @@ class ReplitCompleteDataStorage(CompleteDataStorage):
         from config.replit import PostgresDB
         self.config = config
         self.db = PostgresDB()
+        
+        # Get chunk settings from config
+        chunk_settings = Config.get_chunk_settings()
+        self.processing_chunk_size = chunk_settings.get('processing_chunk_size', 25000)
+        
+        # Get column settings from config
+        column_settings = Config.get_column_settings()
+        self.time_column = column_settings.get('time_column', 'posted_date_time')
+        
+        # Get board ID from config if available
+        self.board_id = getattr(config, 'board_id', None)
+        
+        logger.info(f"Initialized ReplitCompleteDataStorage with chunk_size={self.processing_chunk_size}, "
+                   f"time_column={self.time_column}, board_id={self.board_id}")
+    
+    async def prepare_data(self) -> bool:
+        """Prepare the complete dataset in PostgreSQL database."""
+        try:
+            # Initialize schema if needed
+            self.db.initialize_schema()
+            logger.info("Database schema initialized")
+            
+            # Calculate retention period from current date
+            current_time = pd.Timestamp.now(tz='UTC')
+            retention_settings = Config.get_retention_settings()
+            retention_days = retention_settings.get('retention_days', 30)  # Default to 30 days if not specified
+            
+            # Calculate start_time as current_time minus retention_days
+            start_time = current_time - pd.Timedelta(days=retention_days)
+            
+            logger.info(f"Using retention period of {retention_days} days")
+            logger.info(f"Data range: from {start_time.isoformat()} to {current_time.isoformat()}")
+            
+            # Import S3 handler here to avoid issues if S3 modules aren't available
+            from knowledge_agents.data_processing.cloud_handler import S3Handler, load_all_csv_data_from_s3
+            
+            # Check S3 connectivity
+            s3_handler = S3Handler()
+            if not s3_handler.is_configured:
+                logger.error("S3 is not properly configured")
+                return False
+            
+            # Initialize counters
+            record_count = 0
+            files_processed = 0
+            files_skipped = 0
+            
+            # Use the _get_filtered_csv_files method directly to get list of relevant files
+            csv_files = s3_handler._get_filtered_csv_files(latest_date=start_time)
+            if not csv_files:
+                logger.error("No CSV files found in S3 for the specified date range")
+                return False
+            
+            logger.info(f"Found {len(csv_files)} CSV files in S3 within the retention period")
+            
+            # Process each file that might contain data in our date range
+            for file_path in csv_files:
+                logger.info(f"Processing file: {file_path}")
+                try:
+                    # Create generator for this specific file
+                    file_data_generator = load_all_csv_data_from_s3(
+                        latest_date_processed=start_time.isoformat(),
+                        chunk_size=self.processing_chunk_size,
+                        board_id=self.board_id
+                    )
+                    
+                    file_record_count = 0
+                    async for chunk in file_data_generator:
+                        # Process date column
+                        chunk[self.time_column] = pd.to_datetime(
+                            chunk[self.time_column], 
+                            format='mixed',
+                            utc=True,
+                            errors='coerce'
+                        )
+                        
+                        # Filter by date range (keep data between start_time and current_time)
+                        date_mask = (chunk[self.time_column] >= start_time) & (chunk[self.time_column] <= current_time)
+                        filtered_chunk = chunk[date_mask]
+                        
+                        if not filtered_chunk.empty:
+                            file_record_count += len(filtered_chunk)
+                            # Store chunk in database
+                            await self.store_data(filtered_chunk)
+                            logger.info(f"Processed chunk with {len(filtered_chunk)} rows from file {file_path}")
+                        
+                        # Yield to other tasks
+                        await asyncio.sleep(0)
+                    
+                    # Update counters
+                    record_count += file_record_count
+                    files_processed += 1
+                    logger.info(f"Completed file {file_path} with {file_record_count} records in retention period")
+                except Exception as e:
+                    logger.error(f"Error processing file {file_path}: {e}")
+                    logger.error(traceback.format_exc())
+                    # Continue with other files
+            
+            # Log final stats
+            logger.info(f"Data loading summary:")
+            logger.info(f"- Files processed: {files_processed}")
+            logger.info(f"- Files skipped: {files_skipped}")
+            logger.info(f"- Total records loaded: {record_count}")
+            
+            if record_count == 0:
+                logger.error("No data fetched from S3 within retention period")
+                return False
+            
+            logger.info(f"Successfully processed and stored {record_count} total rows")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error preparing data: {e}")
+            logger.error(traceback.format_exc())
+            return False
     
     async def store_data(self, df: pd.DataFrame) -> bool:
         """Store complete dataset in PostgreSQL database."""
@@ -484,60 +602,18 @@ class ReplitCompleteDataStorage(CompleteDataStorage):
             return 0
 
 class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
-    """Replit Key-Value store implementation of stratified sample storage."""
+    """Object Storage-based implementation of stratified sample storage for Replit."""
     
     def __init__(self, config):
         self.config = config
-        self.kv_store = KeyValueStore()
+        self.default_bucket = "knowledge-agent-data"  # Default bucket name
+        self.stratified_key = "stratified_sample.json"
+        self.metadata_key = "stratified_metadata.json"
     
     async def store_sample(self, df: pd.DataFrame) -> bool:
-        """Store stratified sample to Key-Value store."""
+        """Store stratified sample to Object Storage."""
         if df.empty:
             logger.warning("Empty DataFrame provided, nothing to store")
-            return False
-        
-        try:
-            self.kv_store.store_stratified_sample(df)
-            logger.info(f"Stored stratified sample with {len(df)} rows to Key-Value store")
-            return True
-        except Exception as e:
-            logger.error(f"Error storing stratified sample: {e}")
-            return False
-    
-    async def get_sample(self) -> Optional[pd.DataFrame]:
-        """Retrieve stratified sample from Key-Value store."""
-        try:
-            return self.kv_store.get_stratified_sample()
-        except Exception as e:
-            logger.error(f"Error retrieving stratified sample: {e}")
-            return None
-    
-    async def sample_exists(self) -> bool:
-        """Check if stratified sample exists in Key-Value store."""
-        try:
-            # Try to get the sample metadata
-            meta_key = f"{self.kv_store.STRATIFIED_SAMPLE_KEY}_meta"
-            from replit import db as kv_db
-            return meta_key in kv_db
-        except Exception as e:
-            logger.error(f"Error checking if sample exists: {e}")
-            return False
-
-class ReplitObjectEmbeddingStorage(EmbeddingStorage):
-    """Object Storage-based implementation of embedding storage for Replit."""
-    
-    def __init__(self, config):
-        """Initialize Object Storage client."""
-        self.config = config
-        self.embeddings_key = "embeddings.npy"
-        self.thread_map_key = "thread_id_map.json"
-        self.replit_kv = None  # For state tracking only
-        self.default_bucket = "knowledge-agent-embeddings"  # Default bucket name
-    
-    async def store_embeddings(self, embeddings: np.ndarray, thread_id_map: Dict[str, int]) -> bool:
-        """Store embeddings to Object Storage and thread ID map."""
-        if embeddings.size == 0 or not thread_id_map:
-            logger.warning("Empty embeddings or thread ID map, nothing to store")
             return False
         
         try:
@@ -562,12 +638,217 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
                     # Re-raise other errors
                     raise
             
-            # Convert thread_id_map to serializable format
-            clean_thread_map = {str(k): v for k, v in thread_id_map.items()}
-            thread_map_json = json.dumps(clean_thread_map)
+            # Create a copy of the DataFrame for serialization
+            df_copy = df.copy()
+            
+            # Convert all datetime/timestamp columns to ISO format strings
+            datetime_columns = df_copy.select_dtypes(
+                include=['datetime64[ns]', 'datetime64[ns, UTC]']
+            ).columns
+            
+            for col in datetime_columns:
+                df_copy[col] = df_copy[col].apply(
+                    lambda x: x.isoformat() if pd.notnull(x) else None
+                )
+            
+            # Convert any remaining non-serializable types to strings
+            for col in df_copy.columns:
+                if df_copy[col].dtype.name not in ['object', 'str', 'int64', 'float64', 'bool']:
+                    df_copy[col] = df_copy[col].astype(str)
+            
+            # Convert DataFrame to records for JSON serialization
+            records = df_copy.to_dict('records')
+            
+            # Create metadata with column types for proper reconstruction
+            metadata = {
+                'columns': list(df_copy.columns),
+                'datetime_columns': list(datetime_columns),
+                'row_count': len(df_copy),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Store data and metadata in Object Storage
+            object_client.upload_from_text(self.stratified_key, json.dumps(records))
+            object_client.upload_from_text(self.metadata_key, json.dumps(metadata))
+            
+            logger.info(f"Successfully stored stratified sample with {len(df)} rows to Object Storage")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error storing stratified sample in Object Storage: {e}")
+            logger.error(traceback.format_exc())
+            return False
+    
+    async def get_sample(self) -> Optional[pd.DataFrame]:
+        """Retrieve stratified sample from Object Storage."""
+        try:
+            # Import Object Storage client
+            from replit.object_storage import Client
+            
+            try:
+                # Try to initialize with default bucket
+                object_client = Client()
+            except ValueError as bucket_error:
+                # If error mentions 'no default bucket', use our default
+                if "no default bucket" in str(bucket_error).lower():
+                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'")
+                    try:
+                        object_client = Client(bucket=self.default_bucket)
+                    except Exception as e:
+                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
+                        return None
+                else:
+                    raise
+            
+            # Check if files exist in Object Storage
+            objects = object_client.list()
+            object_names = [obj.name for obj in objects]
+            
+            if self.stratified_key not in object_names or self.metadata_key not in object_names:
+                logger.warning("Stratified sample or metadata not found in Object Storage")
+                return None
+            
+            # Load data and metadata
+            try:
+                records = json.loads(object_client.download_as_text(self.stratified_key))
+                metadata = json.loads(object_client.download_as_text(self.metadata_key))
+            except json.JSONDecodeError:
+                logger.error("Error decoding stored data")
+                return None
+            
+            # Create DataFrame from records
+            df = pd.DataFrame(records)
+            
+            # Reorder columns if needed
+            if 'columns' in metadata and set(df.columns).issuperset(set(metadata['columns'])):
+                df = df[metadata['columns']]
+            
+            # Convert datetime columns back to datetime type
+            datetime_columns = metadata.get('datetime_columns', [])
+            for col in datetime_columns:
+                if col in df.columns:
+                    try:
+                        df[col] = pd.to_datetime(df[col], utc=True)
+                    except Exception as e:
+                        logger.warning(f"Error converting {col} to datetime: {e}")
+            
+            logger.info(f"Retrieved stratified sample with {len(df)} rows from Object Storage")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error retrieving stratified sample from Object Storage: {e}")
+            logger.error(traceback.format_exc())
+            return None
+    
+    async def sample_exists(self) -> bool:
+        """Check if stratified sample exists in Object Storage."""
+        try:
+            # Import Object Storage client
+            from replit.object_storage import Client
+            
+            try:
+                # Try to initialize with default bucket
+                object_client = Client()
+            except ValueError as bucket_error:
+                # If error mentions 'no default bucket', use our default
+                if "no default bucket" in str(bucket_error).lower():
+                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'")
+                    try:
+                        object_client = Client(bucket=self.default_bucket)
+                    except Exception as e:
+                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
+                        return False
+                else:
+                    raise
+            
+            # List objects and check if stratified sample and metadata exist
+            objects = object_client.list()
+            object_names = [obj.name for obj in objects]
+            
+            exists = self.stratified_key in object_names and self.metadata_key in object_names
+            if exists:
+                try:
+                    metadata = json.loads(object_client.download_as_text(self.metadata_key))
+                    logger.info(f"Found stratified sample with {metadata.get('row_count', 'unknown')} rows from {metadata.get('timestamp', 'unknown')}")
+                except:
+                    logger.warning("Found stratified sample but couldn't read metadata")
+            return exists
+            
+        except Exception as e:
+            logger.error(f"Error checking if sample exists in Object Storage: {e}")
+            logger.error(traceback.format_exc())
+            return False
+
+class ReplitObjectEmbeddingStorage(EmbeddingStorage):
+    """Object Storage-based implementation of embedding storage for Replit."""
+    
+    def __init__(self, config):
+        """Initialize Object Storage client."""
+        self.config = config
+        self.embeddings_key = "embeddings.npy"
+        self.thread_map_key = "thread_id_map.json"
+        self.replit_kv = None  # For state tracking only
+        self.default_bucket = "knowledge-agent-embeddings"  # Default bucket name
+    
+    async def store_embeddings(self, embeddings: np.ndarray, thread_id_map: Dict[str, int]) -> bool:
+        """Store embeddings to Object Storage and thread ID map."""
+        if embeddings.size == 0 or not thread_id_map:
+            logger.warning("Empty embeddings or thread ID map, nothing to store")
+            return False
+        
+        try:
+            # Validate embedding format
+            if len(embeddings.shape) != 2:
+                logger.error(f"Invalid embedding shape: {embeddings.shape}. Expected 2-dimensional array.")
+                return False
+                
+            # Validate embedding values
+            if not np.isfinite(embeddings).all():
+                invalid_indices = np.where(~np.isfinite(embeddings))[0]
+                logger.error(f"Invalid values (inf or nan) found in embeddings at indices: {invalid_indices}")
+                return False
+                
+            # Validate embedding dimensions are consistent
+            expected_dim = embeddings.shape[1]
+            for idx, row in enumerate(embeddings):
+                if len(row) != expected_dim:
+                    logger.warning(f"Unexpected embedding format at index {idx}: Expected dimension {expected_dim}, got {len(row)}")
+                    return False
+            
+            # Import Object Storage client
+            from replit.object_storage import Client
+            
+            try:
+                # Try to initialize with default bucket
+                object_client = Client()
+            except ValueError as bucket_error:
+                # If error mentions 'no default bucket', use our default
+                if "no default bucket" in str(bucket_error).lower():
+                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'. "
+                                  f"Please configure a bucket in .replit file with: bucket = \"{self.default_bucket}\"")
+                    try:
+                        # Try to use the default bucket name
+                        object_client = Client(bucket=self.default_bucket)
+                    except Exception as e:
+                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
+                        return False
+                else:
+                    # Re-raise other errors
+                    raise
+            
+            # Ensure consistent thread ID format (convert all to strings)
+            clean_thread_map = {str(k).strip(): v for k, v in thread_id_map.items()}
+            
+            # Add metadata to thread map
+            thread_map_with_meta = {
+                'thread_ids': clean_thread_map,
+                'embedding_shape': embeddings.shape,
+                'timestamp': datetime.now().isoformat(),
+                'format_version': '1.0'
+            }
             
             # Save thread map to Object Storage
-            object_client.upload_from_text(self.thread_map_key, thread_map_json)
+            object_client.upload_from_text(self.thread_map_key, json.dumps(thread_map_with_meta))
             logger.info(f"Stored thread ID map with {len(clean_thread_map)} entries to Object Storage")
             
             # Save embeddings to Object Storage
@@ -583,25 +864,11 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
             # Clean up temp file
             os.remove(temp_file)
             
-            # Store metadata (shape, timestamp) in key-value store for quick access
-            try:
-                from replit import db as kv_db
-                self.replit_kv = kv_db
-                
-                # Store minimal metadata in KV store
-                kv_db["embeddings_metadata"] = {
-                    "shape": embeddings.shape,
-                    "timestamp": datetime.now().isoformat(),
-                    "storage_type": "object_storage"
-                }
-                logger.info(f"Stored embeddings metadata in key-value store")
-            except Exception as kv_error:
-                logger.warning(f"Could not store metadata in key-value store: {kv_error}")
-                
             logger.info(f"Successfully stored embeddings with shape {embeddings.shape} to Object Storage")
             return True
         except Exception as e:
             logger.error(f"Error storing embeddings in Object Storage: {e}")
+            logger.error(traceback.format_exc())
             return False
     
     async def get_embeddings(self) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
@@ -638,7 +905,18 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
             
             # Download thread ID map
             thread_map_json = object_client.download_as_text(self.thread_map_key)
-            thread_id_map = json.loads(thread_map_json)
+            thread_map_data = json.loads(thread_map_json)
+            
+            # Handle both old and new format
+            if isinstance(thread_map_data, dict) and 'thread_ids' in thread_map_data:
+                thread_id_map = thread_map_data['thread_ids']
+                expected_shape = thread_map_data.get('embedding_shape')
+            else:
+                thread_id_map = thread_map_data
+                expected_shape = None
+            
+            # Ensure consistent thread ID format
+            thread_id_map = {str(k).strip(): v for k, v in thread_id_map.items()}
             
             # Download embeddings using download_as_bytes
             temp_file = "/tmp/embeddings.npy"
@@ -650,6 +928,13 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
             
             # Load embeddings from temp file
             embeddings = np.load(temp_file)
+            
+            # Validate embeddings
+            if expected_shape and embeddings.shape != tuple(expected_shape):
+                logger.warning(f"Embedding shape mismatch. Expected {expected_shape}, got {embeddings.shape}")
+            
+            if not np.isfinite(embeddings).all():
+                logger.warning("Invalid values in embeddings (inf or nan detected)")
             
             # Clean up temp file
             os.remove(temp_file)

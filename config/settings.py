@@ -158,6 +158,15 @@ class Config:
         }
 
     @classmethod
+    def get_retention_settings(cls) -> Dict[str, Any]:
+        """Get retention-related settings."""
+        processing_settings = config_manager.get_processing_settings()
+        return {
+            'retention_days': processing_settings.get('retention_days', 30),
+            'filter_date': processing_settings.get('filter_date')
+        }
+
+    @classmethod
     def validate_settings(cls) -> Dict[str, bool]:
         """Validate all required settings are present and properly formatted."""
         validation = {}

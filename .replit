@@ -1,6 +1,6 @@
 modules = ["python-3.11", "postgresql-16"]
 hidden = [".pythonlibs"]
-run = "bash scripts/replit_init.sh && poetry run python -m uvicorn api.app:app --host 0.0.0.0 --port 80"
+run = "bash scripts/replit_init.sh && poetry run uvicorn api.app:app --host 0.0.0.0 --port 80"
 entrypoint = "api/app.py"
 
 # =============================================
@@ -39,9 +39,6 @@ USE_MOCK_EMBEDDINGS = "false"
 # =============================================
 [deployment]
 run = [
-  "bash",
-  "scripts/replit_init.sh",
-  "&&",
   "poetry",
   "run",
   "python",
@@ -59,13 +56,15 @@ deploymentTarget = "cloudrun"
 # Health Check Configuration
 # =============================================
 [deployment.healthCheck]
-path = "/api/v1/health"
+path = "/"
 port = 80
-initialDelay = 15        # Increased to allow for startup operations with Poetry
-timeout = 5              # Increased for Poetry initialization
-period = 30              # More frequent checks
-consecutiveSuccesses = 1 # Only need one success to confirm health
-consecutiveFailures = 3  # Increased for Poetry stability
+initialDelay = 10
+timeout = 2
+period = 10
+consecutiveSuccesses = 1
+consecutiveFailures = 3
+
+# Remove secondary health check to avoid confusion
 
 [[ports]]
 localPort = 80
@@ -197,4 +196,7 @@ description = "View the scheduler logs"
 command = "tail -n 50 logs/scheduler.log"
 
 [replit]
-bucket = "knowledge-agent-embeddings"
+bucket = "rolling-data"
+
+[objectStorage]
+defaultBucketID = "replit-objstore-05cbbe20-4215-4b30-a9e9-5d2d386b4ae7"

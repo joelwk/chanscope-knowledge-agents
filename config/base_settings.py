@@ -68,7 +68,12 @@ def get_base_settings() -> Dict[str, Any]:
     load_env_vars()
     
     # Format the filter date in ISO format for consistent parsing
-    retention_days = int(os.getenv('DATA_RETENTION_DAYS'))
+    try:
+        retention_days = int(os.getenv('DATA_RETENTION_DAYS', '30'))
+    except (ValueError, TypeError):
+        logging.warning("Invalid DATA_RETENTION_DAYS value, using default of 30 days")
+        retention_days = 30
+        
     filter_date = (
         datetime.now(pytz.UTC) - timedelta(days=retention_days)
     ).isoformat()

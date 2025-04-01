@@ -209,68 +209,71 @@ async def save_embeddings(
             
         return False
 
-def load_embeddings(file_path: Union[str, Path]) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
-    """Load embeddings and metadata from a saved embeddings file with robust error handling.
+async def load_embeddings(embeddings_path: Union[str, Path]) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
+    """Load embeddings from Object Storage with robust error handling.
     
     Args:
-        file_path: Path to the embeddings file
+        embeddings_path: Path to the embeddings file (used for logging only)
         
     Returns:
-        Tuple of (embeddings array, metadata dict) or (None, None) if loading fails
+        Tuple of (embeddings array, metadata dict), or (None, None) if loading fails
     """
-    if isinstance(file_path, str):
-        file_path = Path(file_path)
-        
-    if not file_path.exists():
-        logger.error(f"Embeddings file not found: {file_path}")
-        return None, None
-    
     try:
-        # Load with memory mapping for large files
-        logger.info(f"Loading embeddings from {file_path}")
-        loaded = np.load(file_path, mmap_mode='r')
+        # Import Object Storage client
+        from replit.object_storage import Client
+        from config.storage import ReplitObjectEmbeddingStorage
+        from config.chanscope_config import ChanScopeConfig
         
-        # Extract embeddings and metadata
-        embeddings = loaded.get('embeddings')
-        metadata = loaded.get('metadata', {})
+        # Initialize storage
+        config = ChanScopeConfig.from_env()
+        embedding_storage = ReplitObjectEmbeddingStorage(config)
         
-        if embeddings is None:
-            logger.error(f"No embeddings found in {file_path}")
+        # Get embeddings and thread map from Object Storage
+        embeddings_array, _ = await embedding_storage.get_embeddings()
+        
+        if embeddings_array is None:
+            logger.error(f"Embeddings file not found: {embeddings_path}")
             return None, None
             
-        # Return embeddings as a read-only array
-        logger.info(f"Successfully loaded embeddings with shape {embeddings.shape}")
-        return embeddings, metadata
+        # Create metadata
+        metadata = {
+            "shape": embeddings_array.shape,
+            "dtype": str(embeddings_array.dtype),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        return embeddings_array, metadata
         
     except Exception as e:
-        logger.error(f"Error loading embeddings from {file_path}: {e}")
+        logger.error(f"Error loading embeddings from Object Storage: {e}")
         logger.error(traceback.format_exc())
         return None, None
 
-def load_thread_id_map(file_path: Union[str, Path]) -> Optional[Dict[str, int]]:
-    """Load thread ID mapping from a JSON file with robust error handling.
+async def load_thread_id_map(file_path: Union[str, Path]) -> Optional[Dict[str, int]]:
+    """Load thread ID mapping from Object Storage with robust error handling.
     
     Args:
-        file_path: Path to the thread ID map file
+        file_path: Path to the thread ID map file (used for logging only)
         
     Returns:
         Dictionary mapping thread IDs to embedding indices, or None if loading fails
     """
-    if isinstance(file_path, str):
-        file_path = Path(file_path)
-        
-    if not file_path.exists():
-        logger.error(f"Thread ID map file not found: {file_path}")
-        return None
-    
     try:
-        logger.info(f"Loading thread ID map from {file_path}")
-        with open(file_path, 'r') as f:
-            thread_id_map = json.load(f)
-            
-        if not thread_id_map:
-            logger.warning(f"Thread ID map is empty: {file_path}")
-            return {}
+        # Import Object Storage client
+        from replit.object_storage import Client
+        from config.storage import ReplitObjectEmbeddingStorage
+        from config.chanscope_config import ChanScopeConfig
+        
+        # Initialize storage
+        config = ChanScopeConfig.from_env()
+        embedding_storage = ReplitObjectEmbeddingStorage(config)
+        
+        # Get embeddings and thread map from Object Storage
+        _, thread_id_map = await embedding_storage.get_embeddings()
+        
+        if thread_id_map is None:
+            logger.error(f"Thread ID map file not found: {file_path}")
+            return None
             
         # Validate that the map contains string keys and integer values
         if not all(isinstance(k, str) and isinstance(v, int) for k, v in thread_id_map.items()):
@@ -282,11 +285,8 @@ def load_thread_id_map(file_path: Union[str, Path]) -> Optional[Dict[str, int]]:
         logger.info(f"Successfully loaded thread ID map with {len(thread_id_map)} entries")
         return thread_id_map
         
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error loading thread ID map from {file_path}: {e}")
-        return None
     except Exception as e:
-        logger.error(f"Error loading thread ID map from {file_path}: {e}")
+        logger.error(f"Error loading thread ID map from Object Storage: {e}")
         logger.error(traceback.format_exc())
         return None
 
@@ -665,8 +665,8 @@ async def merge_articles_and_embeddings(stratified_path: Path, embeddings_path: 
     """Merge article data with their embeddings efficiently.
     Args:
         stratified_path: Path to the stratified sample CSV
-        embeddings_path: Path to the NPZ file containing embeddings
-        thread_id_map_path: Path to the JSON file containing thread_id to index mapping
+        embeddings_path: Path to the embeddings file (used for logging only)
+        thread_id_map_path: Path to the thread ID map file (used for logging only)
     Returns:
         DataFrame containing merged article data and embeddings
     """
@@ -675,149 +675,69 @@ async def merge_articles_and_embeddings(stratified_path: Path, embeddings_path: 
         logger.info(f"Loading article data from {stratified_path}")
         articles_df = pd.read_csv(stratified_path)
         
-        if embeddings_path.exists() and thread_id_map_path.exists():
-            # Load embeddings
-            logger.info(f"Loading embeddings from {embeddings_path}")
-            embeddings_array, metadata = load_embeddings(embeddings_path)
+        # Initialize Object Storage
+        from config.storage import ReplitObjectEmbeddingStorage
+        from config.chanscope_config import ChanScopeConfig
+        
+        # Initialize storage
+        config = ChanScopeConfig.from_env()
+        embedding_storage = ReplitObjectEmbeddingStorage(config)
+        
+        # Get embeddings and thread map from Object Storage
+        embeddings_array, thread_id_map = await embedding_storage.get_embeddings()
+        
+        if embeddings_array is None or thread_id_map is None:
+            logger.warning("Could not load embeddings or thread ID map from Object Storage")
+            return articles_df
             
-            if embeddings_array is None:
-                logger.warning(f"Failed to load embeddings from {embeddings_path}")
-                return articles_df
-            
-            # Log embeddings array details
-            logger.info(f"Successfully loaded embeddings with shape {embeddings_array.shape}")
-            
-            # Load thread_id mapping
-            logger.info(f"Loading thread ID map from {thread_id_map_path}")
-            thread_id_map = load_thread_id_map(thread_id_map_path)
-            if thread_id_map is None:
-                logger.warning(f"Failed to load thread ID map from {thread_id_map_path}")
-                return articles_df
-            
-            logger.info(f"Successfully loaded thread ID map with {len(thread_id_map)} entries")
-            
-            # Check if this contains mock embeddings
-            is_mock = False
-            if metadata and isinstance(metadata, dict):
-                is_mock = metadata.get('is_mock', False)
-                if is_mock:
-                    logger.info("Using mock embeddings as indicated by metadata")
-            
-            # Create embeddings column
-            articles_df['embedding'] = None
-            articles_df['is_mock_embedding'] = False
-            
-            # Track success rate
-            successful_mappings = 0
-            
-            # Print sample data to help debug
-            logger.info(f"Thread ID map first 5 entries: {list(thread_id_map.items())[:5]}")
-            logger.info(f"Sample thread IDs from stratified data: {articles_df['thread_id'].head(5).tolist()}")
-            
-            # CRITICAL FIX 1: Convert thread_ids in DataFrame to strings
-            articles_df['thread_id'] = articles_df['thread_id'].astype(str)
-            
-            # CRITICAL FIX 2: Ensure thread_id_map keys are all strings
-            string_thread_id_map = {str(thread_id): idx for thread_id, idx in thread_id_map.items()}
-            
-            # Check for thread ID format discrepancies after type normalization
-            df_thread_ids = articles_df['thread_id'].tolist()  # Already strings from the fix above
-            map_thread_ids = list(string_thread_id_map.keys())  # Already strings from the fix above
-            
-            # Log more detailed information about thread IDs
-            logger.info(f"First 5 thread IDs in DataFrame: {df_thread_ids[:5]}")
-            logger.info(f"First 5 thread IDs in map: {map_thread_ids[:5]}")
-            
-            # Check for any format differences
-            if df_thread_ids and map_thread_ids:
-                logger.info(f"Example DataFrame thread ID format: '{df_thread_ids[0]}' (type: {type(df_thread_ids[0]).__name__})")
-                logger.info(f"Example map thread ID format: '{map_thread_ids[0]}' (type: {type(map_thread_ids[0]).__name__})")
-                
-                # Check for numeric vs string format differences
-                df_numeric = all(tid.isdigit() for tid in df_thread_ids[:5])
-                map_numeric = all(tid.isdigit() for tid in map_thread_ids[:5])
-                logger.info(f"DataFrame thread IDs are numeric: {df_numeric}")
-                logger.info(f"Map thread IDs are numeric: {map_numeric}")
-                
-                # Check for "thread_" prefix in map keys but not in DataFrame
-                if map_thread_ids and df_thread_ids:
-                    has_thread_prefix = any(tid.startswith('thread_') for tid in map_thread_ids[:5])
-                    if has_thread_prefix and df_numeric:
-                        logger.info("Detected 'thread_' prefix in embeddings but not in DataFrame. Attempting to fix...")
-                        # Create a new mapping with the prefix removed
-                        fixed_thread_id_map = {}
-                        for tid, idx in string_thread_id_map.items():
-                            if tid.startswith('thread_'):
-                                # Extract the numeric part after "thread_"
-                                numeric_part = tid[7:]  # Skip "thread_" prefix
-                                fixed_thread_id_map[numeric_part] = idx
-                            else:
-                                fixed_thread_id_map[tid] = idx
-                        
-                        # Replace the original mapping with the fixed one
-                        string_thread_id_map = fixed_thread_id_map
-                        logger.info(f"Created fixed thread ID map with {len(string_thread_id_map)} entries")
-                        logger.info(f"Fixed map sample: {list(string_thread_id_map.items())[:5]}")
+        # Log embeddings array details
+        logger.info(f"Successfully loaded embeddings with shape {embeddings_array.shape}")
+        
+        # Convert thread IDs to strings for consistent comparison
+        articles_df['thread_id'] = articles_df['thread_id'].astype(str)
+        thread_id_map = {str(k): v for k, v in thread_id_map.items()}
+        
+        # Create embeddings column
+        articles_df['embedding'] = None
+        articles_df['is_mock_embedding'] = False
+        
+        # Track success rate
+        successful_mappings = 0
+        
+        # Try to merge embeddings with articles
+        for thread_id, idx in thread_id_map.items():
+            try:
+                if idx < len(embeddings_array):
+                    # Thread IDs are now both strings
+                    mask = articles_df['thread_id'] == thread_id
+                    mask_count = mask.sum()
                     
-                    # Handle reverse case: DataFrame has "thread_" prefix but map doesn't
-                    df_has_thread_prefix = any(tid.startswith('thread_') for tid in df_thread_ids[:5])
-                    if df_has_thread_prefix and map_numeric:
-                        logger.info("Detected 'thread_' prefix in DataFrame but not in embeddings. Attempting to fix...")
-                        # Add prefix to map keys
-                        fixed_thread_id_map = {}
-                        for tid, idx in string_thread_id_map.items():
-                            if not tid.startswith('thread_'):
-                                fixed_thread_id_map[f"thread_{tid}"] = idx
-                            else:
-                                fixed_thread_id_map[tid] = idx
+                    if mask.any():
+                        # Get the embedding value
+                        embedding_value = embeddings_array[idx]
                         
-                        # Replace the original mapping with the fixed one
-                        string_thread_id_map = fixed_thread_id_map
-                        logger.info(f"Created fixed thread ID map with {len(string_thread_id_map)} entries")
-                        logger.info(f"Fixed map sample: {list(string_thread_id_map.items())[:5]}")
-            
-            # Try to merge embeddings with articles
-            for thread_id, idx in string_thread_id_map.items():
-                try:
-                    if idx < len(embeddings_array):
-                        # Thread IDs are now both strings
-                        mask = articles_df['thread_id'] == thread_id
-                        mask_count = mask.sum()
+                        # Assign the embedding to each matching row individually
+                        matching_indices = articles_df.index[mask].tolist()
+                        for match_idx in matching_indices:
+                            articles_df.at[match_idx, 'embedding'] = embedding_value
+                            articles_df.at[match_idx, 'is_mock_embedding'] = False
                         
-                        if mask.any():
-                            # Get the embedding value
-                            embedding_value = embeddings_array[idx]
-                            
-                            # Assign the embedding to each matching row individually
-                            # This avoids the "Must have equal len keys and value" error
-                            matching_indices = articles_df.index[mask].tolist()
-                            for match_idx in matching_indices:
-                                articles_df.at[match_idx, 'embedding'] = embedding_value
-                                articles_df.at[match_idx, 'is_mock_embedding'] = is_mock
-                            
-                            successful_mappings += 1
-                        else:
-                            logger.debug(f"Thread ID {thread_id} not found in articles dataframe")
+                        successful_mappings += 1
                     else:
-                        logger.warning(f"Embedding index {idx} out of bounds for thread_id {thread_id} (embeddings length: {len(embeddings_array)})")
-                except Exception as e:
-                    logger.warning(f"Error mapping embedding for thread_id {thread_id}: {e}")
-            
-            # Log statistics about embedding coverage
-            total_articles = len(articles_df)
-            articles_with_embeddings = articles_df['embedding'].notna().sum()
-            logger.info(
-                f"Merged {articles_with_embeddings}/{total_articles} articles with embeddings "
-                f"({articles_with_embeddings/total_articles*100:.1f}% coverage). "
-                f"Successful thread ID mappings: {successful_mappings}/{len(thread_id_map)}"
-            )
-        else:
-            missing_files = []
-            if not embeddings_path.exists():
-                missing_files.append(str(embeddings_path))
-            if not thread_id_map_path.exists():
-                missing_files.append(str(thread_id_map_path))
-            logger.warning(f"Missing required files: {', '.join(missing_files)}")
+                        logger.debug(f"Thread ID {thread_id} not found in articles dataframe")
+                else:
+                    logger.warning(f"Embedding index {idx} out of bounds for thread_id {thread_id} (embeddings length: {len(embeddings_array)})")
+            except Exception as e:
+                logger.warning(f"Error mapping embedding for thread_id {thread_id}: {e}")
+        
+        # Log statistics about embedding coverage
+        total_articles = len(articles_df)
+        articles_with_embeddings = articles_df['embedding'].notna().sum()
+        logger.info(
+            f"Merged {articles_with_embeddings}/{total_articles} articles with embeddings "
+            f"({articles_with_embeddings/total_articles*100:.1f}% coverage). "
+            f"Successful thread ID mappings: {successful_mappings}/{len(thread_id_map)}"
+        )
         
         return articles_df
     

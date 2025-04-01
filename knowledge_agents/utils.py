@@ -144,27 +144,37 @@ class DateProcessor:
     def to_string(self, timestamp, format='%Y-%m-%d %H:%M:%S'):
         return timestamp.strftime(format) if pd.notnull(timestamp) else None
 
-def save_query_output(
-    response: Dict[str, Any], 
+async def save_query_output(
+    response: Optional[Dict[str, Any]] = None, 
+    result: Optional[Dict[str, Any]] = None,
     base_path: Optional[str] = None,
     logger: Optional[logging.Logger] = None,
     include_embeddings: bool = True,
     save_numpy: bool = True,
-    query: Optional[str] = None
+    query: Optional[str] = None,
+    task_id: Optional[str] = None
 ) -> Tuple[Path, Optional[Path]]:
     """Save query output to JSON files with embeddings in separate files.
     
     Args:
-        response: Query response dictionary
+        response: Query response dictionary (deprecated, use result instead)
+        result: Query result dictionary (equivalent to response)
         base_path: Optional base path for saving files
         logger: Optional logger instance
         include_embeddings: Whether to include embeddings in the output
         save_numpy: Whether to save embeddings in NumPy format (.npz) in addition to JSON
         query: The original query text to include in the output
+        task_id: Optional task ID to include in the output filename
         
     Returns:
         Tuple of (json_path, embeddings_path) for the saved files
     """
+    # For backwards compatibility
+    if response is None and result is not None:
+        response = result
+    elif response is None and result is None:
+        raise ValueError("Either response or result must be provided")
+    
     if logger is None:
         logger = logging.getLogger(__name__)
         
@@ -182,10 +192,15 @@ def save_query_output(
     # Generate timestamp for filenames with more precision to ensure uniqueness
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     
+    # Include task_id in filename if provided
+    filename_prefix = f"query_output_{timestamp}"
+    if task_id:
+        filename_prefix = f"{task_id}_{timestamp}"
+    
     # Prepare paths
-    json_path = base_path / f"query_output_{timestamp}.json"
-    embeddings_json_path = embeddings_dir / f"query_output_{timestamp}_embeddings.json"
-    embeddings_npy_path = embeddings_dir / f"query_output_{timestamp}_embeddings.npz"
+    json_path = base_path / f"{filename_prefix}.json"
+    embeddings_json_path = embeddings_dir / f"{filename_prefix}_embeddings.json"
+    embeddings_npy_path = embeddings_dir / f"{filename_prefix}_embeddings.npz"
     
     try:
         # Create a copy of the response without embeddings for the main JSON file
@@ -196,10 +211,14 @@ def save_query_output(
         if query and "query" not in response_without_embeddings:
             response_without_embeddings["query"] = query
         
+        # Add task_id to the main response if provided
+        if task_id and "task_id" not in response_without_embeddings:
+            response_without_embeddings["task_id"] = task_id
+        
         # If embeddings are requested, fetch them for each thread
         if include_embeddings:
             thread_ids = [chunk["thread_id"] for chunk in response.get("chunks", [])]
-            thread_embeddings = _fetch_embeddings_for_threads(thread_ids)
+            thread_embeddings = await _fetch_embeddings_for_threads(thread_ids)
             
             # Add embeddings to response if found
             if thread_embeddings:
@@ -233,7 +252,7 @@ def save_query_output(
             
             # Save as NumPy if requested
             if save_numpy:
-                save_embeddings_to_numpy(embeddings_data, embeddings_npy_path, logger)
+                await save_embeddings_to_numpy(embeddings_data, embeddings_npy_path, logger)
             
             logger.info(f"Saved query output to {json_path} and embeddings to {embeddings_json_path}")
             if save_numpy:
@@ -249,8 +268,8 @@ def save_query_output(
         logger.error(traceback.format_exc())
         raise
 
-def _fetch_embeddings_for_threads(thread_ids: List[str]) -> Dict[str, List[float]]:
-    """Fetch embeddings for a list of thread IDs.
+async def _fetch_embeddings_for_threads(thread_ids: List[str]) -> Dict[str, List[float]]:
+    """Fetch embeddings for a list of thread IDs from Object Storage.
     
     Args:
         thread_ids: List of thread IDs to fetch embeddings for
@@ -259,23 +278,25 @@ def _fetch_embeddings_for_threads(thread_ids: List[str]) -> Dict[str, List[float
         Dictionary mapping thread IDs to their embeddings
     """
     try:
-        # Initialize paths
-        data_dir = Path("data")
-        stratified_dir = data_dir / 'stratified'
-        embeddings_path = stratified_dir / 'embeddings.npz'
-        thread_id_map_path = stratified_dir / 'thread_id_map.json'
+        # Import Object Storage client
+        from replit.object_storage import Client
+        from config.storage import ReplitObjectEmbeddingStorage
+        from config.chanscope_config import ChanScopeConfig
         
-        # Load embeddings and thread ID map
-        embeddings_array, metadata = load_embeddings(embeddings_path)
-        thread_id_map = load_thread_id_map(thread_id_map_path)
+        # Initialize storage
+        config = ChanScopeConfig.from_env()
+        embedding_storage = ReplitObjectEmbeddingStorage(config)
+        
+        # Get embeddings and thread map from Object Storage
+        embeddings_array, thread_id_map = await embedding_storage.get_embeddings()
         
         if embeddings_array is None or thread_id_map is None:
-            logging.warning("Could not load embeddings or thread ID map")
+            logging.warning("Could not load embeddings or thread ID map from Object Storage")
             return {}
             
         # Convert thread IDs to strings for consistent comparison
-        thread_id_map = {str(k): v for k, v in thread_id_map.items()}
-        thread_ids = [str(tid) for tid in thread_ids]
+        thread_id_map = {str(k).strip(): v for k, v in thread_id_map.items()}
+        thread_ids = [str(tid).strip() for tid in thread_ids]
         
         # Create mapping of thread IDs to embeddings
         embeddings_dict = {}
@@ -288,20 +309,20 @@ def _fetch_embeddings_for_threads(thread_ids: List[str]) -> Dict[str, List[float
         return embeddings_dict
         
     except Exception as e:
-        logging.error(f"Error fetching embeddings: {e}")
+        logging.error(f"Error fetching embeddings from Object Storage: {e}")
         logging.error(traceback.format_exc())
         return {}
 
-def save_embeddings_to_numpy(
+async def save_embeddings_to_numpy(
     embeddings_data: Dict[str, List[float]],
     file_path: Path,
     logger: Optional[logging.Logger] = None
 ) -> Path:
-    """Save embeddings to a NumPy file.
+    """Save embeddings to Object Storage.
     
     Args:
         embeddings_data: Dictionary mapping thread IDs to embeddings
-        file_path: Path to save the NumPy file
+        file_path: Path to save the NumPy file (used for logging only)
         logger: Optional logger instance
         
     Returns:
@@ -317,17 +338,29 @@ def save_embeddings_to_numpy(
         thread_ids = list(embeddings_data.keys())
         embeddings_list = [embeddings_data[tid] for tid in thread_ids]
         
-        # Save as .npz file with thread_ids as keys
-        np.savez(
-            file_path, 
-            thread_ids=np.array(thread_ids, dtype=str),
-            embeddings=np.array(embeddings_list, dtype=np.float32)
-        )
+        # Convert to numpy arrays
+        embeddings_array = np.array(embeddings_list, dtype=np.float32)
+        thread_id_map = {str(tid): idx for idx, tid in enumerate(thread_ids)}
         
-        logger.info(f"Saved embeddings to NumPy file: {file_path}")
-        return file_path
+        # Initialize Object Storage
+        from config.storage import ReplitObjectEmbeddingStorage
+        from config.chanscope_config import ChanScopeConfig
+        
+        # Initialize storage
+        config = ChanScopeConfig.from_env()
+        embedding_storage = ReplitObjectEmbeddingStorage(config)
+        
+        # Store embeddings in Object Storage
+        success = await embedding_storage.store_embeddings(embeddings_array, thread_id_map)
+        
+        if success:
+            logger.info(f"Saved embeddings to Object Storage with shape {embeddings_array.shape}")
+            return file_path
+        else:
+            logger.error("Failed to save embeddings to Object Storage")
+            raise Exception("Failed to save embeddings to Object Storage")
     
     except Exception as e:
-        logger.error(f"Error saving embeddings to NumPy file: {e}")
+        logger.error(f"Error saving embeddings to Object Storage: {e}")
         logger.error(traceback.format_exc())
         raise

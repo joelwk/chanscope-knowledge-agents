@@ -314,6 +314,9 @@ class S3Handler:
             filtered_by_date = 0
             filtered_by_board = 0
 
+            # Get current time for upper bound
+            current_time = datetime.now(tz.UTC)
+
             for item in response.get('Contents', []):
                 key = item['Key']
                 if key.endswith('.csv'):
@@ -323,16 +326,12 @@ class S3Handler:
                     if not board_match:
                         filtered_by_board += 1
                         continue
-                    board_match = True if not self.select_board else self.select_board.lower() in key.lower()
-                    if not board_match:
-                        filtered_by_board += 1
-                        continue
 
                     if latest_date is not None:
-                        cutoff_date = latest_date - pd.Timedelta(days=30)
-                        if file_date < cutoff_date:
+                        # Keep files between latest_date (retention period start) and current time
+                        if file_date < latest_date or file_date > current_time:
                             filtered_by_date += 1
-                            logger.info(f"Skipping {key} (date {file_date} < cutoff {cutoff_date})")
+                            logger.info(f"Skipping {key} (date {file_date} outside range {latest_date} to {current_time})")
                             continue
                     csv_keys.append(key)
             logger.info(

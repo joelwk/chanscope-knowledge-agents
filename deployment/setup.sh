@@ -353,19 +353,74 @@ fi
 if [ "$AUTO_CHECK_DATA" = "true" ]; then
     echo "Checking data status..."
     
-    # Run data processing script to check data and initialize if needed
-    python scripts/process_data.py --check || {
-        echo "Data status check failed, attempting to process data..."
+    # First check if we should skip processing for existing data
+    if [ "$CHECK_EXISTING_DATA" = "true" ]; then
+        echo "Checking if existing data is present before processing..."
+        # Use a simple database check script to determine if data exists
+        python -c "
+import asyncio
+from config.replit import PostgresDB
+from knowledge_agents.data_processing.chanscope_manager import ChanScopeDataManager
+from config.chanscope_config import ChanScopeConfig
+
+async def check_data_exists():
+    try:
+        config = ChanScopeConfig.from_env()
+        data_manager = ChanScopeDataManager(config)
+        row_count = await data_manager.complete_data_storage.get_row_count()
+        is_fresh = await data_manager.complete_data_storage.is_data_fresh()
+        strat_exists = await data_manager.stratified_storage.sample_exists()
+        print(f'DATA_EXISTS={row_count > 0}')
+        print(f'DATA_FRESH={is_fresh}')
+        print(f'STRAT_EXISTS={strat_exists}')
+        return row_count > 0 and is_fresh and strat_exists
+    except Exception as e:
+        print(f'Error checking data: {e}')
+        return False
+
+result = asyncio.run(check_data_exists())
+exit(0 if result else 1)
+" > /tmp/check_data.out 2>&1
         
-        # Force refresh if needed
-        if [ "$FORCE_DATA_REFRESH" = "true" ]; then
-            echo "Running data processing with force refresh..."
-            python scripts/process_data.py --force-refresh || echo "Warning: Data processing failed"
+        CHECK_RESULT=$?
+        if [ $CHECK_RESULT -eq 0 ] && [ "$FORCE_DATA_REFRESH" != "true" ]; then
+            echo "Data already exists and is fresh. Skipping data processing."
+            # Source the output to get variables
+            if [ -f /tmp/check_data.out ]; then
+                grep -E "^(DATA_EXISTS|DATA_FRESH|STRAT_EXISTS)=" /tmp/check_data.out
+            fi
+            # Skip further processing
+            echo "To force data refresh, set FORCE_DATA_REFRESH=true"
         else
-            echo "Running data processing without force refresh..."
-            python scripts/process_data.py || echo "Warning: Data processing failed"
+            # Run data processing as normal
+            python scripts/process_data.py --check || {
+                echo "Data status check failed, attempting to process data..."
+                
+                # Force refresh if needed
+                if [ "$FORCE_DATA_REFRESH" = "true" ]; then
+                    echo "Running data processing with force refresh..."
+                    python scripts/process_data.py --force-refresh || echo "Warning: Data processing failed"
+                else
+                    echo "Running data processing without force refresh..."
+                    python scripts/process_data.py || echo "Warning: Data processing failed"
+                fi
+            }
         fi
-    }
+    else
+        # Original code without existing data check
+        python scripts/process_data.py --check || {
+            echo "Data status check failed, attempting to process data..."
+            
+            # Force refresh if needed
+            if [ "$FORCE_DATA_REFRESH" = "true" ]; then
+                echo "Running data processing with force refresh..."
+                python scripts/process_data.py --force-refresh || echo "Warning: Data processing failed"
+            else
+                echo "Running data processing without force refresh..."
+                python scripts/process_data.py || echo "Warning: Data processing failed"
+            fi
+        }
+    fi
 fi
 
 # Start the data scheduler if enabled

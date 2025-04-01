@@ -118,9 +118,31 @@ Key environment variables used in the Docker setup:
 
 ## Data Management
 
-The Knowledge Agent uses several Docker volumes to manage data:
+The Knowledge Agent uses a three-stage data processing pipeline and several Docker volumes to manage data:
 
-### Production Volumes
+### Data Processing Pipeline
+
+1. **Complete Data Stage**
+   - Ingests data from S3 into primary storage
+   - Uses PostgreSQL in Replit or CSV files in Docker
+   - Configurable retention period via `DATA_RETENTION_DAYS`
+   - Automatic incremental updates
+
+2. **Stratified Sample Stage**
+   - Creates representative samples from complete data
+   - Uses Key-Value store in Replit or CSV files in Docker
+   - Configurable sample size and stratification criteria
+   - Can be regenerated independently with `--regenerate --stratified-only`
+
+3. **Embedding Stage**
+   - Generates embeddings for stratified samples
+   - Uses Object Storage in Replit or NPZ files in Docker
+   - Optimized batch processing for memory efficiency
+   - Can be regenerated independently with `--regenerate --embeddings-only`
+
+### Storage Volumes
+
+#### Production Volumes
 - `data`: Main data directory
 - `data_stratified`: Stratified data samples
 - `data_shared`: Shared data for embeddings and tokens
@@ -133,6 +155,69 @@ The Knowledge Agent uses several Docker volumes to manage data:
 - `test_data_shared`: Isolated shared test data
 - `test_logs`: Test logs (includes batch_history.json for test task tracking)
 - `test_temp`: Temporary test files
+
+### Data Processing Commands
+
+The following commands are available for managing data:
+
+```bash
+# Initial data processing
+poetry run python scripts/process_data.py
+
+# Force refresh all data
+poetry run python scripts/process_data.py --force-refresh
+
+# Check current data status
+poetry run python scripts/process_data.py --check
+
+# Regenerate specific components
+poetry run python scripts/process_data.py --regenerate --stratified-only
+poetry run python scripts/process_data.py --regenerate --embeddings-only
+
+# Skip embedding generation during processing
+poetry run python scripts/process_data.py --skip-embeddings
+```
+
+### Data Processing Environment Variables
+
+In addition to the general environment variables, these specifically control data processing:
+
+```ini
+# Data Processing Control
+AUTO_CHECK_DATA=true           # Check data status on startup
+CHECK_EXISTING_DATA=true       # Check if data exists before processing
+FORCE_DATA_REFRESH=false       # Force refresh all data stages
+SKIP_EMBEDDINGS=false         # Skip embedding generation
+DATA_RETENTION_DAYS=14        # Days of data to retain
+DATA_UPDATE_INTERVAL=86400    # Update interval in seconds (default: daily)
+
+# Processing Configuration
+EMBEDDING_BATCH_SIZE=25       # Number of items per embedding batch
+PROCESSING_CHUNK_SIZE=10000   # Chunk size for data processing
+MAX_WORKERS=4                 # Maximum number of worker processes
+```
+
+### Data Processing Expectations
+
+1. **Initial Setup**
+   - First run will download and process all data
+   - Expect longer processing time for initial setup
+   - All three stages (complete, stratified, embeddings) will be processed
+
+2. **Incremental Updates**
+   - Subsequent runs will only process new data
+   - Much faster than initial setup
+   - Uses timestamps to determine what needs updating
+
+3. **Regeneration Scenarios**
+   - Use `--regenerate` flags when specific components need refresh
+   - Stratified sample regeneration is fast and memory-efficient
+   - Embedding regeneration may take longer due to API calls
+
+4. **Error Recovery**
+   - System automatically detects and recovers from incomplete states
+   - Failed operations can be retried with appropriate flags
+   - Data integrity is maintained across restarts
 
 ### Task Management
 

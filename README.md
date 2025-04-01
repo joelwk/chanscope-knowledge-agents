@@ -71,6 +71,17 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
   - Efficient large dataset handling with reservoir sampling
   - Automated data chunking and embedding generation
   - Configurable data retention with `DATA_RETENTION_DAYS` environment variable
+  - Three-stage data processing pipeline:
+    1. Complete data ingestion and storage
+    2. Stratified sample generation
+    3. Embedding generation and storage
+  - Flexible regeneration options:
+    - `--regenerate --stratified-only`: Regenerate only stratified sample
+    - `--regenerate --embeddings-only`: Regenerate only embeddings
+    - `--force-refresh`: Force refresh all data stages
+  - Environment-specific storage backends:
+    - Replit: PostgreSQL for complete data, Key-Value store for stratified samples, Object Storage for embeddings
+    - Docker: File-based storage with CSV, NPZ, and JSON formats
 
 - **Advanced Analysis Pipeline**
   - Real-time monitoring with 6-hour rolling window
@@ -318,8 +329,53 @@ The project supports multiple AI model providers:
 ## Environment Variables
 For a complete and up-to-date list of environment variables, see [.env.template](.env.template)
 
+### Data Processing Control Variables
+- `AUTO_CHECK_DATA`: Enable/disable automatic data checking on startup (defaults to true)
+- `CHECK_EXISTING_DATA`: Check if data already exists in database before processing (defaults to true)
+- `FORCE_DATA_REFRESH`: Force refresh data even if fresh data exists (defaults to false)
+- `SKIP_EMBEDDINGS`: Skip embedding generation during data processing (defaults to false)
+- `DATA_RETENTION_DAYS`: Number of days to retain data (defaults to 14)
+- `DATA_UPDATE_INTERVAL`: How often to update data in seconds (defaults to 86400, once per day)
+
+## Test Data Generation
+
+For testing purposes when real data is unavailable or outdated, you can generate synthetic test data:
+
+```bash
+# Generate 1000 rows of synthetic data with timestamps in the past 10 days
+poetry run python scripts/generate_test_data.py
+
+# Generate 5000 rows with specific date range and regenerate stratified sample & embeddings
+poetry run python scripts/generate_test_data.py --num-rows 5000 --start-date 2025-03-01T00:00:00 --end-date 2025-03-30T23:59:59 --regenerate-stratified --regenerate-embeddings
+```
+
+You can also adjust the `FILTER_DATE` environment variable to include older test data:
+
+```bash
+# Set a specific filter date in .env or environment
+export FILTER_DATE=2024-04-01  # Include data from April 2024 onwards
+```
+
 ## References
 - Data Gathering Lambda: [chanscope-lambda](https://github.com/joelwk/chanscope-lambda)
 - Original Chanscope R&D: [Chanscope](https://github.com/joelwk/chanscope)
 - R&D Sandbox Repository: [knowledge-agents](https://github.com/joelwk/knowledge-agents)
 - Inspiration for Prompt Engineering Approach: [Temporal-Aware Language Models for Temporal Knowledge Graph Question Answering](https://arxiv.org/pdf/2410.18959) - Used for designing temporal-aware prompts and multimodal forecasting capabilities
+
+### Data Processing Commands
+
+Basic data processing:
+```bash
+# Process all data stages
+poetry run python scripts/process_data.py
+
+# Check current data status
+poetry run python scripts/process_data.py --check
+
+# Force refresh all data
+poetry run python scripts/process_data.py --force-refresh
+
+# Regenerate specific components
+poetry run python scripts/process_data.py --regenerate --stratified-only  # Only regenerate stratified sample
+poetry run python scripts/process_data.py --regenerate --embeddings-only  # Only regenerate embeddings
+```
