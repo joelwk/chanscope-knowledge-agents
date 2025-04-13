@@ -116,17 +116,38 @@ class ScheduledUpdater:
             
     async def run_data_refresh(self) -> bool:
         """Run full data refresh following Chanscope approach"""
-        logger.info(f"Running data refresh (force_refresh={self.config.force_refresh}, "
-                   f"skip_embeddings={self.args.skip_embeddings})")
-        
         try:
+            logger.info("Starting full data refresh")
+            logger.info(f"Config: force_refresh={self.config.force_refresh}, filter_date={self.config.filter_date}")
+            
+            if self.args.force_refresh:
+                logger.info("Force refresh flag explicitly set via command line argument")
+                self.config.force_refresh = True
+            
+            if self.config.force_refresh:
+                logger.info("Will regenerate stratified sample and embeddings")
+            elif not self.config.force_refresh:
+                logger.info("Note: force_refresh is False - existing stratified sample may be used if available")
+                logger.info("To force regeneration, run with: --force-refresh")
+            
+            if self.config.filter_date is None:
+                logger.info("No explicit filter_date provided - database query will use retention_days from settings")
+                from config.base_settings import get_base_settings
+                base_settings = get_base_settings()
+                processing = base_settings.get('processing', {})
+                retention_days = processing.get('retention_days', 30)
+                logger.info(f"Expected retention period: {retention_days} days")
+            
+            # Create Chanscope data manager
+            data_manager = ChanScopeDataManager(self.config)
+            
             # Create a marker file to indicate update in progress
             marker_path = Path(self.config.root_data_path) / ".update_in_progress"
             with open(marker_path, 'w') as f:
                 f.write(f"Update started at {datetime.now().isoformat()}")
             
             # Check current data status
-            row_count = await self.data_manager.complete_data_storage.get_row_count()
+            row_count = await data_manager.complete_data_storage.get_row_count()
             logger.info(f"Current complete data row count: {row_count}")
             
             # Force refresh for empty database
@@ -135,7 +156,7 @@ class ScheduledUpdater:
                 self.config.force_refresh = True
             
             # Ensure data is ready
-            success = await self.data_manager.ensure_data_ready(
+            success = await data_manager.ensure_data_ready(
                 force_refresh=self.config.force_refresh,
                 skip_embeddings=self.args.skip_embeddings
             )
@@ -364,26 +385,24 @@ def parse_args():
                         help='Command to run (refresh=update all data, embeddings=generate embeddings, status=check status)')
     
     # Run mode
-    parser.add_argument('--continuous', action='store_true', 
-                        help='Run continuously at specified interval')
+    parser.add_argument('--continuous', action='store_true',
+                        help='Run in continuous mode with periodic updates')
+    parser.add_argument('--run-once', action='store_true',
+                        help='Run once and exit (default behavior, for backward compatibility)')
     parser.add_argument('--interval', type=int, default=3600,
-                        help='Update interval in seconds (for continuous mode)')
+                        help='Interval in seconds between updates when running in continuous mode (default: 3600)')
     
-    # Environment override
-    parser.add_argument('--env', choices=['docker', 'replit', 'local'], 
+    # Configuration options
+    parser.add_argument('--env', choices=['docker', 'replit'],
                         help='Override environment detection')
+    parser.add_argument('--filter-date', type=str,
+                        help='Filter data based on date (ISO format)')
     
     # Update options
     parser.add_argument('--force-refresh', action='store_true',
-                        help='Force refresh of data and embeddings')
+                        help='Force recreation of stratified sample and embeddings even if they exist. Important: Without this flag, existing stratified samples may be used even if outdated.')
     parser.add_argument('--skip-embeddings', action='store_true',
                         help='Skip embedding generation when refreshing data')
-    parser.add_argument('--filter-date', type=str,
-                        help='Filter date for data (format: YYYY-MM-DD)')
-    
-    # Run options
-    parser.add_argument('--run-once', action='store_true',
-                        help='Alias for non-continuous mode (for backward compatibility)')
     
     return parser.parse_args()
 

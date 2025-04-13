@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Union, Any, Callable, Awaitable
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import traceback
 
 from config.storage import StorageFactory, CompleteDataStorage, StratifiedSampleStorage, EmbeddingStorage, StateManager
@@ -676,18 +676,44 @@ class ChanScopeDataManager:
             # Check if we have a stratified sample and don't need to refresh
             if not force_refresh:
                 stratified_sample = await self.stratified_storage.get_sample()
+                
+                # If we have a sample, check if it's too old
                 if stratified_sample is not None and not stratified_sample.empty:
-                    logger.info(f"Using existing stratified sample with {len(stratified_sample)} rows")
-                    return True
+                    # Check the date range of the sample
+                    if self.config.time_column in stratified_sample.columns:
+                        max_date = stratified_sample[self.config.time_column].max()
+                        if isinstance(max_date, pd.Timestamp):
+                            current_time = datetime.now(timezone.utc)
+                            sample_age_hours = (current_time - max_date.to_pydatetime().replace(tzinfo=timezone.utc)).total_seconds() / 3600
+                            
+                            # If sample is more than 24 hours old, force a refresh
+                            if sample_age_hours > 24:
+                                logger.info(f"Stratified sample is {sample_age_hours:.2f} hours old, forcing refresh")
+                                force_refresh = True
+                            else:
+                                logger.info(f"Using existing stratified sample with {len(stratified_sample)} rows (age: {sample_age_hours:.2f} hours)")
+                                return True
+                    else:
+                        logger.info(f"Using existing stratified sample with {len(stratified_sample)} rows")
+                        return True
             
             # Get complete data
             logger.info("No stratified sample found or force_refresh enabled, loading complete data")
+            logger.info(f"Using filter_date: {self.config.filter_date}")
             complete_data = await self.complete_data_storage.get_data(self.config.filter_date)
             
             if complete_data is None or complete_data.empty:
                 logger.warning("Complete data is empty, cannot create stratified sample")
                 return False
                 
+            # Add diagnostic logging for date range
+            if self.config.time_column in complete_data.columns:
+                min_date = complete_data[self.config.time_column].min()
+                max_date = complete_data[self.config.time_column].max()
+                logger.info(f"Complete data date range: {min_date} to {max_date}")
+                logger.info(f"Current date: {datetime.now()} (UTC: {datetime.now(timezone.utc)})")
+                logger.info(f"Data age: most recent data is {(datetime.now(timezone.utc) - max_date.to_pydatetime().replace(tzinfo=timezone.utc)).total_seconds() / 3600:.2f} hours old")
+            
             logger.info(f"Creating stratified sample from {len(complete_data)} rows")
             
             # Create stratified sample

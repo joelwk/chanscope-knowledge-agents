@@ -162,20 +162,57 @@ The following commands are available for managing data:
 
 ```bash
 # Initial data processing
-poetry run python scripts/process_data.py
+poetry run python scripts/scheduled_update.py refresh
 
 # Force refresh all data
-poetry run python scripts/process_data.py --force-refresh
+poetry run python scripts/scheduled_update.py refresh --force-refresh
 
 # Check current data status
-poetry run python scripts/process_data.py --check
+poetry run python scripts/scheduled_update.py status
 
 # Regenerate specific components
-poetry run python scripts/process_data.py --regenerate --stratified-only
-poetry run python scripts/process_data.py --regenerate --embeddings-only
+poetry run python scripts/scheduled_update.py refresh --force-refresh --skip-embeddings
+poetry run python scripts/scheduled_update.py embeddings
 
 # Skip embedding generation during processing
-poetry run python scripts/process_data.py --skip-embeddings
+poetry run python scripts/scheduled_update.py refresh --skip-embeddings
+
+# Continuous scheduled updates (refreshes data hourly)
+poetry run python scripts/scheduled_update.py refresh --continuous --interval=3600
+
+# Continuous updates with forced stratification regeneration
+poetry run python scripts/scheduled_update.py refresh --continuous --force-refresh --interval=3600
+```
+
+### Understanding Data Refresh Behavior
+
+The data processing pipeline has three main stages:
+1. **Complete Data Stage**: Always processes all data files regardless of flags
+2. **Stratified Sample Stage**: Only regenerated when `--force-refresh` is used
+3. **Embedding Stage**: Only regenerated when `--force-refresh` is used or embeddings are missing
+
+#### Key Behaviors to Note:
+
+- **Standard Refresh** (`scheduled_update.py refresh`):
+  - Always processes all data files and updates the database with new records
+  - Reuses existing stratified samples even if they are outdated
+  - Reuses existing embeddings even if they are outdated
+  - Will only generate new stratified samples or embeddings if they don't exist
+
+- **Force Refresh** (`scheduled_update.py refresh --force-refresh`):
+  - Always processes all data files and updates the database with new records
+  - Always regenerates the stratified sample from the latest complete data
+  - Always regenerates embeddings from the new stratified sample
+  - Ensures all three stages reflect the current data state
+
+- **Continuous Updates** (`scheduled_update.py refresh --continuous --interval=3600`):
+  - Runs the refresh process repeatedly at the specified interval (in seconds)
+  - Without `--force-refresh`, will continue to use existing stratified samples
+  - With `--force-refresh`, will regenerate stratified samples and embeddings each cycle
+
+For environments with regular data updates, it's recommended to use the continuous mode with force refresh to ensure stratified samples stay current:
+```bash
+poetry run python scripts/scheduled_update.py refresh --continuous --force-refresh --interval=3600
 ```
 
 ### Data Processing Environment Variables

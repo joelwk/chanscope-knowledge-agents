@@ -234,41 +234,60 @@ class PostgresDB:
 
     def get_complete_data(self, filter_date: Optional[str] = None) -> pd.DataFrame:
         """
-        Retrieve complete dataset from the database.
-
+        Get complete data from PostgreSQL database.
+        
         Args:
-            filter_date: Optional date string to filter data from
-
+            filter_date: Optional filter date string to retrieve data from. If None,
+                        uses retention_days from base_settings (default 30 days).
+        
         Returns:
-            DataFrame containing the complete dataset
+            DataFrame containing the complete data
         """
-        query = "SELECT * FROM complete_data"
-        params = []
-
-        if filter_date:
-            query += " WHERE posted_date_time >= %s"
-            params.append(filter_date)
-
-        query += " ORDER BY posted_date_time DESC"
-
+        # Import here to avoid circular dependencies
+        from config.base_settings import get_base_settings
+        
         with self.get_connection() as conn:
             try:
-                # Add parse_dates parameter to convert posted_date_time to datetime automatically
-                df = pd.read_sql_query(query, conn, params=params, parse_dates=['posted_date_time'])
-
-                # Ensure posted_date_time is datetime type (in case parse_dates didn't work)
-                if 'posted_date_time' in df.columns and not pd.api.types.is_datetime64_dtype(df['posted_date_time']):
-                    df['posted_date_time'] = pd.to_datetime(df['posted_date_time'], errors='coerce')
-                    # Drop rows with invalid dates
-                    invalid_dates = df['posted_date_time'].isna().sum()
-                    if invalid_dates > 0:
-                        logger.warning(f"Dropping {invalid_dates} rows with invalid posted_date_time values")
-                        df = df.dropna(subset=['posted_date_time'])
-
+                # If filter_date is None, use retention_days from settings
+                effective_filter_date = filter_date
+                if effective_filter_date is None:
+                    # Get retention days setting (default to 30 days)
+                    base_settings = get_base_settings()
+                    processing = base_settings.get('processing', {})
+                    retention_days = processing.get('retention_days', 30)
+                    
+                    # Calculate date based on retention period
+                    from datetime import datetime, timedelta
+                    effective_filter_date = (datetime.now() - timedelta(days=retention_days)).strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    logger.info(f"No filter_date provided, using retention period of {retention_days} days")
+                    logger.info(f"Effective filter_date: {effective_filter_date}")
+                
+                # Build query with date filter
+                query = """
+                SELECT * FROM complete_data
+                WHERE 1=1
+                """
+                
+                params = []
+                if effective_filter_date:
+                    query += " AND posted_date_time >= %s"
+                    params.append(effective_filter_date)
+                
+                # Add order by to ensure consistent results
+                query += " ORDER BY posted_date_time"
+                
+                logger.debug(f"Executing query: {query} with params: {params}")
+                
+                # Use pandas to read from database
+                df = pd.read_sql(query, conn, params=params)
+                logger.info(f"Retrieved {len(df)} rows from complete_data")
                 return df
+                
             except Exception as e:
-                logger.error(f"Error retrieving complete data: {e}")
-                raise
+                logger.error(f"Error getting complete data: {e}")
+                logger.error(traceback.format_exc())
+                return pd.DataFrame()
 
     def update_metadata(self, key: str, value: Any):
         """
