@@ -53,6 +53,7 @@ class QueryRequest(BaseModel):
     embedding_provider: Optional[str] = Field(None, description="Provider for embeddings (openai/grok/venice)")
     chunk_provider: Optional[str] = Field(None, description="Provider for chunk generation (openai/grok/venice)")
     summary_provider: Optional[str] = Field(None, description="Provider for summarization (openai/grok/venice)")
+    character_slug: Optional[str] = Field(None, description="Character slug to use for Venice provider")
     use_background: bool = Field(True, description="Use background processing")
 
 class QueryResponse(BaseModel):
@@ -76,6 +77,7 @@ class BatchQueryRequest(BaseModel):
     chunk_batch_size: Optional[int] = Field(None, description="Batch size for chunk generation")
     summary_batch_size: Optional[int] = Field(None, description="Batch size for summary generation")
     max_workers: Optional[int] = Field(None, description="Maximum number of workers for parallel processing")
+    character_slug: Optional[str] = Field(None, description="Character slug to use for Venice provider")
     
     # Data refresh options
     force_refresh: bool = Field(False, description="Force refresh the data cache before processing")

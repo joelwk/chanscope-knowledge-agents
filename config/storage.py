@@ -572,6 +572,17 @@ class ReplitCompleteDataStorage(CompleteDataStorage):
         try:
             # Use the core database method
             df = self.db.get_complete_data(filter_date)
+            
+            # Ensure the time column is datetime type
+            if self.time_column in df.columns and not pd.api.types.is_datetime64_dtype(df[self.time_column]):
+                logger.info(f"Converting {self.time_column} to datetime type in storage layer")
+                df[self.time_column] = pd.to_datetime(df[self.time_column], errors='coerce')
+                # Drop rows with invalid dates
+                invalid_dates = df[self.time_column].isna().sum()
+                if invalid_dates > 0:
+                    logger.warning(f"Dropping {invalid_dates} rows with invalid {self.time_column} values")
+                    df = df.dropna(subset=[self.time_column])
+            
             logger.info(f"Retrieved {len(df)} rows from PostgreSQL database")
             return df
         except Exception as e:
@@ -815,12 +826,16 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
                     logger.warning(f"Unexpected embedding format at index {idx}: Expected dimension {expected_dim}, got {len(row)}")
                     return False
             
+            logger.info(f"Validated embeddings with shape {embeddings.shape} for storage")
+            
             # Import Object Storage client
             from replit.object_storage import Client
             
             try:
                 # Try to initialize with default bucket
+                logger.info("Initializing Replit Object Storage client")
                 object_client = Client()
+                logger.info(f"Successfully initialized Object Storage client with default bucket")
             except ValueError as bucket_error:
                 # If error mentions 'no default bucket', use our default
                 if "no default bucket" in str(bucket_error).lower():
@@ -829,6 +844,7 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
                     try:
                         # Try to use the default bucket name
                         object_client = Client(bucket=self.default_bucket)
+                        logger.info(f"Successfully initialized Object Storage client with bucket: {self.default_bucket}")
                     except Exception as e:
                         logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
                         return False
@@ -848,21 +864,63 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
             }
             
             # Save thread map to Object Storage
-            object_client.upload_from_text(self.thread_map_key, json.dumps(thread_map_with_meta))
-            logger.info(f"Stored thread ID map with {len(clean_thread_map)} entries to Object Storage")
+            logger.info(f"Uploading thread ID map with {len(clean_thread_map)} entries to Object Storage at key: {self.thread_map_key}")
+            try:
+                object_client.upload_from_text(self.thread_map_key, json.dumps(thread_map_with_meta))
+                logger.info(f"Successfully uploaded thread ID map to Object Storage")
+            except Exception as e:
+                logger.error(f"Failed to upload thread ID map to Object Storage: {e}")
+                return False
             
             # Save embeddings to Object Storage
             # First, save embeddings to a temporary file
             temp_file = "/tmp/embeddings.npy"
-            np.save(temp_file, embeddings)
+            try:
+                logger.info(f"Saving embeddings with shape {embeddings.shape} to temporary file: {temp_file}")
+                np.save(temp_file, embeddings)
+                logger.info(f"Successfully saved embeddings to temporary file")
+            except Exception as e:
+                logger.error(f"Failed to save embeddings to temporary file: {e}")
+                return False
             
             # Upload the file to Object Storage using upload_from_bytes
-            with open(temp_file, "rb") as f:
-                embedding_bytes = f.read()
-                object_client.upload_from_bytes(self.embeddings_key, embedding_bytes)
+            try:
+                logger.info(f"Reading embedding bytes from temporary file")
+                with open(temp_file, "rb") as f:
+                    embedding_bytes = f.read()
+                    bytes_size = len(embedding_bytes) / (1024 * 1024)  # Size in MB
+                    logger.info(f"Uploading {bytes_size:.2f} MB of embedding data to Object Storage at key: {self.embeddings_key}")
+                    object_client.upload_from_bytes(self.embeddings_key, embedding_bytes)
+                    logger.info(f"Successfully uploaded {bytes_size:.2f} MB of embedding data to Object Storage")
+            except Exception as e:
+                logger.error(f"Failed to upload embeddings to Object Storage: {e}")
+                return False
             
             # Clean up temp file
-            os.remove(temp_file)
+            try:
+                os.remove(temp_file)
+                logger.info(f"Removed temporary file: {temp_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary file {temp_file}: {e}")
+            
+            # Verify upload was successful by listing objects
+            try:
+                objects = object_client.list()
+                object_names = [obj.name for obj in objects]
+                
+                if self.embeddings_key in object_names and self.thread_map_key in object_names:
+                    logger.info(f"Verified both embeddings and thread map are present in Object Storage")
+                else:
+                    missing = []
+                    if self.embeddings_key not in object_names:
+                        missing.append(self.embeddings_key)
+                    if self.thread_map_key not in object_names:
+                        missing.append(self.thread_map_key)
+                        
+                    logger.warning(f"Verification failed, missing objects: {missing}")
+                    return False
+            except Exception as e:
+                logger.warning(f"Could not verify object existence: {e}")
             
             logger.info(f"Successfully stored embeddings with shape {embeddings.shape} to Object Storage")
             return True
@@ -874,60 +932,88 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
     async def get_embeddings(self) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
         """Retrieve embeddings and thread ID map from Object Storage."""
         try:
+            logger.info("Retrieving embeddings from Object Storage")
+            
             # Import Object Storage client
             from replit.object_storage import Client
             
             try:
                 # Try to initialize with default bucket
+                logger.info("Initializing Object Storage client for retrieval")
                 object_client = Client()
+                logger.info("Successfully initialized Object Storage client with default bucket")
             except ValueError as bucket_error:
                 # If error mentions 'no default bucket', use our default
                 if "no default bucket" in str(bucket_error).lower():
-                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'. "
-                                  f"Please configure a bucket in .replit file with: bucket = \"{self.default_bucket}\"")
+                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}' for retrieval")
                     try:
                         # Try to use the default bucket name
                         object_client = Client(bucket=self.default_bucket)
+                        logger.info(f"Successfully initialized Object Storage client with bucket: {self.default_bucket}")
                     except Exception as e:
-                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
+                        logger.error(f"Failed to initialize Object Storage with default bucket for retrieval: {e}")
                         return None, None
                 else:
                     # Re-raise other errors
                     raise
             
             # Check if files exist in Object Storage
+            logger.info("Checking if embeddings and thread map exist in Object Storage")
             objects = object_client.list()
             object_names = [obj.name for obj in objects]
             
-            if self.embeddings_key not in object_names or self.thread_map_key not in object_names:
-                logger.warning("Embeddings or thread map not found in Object Storage")
+            if self.embeddings_key not in object_names:
+                logger.warning(f"Embeddings not found in Object Storage: {self.embeddings_key}")
+                return None, None
+            
+            if self.thread_map_key not in object_names:
+                logger.warning(f"Thread map not found in Object Storage: {self.thread_map_key}")
                 return None, None
             
             # Download thread ID map
-            thread_map_json = object_client.download_as_text(self.thread_map_key)
-            thread_map_data = json.loads(thread_map_json)
+            logger.info(f"Downloading thread ID map from key: {self.thread_map_key}")
+            try:
+                thread_map_json = object_client.download_as_text(self.thread_map_key)
+                thread_map_data = json.loads(thread_map_json)
+                logger.info(f"Successfully downloaded thread ID map")
+            except Exception as e:
+                logger.error(f"Failed to download or parse thread ID map: {e}")
+                return None, None
             
             # Handle both old and new format
             if isinstance(thread_map_data, dict) and 'thread_ids' in thread_map_data:
                 thread_id_map = thread_map_data['thread_ids']
                 expected_shape = thread_map_data.get('embedding_shape')
+                logger.info(f"Retrieved thread map with metadata format v1+ (expected shape: {expected_shape})")
             else:
                 thread_id_map = thread_map_data
                 expected_shape = None
+                logger.info(f"Retrieved thread map with legacy format (no shape metadata)")
             
             # Ensure consistent thread ID format
             thread_id_map = {str(k).strip(): v for k, v in thread_id_map.items()}
+            logger.info(f"Thread ID map contains {len(thread_id_map)} entries")
             
             # Download embeddings using download_as_bytes
             temp_file = "/tmp/embeddings.npy"
-            embedding_bytes = object_client.download_as_bytes(self.embeddings_key)
-            
-            # Write bytes to temporary file
-            with open(temp_file, "wb") as f:
-                f.write(embedding_bytes)
-            
-            # Load embeddings from temp file
-            embeddings = np.load(temp_file)
+            try:
+                logger.info(f"Downloading embedding data from key: {self.embeddings_key}")
+                embedding_bytes = object_client.download_as_bytes(self.embeddings_key)
+                bytes_size = len(embedding_bytes) / (1024 * 1024)  # Size in MB
+                logger.info(f"Downloaded {bytes_size:.2f} MB of embedding data")
+                
+                # Write bytes to temporary file
+                with open(temp_file, "wb") as f:
+                    f.write(embedding_bytes)
+                
+                # Load embeddings from temp file
+                logger.info(f"Loading embeddings from temp file: {temp_file}")
+                embeddings = np.load(temp_file)
+                logger.info(f"Successfully loaded embeddings with shape {embeddings.shape}")
+            except Exception as e:
+                logger.error(f"Failed to download or load embeddings: {e}")
+                logger.error(traceback.format_exc())
+                return None, None
             
             # Validate embeddings
             if expected_shape and embeddings.shape != tuple(expected_shape):
@@ -937,12 +1023,17 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
                 logger.warning("Invalid values in embeddings (inf or nan detected)")
             
             # Clean up temp file
-            os.remove(temp_file)
+            try:
+                os.remove(temp_file)
+                logger.info(f"Removed temporary file: {temp_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary file {temp_file}: {e}")
             
             logger.info(f"Retrieved embeddings with shape {embeddings.shape} from Object Storage")
             return embeddings, thread_id_map
         except Exception as e:
             logger.error(f"Error retrieving embeddings from Object Storage: {e}")
+            logger.error(traceback.format_exc())
             return None, None
     
     async def embeddings_exist(self) -> bool:
@@ -957,13 +1048,12 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
             except ValueError as bucket_error:
                 # If error mentions 'no default bucket', use our default
                 if "no default bucket" in str(bucket_error).lower():
-                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'. "
-                                  f"Please configure a bucket in .replit file with: bucket = \"{self.default_bucket}\"")
+                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}' for retrieval")
                     try:
                         # Try to use the default bucket name
                         object_client = Client(bucket=self.default_bucket)
                     except Exception as e:
-                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
+                        logger.error(f"Failed to initialize Object Storage with default bucket for retrieval: {e}")
                         return False
                 else:
                     # Re-raise other errors

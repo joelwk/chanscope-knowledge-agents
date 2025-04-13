@@ -16,7 +16,7 @@ from config.settings import Config
 import tiktoken
 import hashlib
 import numpy as np
-from config.base import BaseConfig  # Ensure this import is present at the top
+from config.base import BaseConfig
 # Initialize logging
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,7 @@ class ModelConfig:
         self.default_embedding_provider = model_settings.get('default_embedding_provider')
         self.default_chunk_provider = model_settings.get('default_chunk_provider')
         self.default_summary_provider = model_settings.get('default_summary_provider')
+        self.venice_character_slug = model_settings.get('venice_character_slug')
 
         # Get path settings
         path_settings = settings.get('paths', {})
@@ -235,6 +236,8 @@ class ModelConfig:
             settings['model']['default_chunk_provider'] = request.chunk_provider
         if getattr(request, 'summary_provider', None):
             settings['model']['default_summary_provider'] = request.summary_provider
+        if getattr(request, 'character_slug', None):
+            settings['model']['venice_character_slug'] = request.character_slug
             
         # Add batch size settings
         if getattr(request, 'embedding_batch_size', None):
@@ -402,6 +405,8 @@ class KnowledgeAgent:
                     self._embedding_lock = asyncio.Lock()
                     self.prompts = load_prompts()
                     self._clients = self._initialize_clients()
+                    # Add a cache for models that don't support temperature
+                    self._models_without_temperature = set()
                     self._initialized = True
                     logger.info("Initialized KnowledgeAgent singleton")
 
@@ -415,8 +420,7 @@ class KnowledgeAgent:
     async def _create_client(self, provider: ModelProvider) -> Any:
         """Create a new client for the specified provider."""
         try:
-            # Import Config here to avoid circular dependency
-            from config.settings import Config
+            # Use Config from the top-level import
             base_settings = get_base_settings()['model']
 
             if provider == ModelProvider.OPENAI:
@@ -528,42 +532,89 @@ class KnowledgeAgent:
                            "- VENICE_API_KEY (Optional)")
         return clients
 
-    def _get_model_name(self, provider: ModelProvider, operation: ModelOperation) -> str:
-        """Get the appropriate model name for a provider and operation type."""
-        try:
-            # Import Config here to avoid circular dependency
-            from config.settings import Config
-
-            if operation == ModelOperation.EMBEDDING:
-                if provider == ModelProvider.OPENAI:
-                    return Config.get_openai_embedding_model()
-                elif provider == ModelProvider.GROK:
-                    return Config.get_grok_model() or "grok-v1-embedding"
-                else:
-                    raise ModelProviderError(f"Unsupported embedding provider: {provider}")
-            elif operation == ModelOperation.CHUNK_GENERATION:
-                if provider == ModelProvider.OPENAI:
-                    return Config.get_openai_model()
-                elif provider == ModelProvider.GROK:
-                    return Config.get_grok_model()
-                elif provider == ModelProvider.VENICE:
-                    return Config.get_venice_chunk_model()
-                else:
-                    raise ModelProviderError(f"Unsupported chunk generation provider: {provider}")
-            elif operation == ModelOperation.SUMMARIZATION:
-                if provider == ModelProvider.OPENAI:
-                    return Config.get_openai_model()
-                elif provider == ModelProvider.GROK:
-                    return Config.get_grok_model()
-                elif provider == ModelProvider.VENICE:
-                    return Config.get_venice_model()
-                else:
-                    raise ModelProviderError(f"Unsupported summarization provider: {provider}")
+    # Add helper method to safely get environment variables
+    @staticmethod
+    def _get_env_model(provider_name, operation_name=None):
+        """Safe fallback to get model name directly from environment variables."""
+        if provider_name.lower() == 'openai':
+            if operation_name and operation_name.lower() == 'chunk':
+                return os.environ.get('OPENAI_CHUNK_MODEL') or os.environ.get('OPENAI_MODEL', 'gpt-4o')
+            elif operation_name and operation_name.lower() == 'embedding':
+                return os.environ.get('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large')
             else:
-                raise ModelOperationError(f"Unknown operation: {operation}")
+                return os.environ.get('OPENAI_MODEL', 'gpt-4o')
+        elif provider_name.lower() == 'grok':
+            if operation_name and operation_name.lower() == 'chunk':
+                return os.environ.get('GROK_CHUNK_MODEL') or os.environ.get('GROK_MODEL', 'grok-2-1212')
+            else:
+                return os.environ.get('GROK_MODEL', 'grok-2-1212')
+        elif provider_name.lower() == 'venice':
+            if operation_name and operation_name.lower() == 'chunk':
+                chunk_model = os.environ.get('VENICE_CHUNK_MODEL')
+                if chunk_model:
+                    return chunk_model
+            return os.environ.get('VENICE_MODEL', 'deepseek-r1-671b')
+        return None
+
+    def _get_model_name(self, provider: ModelProvider, operation: ModelOperation) -> str:
+        """Get model name based on provider and operation."""
+        try:
+            # Use Config directly without re-importing it
+            if provider == ModelProvider.OPENAI:
+                if operation == ModelOperation.EMBEDDING:
+                    return Config.get_openai_embedding_model()
+                elif operation == ModelOperation.CHUNK_GENERATION:
+                    # Fallback to general model if chunk model getter fails
+                    try:
+                        return Config.get_openai_chunk_model()
+                    except AttributeError as e:
+                        logger.error(f"Error getting openai_chunk_model: {e}, falling back to general model")
+                        return Config.get_openai_model()
+                return Config.get_openai_model()
+            elif provider == ModelProvider.GROK:
+                if operation == ModelOperation.CHUNK_GENERATION:
+                    # Fallback to general model if chunk model getter fails
+                    try:
+                        return Config.get_grok_chunk_model()
+                    except AttributeError as e:
+                        logger.error(f"Error getting grok_chunk_model: {e}, falling back to general model")
+                        return Config.get_grok_model()
+                return Config.get_grok_model()
+            elif provider == ModelProvider.VENICE:
+                if operation == ModelOperation.CHUNK_GENERATION:
+                    # Check for venice chunk model
+                    try:
+                        chunk_model = Config.get_venice_chunk_model()
+                        if chunk_model:
+                            return chunk_model
+                    except AttributeError as e:
+                        logger.error(f"Error getting venice_chunk_model: {e}, falling back to general model")
+                return Config.get_venice_model()
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
         except Exception as e:
-            logger.error(f"Error getting model name for {provider} and operation {operation}: {str(e)}")
-            raise ModelProviderError(f"Failed to get model name: {str(e)}")
+            logger.error(f"Error in _get_model_name for {provider} and operation {operation}: {e}")
+            
+            # Try direct environment variable access as last resort
+            if operation == ModelOperation.CHUNK_GENERATION:
+                env_model = self._get_env_model(provider.value, 'chunk')
+            elif operation == ModelOperation.EMBEDDING:
+                env_model = self._get_env_model(provider.value, 'embedding')
+            else:
+                env_model = self._get_env_model(provider.value)
+                
+            if env_model:
+                logger.info(f"Using model {env_model} from environment variables for {provider.value}")
+                return env_model
+                
+            # Final fallback to hardcoded values
+            if provider == ModelProvider.OPENAI:
+                return 'gpt-4o'
+            elif provider == ModelProvider.GROK:
+                return 'grok-2-1212'
+            elif provider == ModelProvider.VENICE:
+                return 'deepseek-r1-671b'
+            raise ValueError(f"No model available for provider {provider}")
 
     async def generate_summary(
         self, 
@@ -571,7 +622,8 @@ class KnowledgeAgent:
         results: str, 
         context: Optional[str] = None,
         temporal_context: Optional[Dict[str, str]] = None,
-        provider: Optional[ModelProvider] = None
+        provider: Optional[ModelProvider] = None,
+        character_slug: Optional[str] = None
     ) -> str:
         """Generate a summary using the specified provider."""
         if provider is None:
@@ -671,13 +723,45 @@ class KnowledgeAgent:
                 }
             ]
 
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.3,
-                presence_penalty=0.2,
-                frequency_penalty=0.2)
+            # Prepare API request params
+            request_params = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.3,
+                "presence_penalty": 0.2,
+                "frequency_penalty": 0.2
+            }
             
+            # Add venice_parameters if using Venice provider and character_slug is specified
+            if provider == ModelProvider.VENICE:
+                # Use provided character_slug or get default from config
+                char_slug = character_slug
+                if char_slug is None:
+                    char_slug = Config.get_venice_character_slug()
+                
+                if char_slug:
+                    # Pass character_slug in the messages parameter structure
+                    for message in request_params["messages"]:
+                        if "parameters" not in message:
+                            message["parameters"] = {}
+                        message["parameters"]["character_slug"] = char_slug
+
+            try:
+                response = await client.chat.completions.create(**request_params)
+            except Exception as e:
+                error_str = str(e)
+                if "temperature" in error_str and ("unsupported" in error_str or "not supported" in error_str):
+                    logger.warning(f"Temperature not supported by model {model}, retrying without temperature parameters")
+                    # Remove temperature-related parameters
+                    for param in ["temperature", "presence_penalty", "frequency_penalty"]:
+                        if param in request_params:
+                            del request_params[param]
+                    # Retry without temperature parameters
+                    response = await client.chat.completions.create(**request_params)
+                else:
+                    # If it's not a temperature-related error, re-raise
+                    raise
+
             if isinstance(response, str):
                 logger.error(f"Unexpected string response from API: {response}")
                 raise SummarizationError("Received unexpected string response from API")
@@ -700,7 +784,8 @@ class KnowledgeAgent:
     async def generate_chunks(
         self, 
         content: str,
-        provider: Optional[ModelProvider] = None
+        provider: Optional[ModelProvider] = None,
+        character_slug: Optional[str] = None
     ) -> Dict[str, str]:
         """Generate chunks using the specified provider."""
         if provider is None:
@@ -711,9 +796,10 @@ class KnowledgeAgent:
 
         async with self._chunk_lock:
             try:
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=[
+                # Prepare API request params
+                request_params = {
+                    "model": model,
+                    "messages": [
                         {
                             "role": "system",
                             "content": self.prompts["system_prompts"]["generate_chunks"]["content"]
@@ -724,11 +810,48 @@ class KnowledgeAgent:
                                 content=content
                             )
                         }
-                    ],
-                    temperature=0.1,
-                    presence_penalty=0.1,
-                    frequency_penalty=0.1
-                )
+                    ]
+                }
+                
+                # Only add temperature params if we know the model supports them
+                if model not in self._models_without_temperature:
+                    request_params.update({
+                        "temperature": 0.1,
+                        "presence_penalty": 0.1,
+                        "frequency_penalty": 0.1
+                    })
+                
+                # Add venice_parameters if using Venice provider and character_slug is specified
+                if provider == ModelProvider.VENICE:
+                    # Use provided character_slug or get default from config
+                    char_slug = character_slug
+                    if char_slug is None:
+                        char_slug = Config.get_venice_character_slug()
+                    
+                    if char_slug:
+                        # Pass character_slug in the messages parameter structure
+                        for message in request_params["messages"]:
+                            if "parameters" not in message:
+                                message["parameters"] = {}
+                            message["parameters"]["character_slug"] = char_slug
+
+                try:
+                    response = await client.chat.completions.create(**request_params)
+                except Exception as e:
+                    error_str = str(e)
+                    if "temperature" in error_str and ("unsupported" in error_str or "not supported" in error_str):
+                        logger.warning(f"Temperature not supported by model {model}, retrying without temperature parameters")
+                        # Remember this model doesn't support temperature for future requests
+                        self._models_without_temperature.add(model)
+                        # Remove temperature-related parameters
+                        for param in ["temperature", "presence_penalty", "frequency_penalty"]:
+                            if param in request_params:
+                                del request_params[param]
+                        # Retry without temperature parameters
+                        response = await client.chat.completions.create(**request_params)
+                    else:
+                        # If it's not a temperature-related error, re-raise
+                        raise
 
                 result = response.choices[0].message.content
                 if not result:
@@ -835,7 +958,8 @@ class KnowledgeAgent:
         self,
         contents: List[str],
         provider: Optional[ModelProvider] = None,
-        chunk_batch_size: Optional[int] = None
+        chunk_batch_size: Optional[int] = None,
+        character_slug: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """Generate content chunks for a batch of text contents.
         
@@ -843,6 +967,7 @@ class KnowledgeAgent:
             contents: List of text contents to process
             provider: Optional model provider override
             chunk_batch_size: Optional batch size override
+            character_slug: Optional character slug for Venice provider
             
         Returns:
             List of chunked contents
@@ -889,7 +1014,7 @@ class KnowledgeAgent:
             # Process batch with proper error handling
             try:
                 batch_results = await asyncio.gather(
-                    *[self.generate_chunks(content, provider=provider) for content in batch],
+                    *[self.generate_chunks(content, provider=provider, character_slug=character_slug) for content in batch],
                     return_exceptions=True
                 )
                 
@@ -919,7 +1044,8 @@ class KnowledgeAgent:
         contexts: Optional[List[str]] = None,
         temporal_contexts: Optional[List[Dict[str, str]]] = None,
         provider: Optional[ModelProvider] = None,
-        summary_batch_size: Optional[int] = None
+        summary_batch_size: Optional[int] = None,
+        character_slug: Optional[str] = None
     ) -> List[str]:
         """Generate summaries for multiple queries in batches.
         
@@ -930,6 +1056,7 @@ class KnowledgeAgent:
             temporal_contexts: Optional list of temporal context dicts (one per query)
             provider: Optional model provider override
             summary_batch_size: Optional batch size override
+            character_slug: Optional character slug for Venice provider
             
         Returns:
             List of summary strings (one per query)
@@ -991,7 +1118,8 @@ class KnowledgeAgent:
                         results=result,
                         context=context,
                         temporal_context=temp_context,
-                        provider=provider
+                        provider=provider,
+                        character_slug=character_slug
                     ) for query, result, context, temp_context in zip(
                         batch_queries, batch_results, batch_contexts, batch_temporal_contexts
                     )],

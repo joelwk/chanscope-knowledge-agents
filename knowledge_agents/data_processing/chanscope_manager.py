@@ -134,6 +134,8 @@ class ChanScopeDataManager:
             
             # Case A: force_refresh=True - Follow Chanscope approach for forced refresh
             if force_refresh:
+                logger.info("Force refresh enabled, updating stratified data and embeddings.")
+                
                 # Check if data needs to be updated
                 data_needs_update = row_count == 0 or not data_is_fresh
                 
@@ -162,14 +164,23 @@ class ChanScopeDataManager:
                     
                     # Store the stratified sample
                     await self.stratified_storage.store_sample(stratified_df)
+                    logger.info(f"Successfully created and stored stratified sample with {len(stratified_df)} rows")
                     
                     # Generate embeddings if not skipped
                     if not skip_embeddings:
-                        logger.info("Generating embeddings (force_refresh=True)")
-                        await self.generate_embeddings(force_refresh=True)
+                        logger.info("Initiating embedding generation (force_refresh=True)")
+                        embedding_success = await self.generate_embeddings(force_refresh=True)
+                        if embedding_success:
+                            logger.info("Embedding generation completed successfully")
+                        else:
+                            logger.error("Embedding generation failed during force refresh")
+                            return False
+                    else:
+                        logger.info("Skipping embedding generation as requested")
                 else:
                     logger.warning("Complete data is empty, cannot create stratified sample")
-                    
+                    return False
+                
             # Case B: force_refresh=False - Only check if data exists
             else:
                 # Check if data is missing and needs to be loaded
@@ -180,6 +191,16 @@ class ChanScopeDataManager:
                     # Get updated row count after loading data
                     row_count = await self.complete_data_storage.get_row_count()
                     logger.info(f"Updated row count after loading data: {row_count}")
+                # Check if data exists but is not fresh and needs to be updated
+                elif not data_is_fresh:
+                    logger.info("Database exists but data is not fresh, updating from S3")
+                    await self._load_data_from_s3()
+                    
+                    # Get updated row count after loading data
+                    row_count = await self.complete_data_storage.get_row_count()
+                    logger.info(f"Updated row count after refreshing data: {row_count}")
+                else:
+                    logger.info("Complete data exists and is fresh, no update needed")
                 
                 # Check if stratified sample exists
                 stratified_sample = await self.stratified_storage.get_sample()
@@ -195,10 +216,12 @@ class ChanScopeDataManager:
                         
                         # Store the stratified sample
                         await self.stratified_storage.store_sample(stratified_df)
+                        logger.info(f"Successfully created and stored stratified sample with {len(stratified_df)} rows")
                     else:
                         logger.warning("Complete data is empty, cannot create stratified sample")
+                        return False
                 else:
-                    logger.info("Using existing stratified sample (force_refresh=False)")
+                    logger.info(f"Using existing stratified sample with {len(stratified_sample)} rows (force_refresh=False)")
                 
                 # Check if embeddings exist and generate if needed
                 if not skip_embeddings:
@@ -206,17 +229,26 @@ class ChanScopeDataManager:
                     
                     if not embeddings_exist:
                         logger.info("No embeddings found, generating new ones (force_refresh=False)")
-                        await self.generate_embeddings(force_refresh=False)
+                        embedding_success = await self.generate_embeddings(force_refresh=False)
+                        if embedding_success:
+                            logger.info("Embedding generation completed successfully")
+                        else:
+                            logger.error("Embedding generation failed during non-forced refresh")
+                            return False
                     else:
                         logger.info("Using existing embeddings (force_refresh=False)")
+                else:
+                    logger.info("Skipping embedding verification as requested")
             
             # Mark operation complete
             await self.state_manager.mark_operation_complete("ensure_data_ready", "success")
+            logger.info("Data is now ready for use")
             
             return True
             
         except Exception as e:
             logger.error(f"Error ensuring data is ready: {e}")
+            logger.error(traceback.format_exc())
             
             # Mark operation as failed
             await self.state_manager.update_state({
@@ -260,8 +292,7 @@ class ChanScopeDataManager:
             
             # Initialize counters
             record_count = 0
-            files_processed = 0
-            files_skipped = 0
+            chunks_processed = 0
             
             # Get list of relevant files within retention period
             csv_files = s3_handler._get_filtered_csv_files(latest_date=start_time)
@@ -269,57 +300,42 @@ class ChanScopeDataManager:
                 logger.error("No CSV files found in S3 for the specified date range")
                 return False
             
-            logger.info(f"Found {len(csv_files)} CSV files in S3 within the retention period")
+            logger.info(f"Starting stream processing of {len(csv_files)} CSV files from S3")
             
-            # Process each file that might contain data in our date range
-            for file_path in csv_files:
-                logger.info(f"Processing file: {file_path}")
-                try:
-                    # Create generator for this specific file
-                    file_data_generator = load_all_csv_data_from_s3(
-                        latest_date_processed=start_time.isoformat(),
-                        chunk_size=getattr(self.config, 'processing_chunk_size', 10000),
-                        board_id=getattr(self.config, 'board_id', None)
-                    )
-                    
-                    file_record_count = 0
-                    async for chunk in file_data_generator:
-                        # Process date column
-                        time_column = getattr(self.config, 'time_column', 'posted_date_time')
-                        chunk[time_column] = pd.to_datetime(
-                            chunk[time_column], 
-                            format='mixed',
-                            utc=True,
-                            errors='coerce'
-                        )
-                        
-                        # Filter by date range (keep data between start_time and current_time)
-                        date_mask = (chunk[time_column] >= start_time) & (chunk[time_column] <= current_time)
-                        filtered_chunk = chunk[date_mask]
-                        
-                        if not filtered_chunk.empty:
-                            file_record_count += len(filtered_chunk)
-                            # Store chunk in database
-                            await self.complete_data_storage.store_data(filtered_chunk)
-                            logger.info(f"Processed chunk with {len(filtered_chunk)} rows from file {file_path}")
-                        
-                        # Yield to other tasks
-                        await asyncio.sleep(0)
-                    
-                    # Update counters
-                    record_count += file_record_count
-                    files_processed += 1
-                    logger.info(f"Completed file {file_path} with {file_record_count} records in retention period")
-                except Exception as e:
-                    logger.error(f"Error processing file {file_path}: {e}")
-                    logger.error(traceback.format_exc())
-                    files_skipped += 1
-                    # Continue with other files
+            # Create a single generator for all files at once instead of per-file generators
+            file_data_generator = s3_handler.stream_csv_data(start_time.isoformat())
+            
+            async for chunk in file_data_generator:
+                chunks_processed += 1
+                
+                # Process date column
+                time_column = getattr(self.config, 'time_column', 'posted_date_time')
+                chunk[time_column] = pd.to_datetime(
+                    chunk[time_column], 
+                    format='mixed',
+                    utc=True,
+                    errors='coerce'
+                )
+                
+                # Filter by date range (keep data between start_time and current_time)
+                date_mask = (chunk[time_column] >= start_time) & (chunk[time_column] <= current_time)
+                filtered_chunk = chunk[date_mask]
+                
+                if not filtered_chunk.empty:
+                    # Store chunk in database
+                    await self.complete_data_storage.store_data(filtered_chunk)
+                    record_count += len(filtered_chunk)
+                    logger.info(f"Processed chunk {chunks_processed} with {len(filtered_chunk)} rows (Total: {record_count})")
+                else:
+                    logger.info(f"Chunk {chunks_processed} had no data within retention period")
+                
+                # Yield to other tasks
+                await asyncio.sleep(0)
             
             # Log final stats
             logger.info(f"Data loading summary:")
-            logger.info(f"- Files processed: {files_processed}")
-            logger.info(f"- Files skipped: {files_skipped}")
+            logger.info(f"- Files streamed: {len(csv_files)}")
+            logger.info(f"- Chunks processed: {chunks_processed}")
             logger.info(f"- Total records loaded: {record_count}")
             
             if record_count == 0:
@@ -679,54 +695,32 @@ class ChanScopeDataManager:
                 # Set sample size
                 sample_size = min(self.config.sample_size, len(complete_data))
                 
-                # Ensure DataFrame is free of problematic objects
-                # Convert complex types to strings to avoid serialization issues
-                safe_data = complete_data.copy()
+                logger.info(f"Using sampler.py implementation for time-based stratified sampling")
+                # Use the sampler module's implementation which properly handles datetime conversion
+                stratified = self.sampler.stratified_sample(complete_data)
                 
-                # Handle datetime columns for safe serialization
-                for col in safe_data.columns:
-                    if pd.api.types.is_datetime64_dtype(safe_data[col]):
-                        safe_data[col] = safe_data[col].dt.strftime('%Y-%m-%dT%H:%M:%S')
-                    elif pd.api.types.is_object_dtype(safe_data[col]):
+                # If the result is too small or empty, fall back to random sampling
+                if stratified is None or stratified.empty or len(stratified) < min(sample_size, len(complete_data) * 0.1):
+                    logger.warning(f"Sampler returned too few samples ({0 if stratified is None or stratified.empty else len(stratified)}), falling back to random sampling")
+                    stratified = complete_data.sample(min(sample_size, len(complete_data)))
+                
+                # Ensure all columns are serializable
+                safe_stratified = stratified.copy()
+                for col in safe_stratified.columns:
+                    if pd.api.types.is_datetime64_dtype(safe_stratified[col]):
+                        safe_stratified[col] = safe_stratified[col].dt.strftime('%Y-%m-%dT%H:%M:%S')
+                    elif pd.api.types.is_object_dtype(safe_stratified[col]):
                         # Ensure all object columns are properly serializable strings
-                        safe_data[col] = safe_data[col].astype(str)
-                
-                # Create stratified sample
-                if self.config.time_column and self.config.time_column in safe_data.columns:
-                    # Time-based stratification - ensure we get data across the time range
-                    if pd.api.types.is_datetime64_dtype(complete_data[self.config.time_column]):
-                        # Sort by time
-                        complete_data_sorted = complete_data.sort_values(by=self.config.time_column)
-                        
-                        # Divide into buckets and sample from each
-                        bucket_count = min(10, len(complete_data) // 10)  # At least 10 items per bucket
-                        if bucket_count > 0:
-                            buckets = np.array_split(complete_data_sorted, bucket_count)
-                            # Calculate samples per bucket
-                            samples_per_bucket = sample_size // len(buckets)
-                            # Sample from each bucket
-                            stratified = pd.concat([
-                                bucket.sample(min(samples_per_bucket, len(bucket))) 
-                                for bucket in buckets
-                            ])
-                        else:
-                            # If data is too small for bucketing, use all of it
-                            stratified = complete_data
-                    else:
-                        logger.warning(f"Time column {self.config.time_column} is not a datetime type, using random sampling")
-                        stratified = safe_data.sample(sample_size)
-                else:
-                    # Simple random sampling if no time column
-                    stratified = safe_data.sample(sample_size)
+                        safe_stratified[col] = safe_stratified[col].astype(str)
                 
                 # Reset index for clean serialization
-                stratified = stratified.reset_index(drop=True)
+                safe_stratified = safe_stratified.reset_index(drop=True)
                 
                 # Store stratified sample
-                storage_success = await self.stratified_storage.store_sample(stratified)
+                storage_success = await self.stratified_storage.store_sample(safe_stratified)
                 
                 if storage_success:
-                    logger.info(f"Successfully created and stored stratified sample with {len(stratified)} rows")
+                    logger.info(f"Successfully created and stored stratified sample with {len(safe_stratified)} rows")
                     return True
                 else:
                     logger.error(f"Failed to store stratified sample")

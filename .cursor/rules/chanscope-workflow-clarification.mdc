@@ -4,6 +4,11 @@ globs:
 alwaysApply: false
 ---
 ---
+description: 
+globs: 
+alwaysApply: false
+---
+---
 description: Clarifies recommended workflows for testing and deployment to avoid confusion.
 globs: */docker-compose*.yml, */scripts/run_*tests.sh
 alwaysApply: false

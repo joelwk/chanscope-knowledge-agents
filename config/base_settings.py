@@ -102,9 +102,12 @@ def get_base_settings() -> Dict[str, Any]:
             'grok_model': os.getenv('GROK_MODEL', '').strip(),
             'venice_model': os.getenv('VENICE_MODEL', '').strip(),
             'venice_chunk_model': os.getenv('VENICE_CHUNK_MODEL', '').strip(),
+            'venice_character_slug': os.getenv('VENICE_CHARACTER_SLUG', 'venice').strip(),
             'openai_api_base': os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1').strip(),
             'grok_api_base': os.getenv('GROK_API_BASE', '').strip(),
-            'venice_api_base': os.getenv('VENICE_API_BASE', '').strip()
+            'venice_api_base': os.getenv('VENICE_API_BASE', '').strip(),
+            'openai_chunk_model': os.getenv('OPENAI_CHUNK_MODEL', '').strip(),
+            'grok_chunk_model': os.getenv('GROK_CHUNK_MODEL', '').strip()
         },
         'aws': {
             'access_key_id': os.getenv('AWS_ACCESS_KEY_ID', '').strip(),

@@ -1,4 +1,9 @@
 ---
+description: 
+globs: 
+alwaysApply: false
+---
+---
 description: This addresses the specific linter errors in your Docker Compose files by providing guidance on proper schema usage, particularly focusing on adding version declarations that will resolve the errors
 globs: */docker-compose*.yml
 alwaysApply: false

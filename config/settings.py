@@ -226,6 +226,15 @@ class Config:
         return model_settings.get('chunk_model')
 
     @classmethod
+    def get_openai_chunk_model(cls) -> Optional[str]:
+        """Get OpenAI chunk model from settings with fallback to general model."""
+        model_settings = cls.get_model_settings()
+        chunk_model = model_settings.get('openai_chunk_model')
+        if not chunk_model:
+            return cls.get_openai_model()
+        return chunk_model
+
+    @classmethod
     def get_openai_embedding_model(cls) -> str:
         """Get OpenAI embedding model from settings."""
         model_settings = cls.get_model_settings()
@@ -238,6 +247,15 @@ class Config:
         return model_settings.get('grok_model')
 
     @classmethod
+    def get_grok_chunk_model(cls) -> Optional[str]:
+        """Get Grok chunk model from settings with fallback to general model."""
+        model_settings = cls.get_model_settings()
+        chunk_model = model_settings.get('grok_chunk_model')
+        if not chunk_model:
+            return cls.get_grok_model()
+        return chunk_model
+
+    @classmethod
     def get_venice_model(cls) -> Optional[str]:
         """Get Venice model from settings."""
         model_settings = cls.get_model_settings()
@@ -248,6 +266,12 @@ class Config:
         """Get Venice chunk model from settings."""
         model_settings = cls.get_model_settings()
         return model_settings.get('venice_chunk_model')
+
+    @classmethod
+    def get_venice_character_slug(cls) -> Optional[str]:
+        """Get Venice character slug from settings."""
+        model_settings = cls.get_model_settings()
+        return model_settings.get('venice_character_slug')
 
     @classmethod
     def get_default_embedding_provider(cls) -> str:

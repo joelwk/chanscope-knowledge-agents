@@ -1,21 +1,14 @@
 import asyncio
-import hashlib
 import json
 import logging
-import multiprocessing
 import os
-import platform
 import pytz
-import random
-import shutil
-import sys
-import tempfile
 import time
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Tuple, Callable, Awaitable
+from typing import Dict, Optional, Any, Union, Callable, Awaitable
 from filelock import FileLock, Timeout
 
 import numpy as np
@@ -23,9 +16,7 @@ import pandas as pd
 
 from config.base_settings import get_base_settings
 from config.settings import Config
-from .data_processing.cloud_handler import load_all_csv_data_from_s3, S3Handler
 from .data_processing.sampler import Sampler
-from .embedding_ops import get_relevant_content, load_embeddings, load_thread_id_map
 from config.env_loader import detect_environment
 
 # Initialize logger
@@ -454,20 +445,38 @@ class DataOperations:
             from config.storage import ReplitObjectEmbeddingStorage
             embedding_storage = ReplitObjectEmbeddingStorage(self.config)
             
+            logger.info(f"Starting embedding update (force_refresh={force_refresh})")
+            
             # Check if we need to update embeddings
             if not force_refresh:
+                logger.info("Checking if embeddings already exist")
                 embeddings_exist = await embedding_storage.embeddings_exist()
                 if embeddings_exist:
                     logger.info("Embeddings already exist and force_refresh is False, skipping update")
                     return
+                else:
+                    logger.info("Embeddings do not exist or force_refresh is True, proceeding with update")
+            else:
+                logger.info("Force refresh is enabled, will regenerate embeddings regardless of current state")
             
             # Load stratified data
+            logger.info("Loading stratified data for embedding generation")
             stratified_data = await self._load_stratified_data()
             if stratified_data is None or len(stratified_data) == 0:
                 logger.error("No stratified data available for embedding generation")
                 return
             
+            logger.info(f"Loaded stratified data with {len(stratified_data)} rows")
+            
             # Get thread IDs and content for embedding generation
+            if 'thread_id' not in stratified_data.columns:
+                logger.error("Required 'thread_id' column not found in stratified data")
+                return
+            
+            if 'text_clean' not in stratified_data.columns:
+                logger.error("Required 'text_clean' column not found in stratified data")
+                return
+            
             thread_ids = stratified_data['thread_id'].astype(str).tolist()
             content = stratified_data['text_clean'].tolist()
             
@@ -475,41 +484,91 @@ class DataOperations:
                 logger.error("No content or thread IDs available for embedding generation")
                 return
             
+            logger.info(f"Preparing to generate embeddings for {len(thread_ids)} items")
+            
             # Process in batches to avoid memory issues
             batch_size = 100
             all_embeddings = []
             thread_id_map = {}
             
+            # Initialize the embedding provider
+            if not hasattr(self, 'embedding_provider'):
+                from knowledge_agents.embedding import EmbeddingProvider
+                self.embedding_provider = EmbeddingProvider()
+                logger.info("Initialized embedding provider")
+            
+            total_batches = (len(content) + batch_size - 1) // batch_size
+            logger.info(f"Processing embeddings in {total_batches} batches of up to {batch_size} items each")
+            
             for i in range(0, len(content), batch_size):
                 batch_text = content[i:i+batch_size]
                 batch_ids = thread_ids[i:i+batch_size]
                 
-                logger.info(f"Processing embedding batch {i//batch_size + 1}/{len(content)//batch_size + 1}")
+                batch_num = i//batch_size + 1
+                logger.info(f"Processing embedding batch {batch_num}/{total_batches} ({len(batch_text)} items)")
+                
+                # Update progress if callback provided
+                if progress_callback:
+                    progress_percent = int((i / len(content)) * 100)
+                    if asyncio.iscoroutinefunction(progress_callback):
+                        await progress_callback(progress_percent, 100)
+                    else:
+                        progress_callback(progress_percent, 100)
                 
                 # Generate embeddings for batch
-                batch_embeddings = await self.embedding_provider.get_embeddings(batch_text)
+                try:
+                    batch_embeddings = await self.embedding_provider.get_embeddings(batch_text)
+                    
+                    if batch_embeddings is None:
+                        logger.error(f"Failed to generate embeddings for batch {batch_num}")
+                        continue
+                    
+                    # Add to results
+                    for j, embedding in enumerate(batch_embeddings):
+                        idx = len(all_embeddings)
+                        all_embeddings.append(embedding)
+                        thread_id_map[batch_ids[j]] = idx
+                    
+                    logger.info(f"Completed batch {batch_num}/{total_batches} with {len(batch_embeddings)} embeddings")
+                except Exception as batch_error:
+                    logger.error(f"Error processing batch {batch_num}: {batch_error}")
+                    logger.error(traceback.format_exc())
+                    continue
                 
-                if batch_embeddings is None:
-                    logger.error("Failed to generate batch embeddings")
-                    return
-                
-                # Add to results
-                for j, embedding in enumerate(batch_embeddings):
-                    idx = len(all_embeddings)
-                    all_embeddings.append(embedding)
-                    thread_id_map[batch_ids[j]] = idx
-                
-                logger.info(f"Completed batch with {len(batch_embeddings)} embeddings")
                 await asyncio.sleep(0.1)  # Small delay to prevent API rate limits
+            
+            # Update final progress
+            if progress_callback:
+                if asyncio.iscoroutinefunction(progress_callback):
+                    await progress_callback(100, 100)
+                else:
+                    progress_callback(100, 100)
+            
+            if not all_embeddings:
+                logger.error("No embeddings were generated, cannot continue with storage")
+                return
             
             # Convert to numpy array for storage
             embeddings_array = np.array(all_embeddings, dtype=np.float32)
+            logger.info(f"Generated {len(embeddings_array)} embeddings with shape {embeddings_array.shape}")
             
             # Store embeddings in Object Storage
+            logger.info(f"Storing embeddings and thread ID map in Object Storage")
             success = await embedding_storage.store_embeddings(embeddings_array, thread_id_map)
             
             if success:
-                logger.info(f"Successfully generated and stored {len(all_embeddings)} embeddings")
+                logger.info(f"Successfully generated and stored {len(all_embeddings)} embeddings in Object Storage")
+                
+                # Verify embeddings were stored correctly
+                logger.info("Verifying embeddings were stored correctly")
+                try:
+                    verification_embeddings, verification_thread_map = await embedding_storage.get_embeddings()
+                    if verification_embeddings is not None and verification_thread_map is not None:
+                        logger.info(f"Verification successful: Retrieved {len(verification_embeddings)} embeddings")
+                    else:
+                        logger.warning("Verification failed: Could not retrieve stored embeddings")
+                except Exception as verify_error:
+                    logger.warning(f"Verification check failed with error: {verify_error}")
             else:
                 logger.error("Failed to store embeddings in Object Storage")
             

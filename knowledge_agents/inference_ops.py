@@ -392,7 +392,8 @@ async def process_query(
     library_df: pd.DataFrame,
     config: Optional[Any] = None,
     provider_map: Optional[Dict[str, ModelProvider]] = None,
-    use_batching: bool = True
+    use_batching: bool = True,
+    character_slug: Optional[str] = None
 ) -> Dict[str, Any]:
     """Process a query with configurable batching.
     
@@ -403,6 +404,7 @@ async def process_query(
         config: Optional configuration object
         provider_map: Optional mapping of operation types to providers
         use_batching: Whether to use batch processing (if False, processes one item at a time)
+        character_slug: Optional character slug for generating chunks and summaries
         
     Returns:
         Dict containing chunks and summary
@@ -478,7 +480,8 @@ async def process_query(
             chunk_results = await agent.generate_chunks_batch(
                 contents=texts,
                 provider=provider_map.get(ModelOperation.CHUNK_GENERATION),
-                chunk_batch_size=chunk_batch_size
+                chunk_batch_size=chunk_batch_size,
+                character_slug=character_slug
             )
         else:
             # Process one by one (for debugging or specific cases)
@@ -486,7 +489,8 @@ async def process_query(
             for content in texts:
                 result = await agent.generate_chunks(
                     content=content,
-                    provider=provider_map.get(ModelOperation.CHUNK_GENERATION)
+                    provider=provider_map.get(ModelOperation.CHUNK_GENERATION),
+                    character_slug=character_slug
                 )
                 chunk_results.append(result)
         
@@ -537,7 +541,8 @@ async def process_query(
                 contexts=[None],  # Add contexts parameter
                 temporal_contexts=[temporal_context],
                 provider=provider_map.get(ModelOperation.SUMMARIZATION),
-                summary_batch_size=summary_batch_size
+                summary_batch_size=summary_batch_size,
+                character_slug=character_slug
             )
             summary = summaries[0] if summaries else "Failed to generate summary."
         else:
@@ -546,7 +551,8 @@ async def process_query(
                 query=query,
                 results=json.dumps(processed_chunks, indent=2),
                 temporal_context=temporal_context,
-                provider=provider_map.get(ModelOperation.SUMMARIZATION)
+                provider=provider_map.get(ModelOperation.SUMMARIZATION),
+                character_slug=character_slug
             )
         
         duration_ms = round((time.time() - start_time) * 1000, 2)
@@ -582,7 +588,8 @@ async def process_multiple_queries_efficient(
     chunk_batch_size: int = 10,
     summary_batch_size: int = 5,
     max_workers: Optional[int] = None,
-    providers: Optional[Dict[ModelOperation, ModelProvider]] = None) -> List[Dict[str, Any]]:
+    providers: Optional[Dict[ModelOperation, ModelProvider]] = None,
+    character_slug: Optional[str] = None) -> List[Dict[str, Any]]:
     """Process multiple queries efficiently using optimized batching.
 
     Args:
@@ -594,6 +601,7 @@ async def process_multiple_queries_efficient(
         summary_batch_size: Batch size for summary generation
         max_workers: Maximum number of worker threads
         providers: Dictionary mapping operations to model providers
+        character_slug: Optional character slug for generating chunks and summaries
         
     Returns:
         List of results for each query
@@ -691,7 +699,8 @@ async def process_multiple_queries_efficient(
                         ModelOperation.CHUNK_GENERATION: providers.get(ModelOperation.CHUNK_GENERATION),
                         ModelOperation.SUMMARIZATION: providers.get(ModelOperation.SUMMARIZATION)
                     },
-                    use_batching=True  # Explicitly specify that we're using batching
+                    use_batching=True,  # Explicitly specify that we're using batching
+                    character_slug=character_slug
                 )
         
         # Process all queries concurrently with controlled parallelism

@@ -1,6 +1,6 @@
 modules = ["python-3.11", "postgresql-16"]
 hidden = [".pythonlibs"]
-run = "bash scripts/replit_init.sh && poetry run uvicorn api.app:app --host 0.0.0.0 --port 80"
+run = "echo 'Starting Uvicorn server...' && poetry run uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & sleep 5 && bash scripts/replit_init.sh"
 entrypoint = "api/app.py"
 
 # =============================================
@@ -18,7 +18,7 @@ DEPLOYMENT_ENV = "replit"
 API_PORT = "80"
 API_HOST = "0.0.0.0"
 LOG_LEVEL = "INFO"
-AUTO_CHECK_DATA = "true"
+AUTO_CHECK_DATA = "false" # Don't auto-check data on startup
 FORCE_DATA_REFRESH = "false"
 SKIP_EMBEDDINGS = "false"
 PYTHONPATH = "${REPL_HOME}"
@@ -38,33 +38,20 @@ USE_MOCK_EMBEDDINGS = "false"
 # Deployment Configuration
 # =============================================
 [deployment]
-run = [
-  "poetry",
-  "run",
-  "python",
-  "-m",
-  "uvicorn",
-  "api.app:app",
-  "--host",
-  "0.0.0.0",
-  "--port",
-  "80",
-]
+run = "echo 'Starting Uvicorn server...' && poetry run uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & sleep 5 && bash scripts/replit_init.sh"
 deploymentTarget = "cloudrun"
 
 # =============================================
 # Health Check Configuration
 # =============================================
 [deployment.healthCheck]
-path = "/"
+path = "/"  # Changed from "/api/v1/health" to root path for simplest check
 port = 80
-initialDelay = 10
-timeout = 2
-period = 10
+initialDelay = 30  # Increased to give more time for full startup
+timeout = 10       # Increased to allow for potential slow responses in Replit
+period = 15        # Check every 15 seconds
 consecutiveSuccesses = 1
-consecutiveFailures = 3
-
-# Remove secondary health check to avoid confusion
+consecutiveFailures = 5  # More tolerant of occasional failures
 
 [[ports]]
 localPort = 80
