@@ -616,6 +616,96 @@ class KnowledgeAgent:
                 return 'deepseek-r1-671b'
             raise ValueError(f"No model available for provider {provider}")
 
+    def _prepare_model_params(self, provider: ModelProvider, base_params: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare model parameters according to provider requirements.
+        
+        Different model providers support different parameters. This method ensures
+        we only include supported parameters for each provider.
+        
+        Args:
+            provider: The model provider (OpenAI, Grok, Venice)
+            base_params: Base parameters including model and messages
+            
+        Returns:
+            Dict containing appropriate parameters for the specified provider
+        """
+        model = base_params.get("model", "")
+        request_params = base_params.copy()
+        
+        # Skip adding additional parameters if this model doesn't support them
+        if model in self._models_without_temperature:
+            return request_params
+            
+        # Provider-specific parameter configurations
+        if provider == ModelProvider.GROK:
+            # Grok only supports temperature, not presence/frequency penalty
+            request_params.update({
+                "temperature": request_params.get("temperature", 0.3)
+            })
+        elif provider == ModelProvider.OPENAI:
+            # OpenAI supports all parameters
+            request_params.update({
+                "temperature": request_params.get("temperature", 0.3),
+                "presence_penalty": request_params.get("presence_penalty", 0.2),
+                "frequency_penalty": request_params.get("frequency_penalty", 0.2)
+            })
+        elif provider == ModelProvider.VENICE:
+            # Venice parameters
+            request_params.update({
+                "temperature": request_params.get("temperature", 0.3),
+                "presence_penalty": request_params.get("presence_penalty", 0.2),
+                "frequency_penalty": request_params.get("frequency_penalty", 0.2)
+            })
+            
+        return request_params
+        
+    async def _safe_model_call(self, client, request_params: Dict[str, Any]) -> Any:
+        """Make a safe API call handling parameter-related errors gracefully.
+        
+        Tries to make the API call with all parameters first, then falls back to
+        simpler parameter sets if needed based on error responses.
+        
+        Args:
+            client: The API client to use
+            request_params: Full set of request parameters
+            
+        Returns:
+            The API response
+            
+        Raises:
+            Exception: If the error is not related to parameters
+        """
+        try:
+            return await client.chat.completions.create(**request_params)
+        except Exception as e:
+            error_str = str(e)
+            model = request_params.get("model", "unknown")
+            
+            # Handle temperature-related errors
+            if "temperature" in error_str and ("unsupported" in error_str or "not supported" in error_str):
+                logger.warning(f"Temperature not supported by model {model}, retrying without temperature parameters")
+                # Remember this model doesn't support temperature for future requests
+                self._models_without_temperature.add(model)
+                # Remove temperature-related parameters
+                for param in ["temperature", "presence_penalty", "frequency_penalty"]:
+                    if param in request_params:
+                        del request_params[param]
+                # Retry without temperature parameters
+                return await client.chat.completions.create(**request_params)
+            # Handle other parameter-related errors
+            elif any(x in error_str.lower() for x in ["not supported", "invalid argument", "presencepenalty", "frequencypenalty"]):
+                logger.warning(f"Parameter not supported by model {model}: {error_str}, retrying with basic parameters")
+                # Strip out all optional parameters
+                basic_params = {
+                    "model": model,
+                    "messages": request_params["messages"]
+                }
+                # Retry with only basic parameters
+                return await client.chat.completions.create(**basic_params)
+            else:
+                # If it's not a parameter-related error, re-raise
+                raise
+
     async def generate_summary(
         self, 
         query: str, 
@@ -726,11 +816,11 @@ class KnowledgeAgent:
             # Prepare API request params
             request_params = {
                 "model": model,
-                "messages": messages,
-                "temperature": 0.3,
-                "presence_penalty": 0.2,
-                "frequency_penalty": 0.2
+                "messages": messages
             }
+            
+            # Add temperature and penalties based on provider
+            request_params = self._prepare_model_params(provider, request_params)
             
             # Add venice_parameters if using Venice provider and character_slug is specified
             if provider == ModelProvider.VENICE:
@@ -746,39 +836,28 @@ class KnowledgeAgent:
                             message["parameters"] = {}
                         message["parameters"]["character_slug"] = char_slug
 
-            try:
-                response = await client.chat.completions.create(**request_params)
-            except Exception as e:
-                error_str = str(e)
-                if "temperature" in error_str and ("unsupported" in error_str or "not supported" in error_str):
-                    logger.warning(f"Temperature not supported by model {model}, retrying without temperature parameters")
-                    # Remove temperature-related parameters
-                    for param in ["temperature", "presence_penalty", "frequency_penalty"]:
-                        if param in request_params:
-                            del request_params[param]
-                    # Retry without temperature parameters
-                    response = await client.chat.completions.create(**request_params)
-                else:
-                    # If it's not a temperature-related error, re-raise
-                    raise
-
-            if isinstance(response, str):
-                logger.error(f"Unexpected string response from API: {response}")
-                raise SummarizationError("Received unexpected string response from API")
-            return response.choices[0].message.content
-        except SummarizationError:
-            raise
+            # Make the API call with safe error handling
+            response = await self._safe_model_call(client, request_params)
+            
+            # Process the response
+            summary = response.choices[0].message.content.strip()
+            return summary
+            
         except Exception as e:
-            logger.error(f"Error generating summary with {provider}: {str(e)}")
-            if provider != ModelProvider.OPENAI and ModelProvider.OPENAI in self._clients:
+            logger.error(f"Error generating summary with {provider.value}: {str(e)}")
+            
+            # If the first provider fails, try fallback to OpenAI
+            if provider != ModelProvider.OPENAI:
                 logger.warning(f"Falling back to OpenAI for summary generation")
                 return await self.generate_summary(
-                    query, 
-                    results, 
+                    query=query,
+                    results=results,
                     context=context,
                     temporal_context=temporal_context,
                     provider=ModelProvider.OPENAI
                 )
+            
+            # If we're already using OpenAI or all fallbacks fail, raise the error
             raise SummarizationError(f"Failed to generate summary: {str(e)}") from e
 
     async def generate_chunks(
@@ -813,13 +892,8 @@ class KnowledgeAgent:
                     ]
                 }
                 
-                # Only add temperature params if we know the model supports them
-                if model not in self._models_without_temperature:
-                    request_params.update({
-                        "temperature": 0.1,
-                        "presence_penalty": 0.1,
-                        "frequency_penalty": 0.1
-                    })
+                # Prepare parameters based on provider
+                request_params = self._prepare_model_params(provider, request_params)
                 
                 # Add venice_parameters if using Venice provider and character_slug is specified
                 if provider == ModelProvider.VENICE:
@@ -835,95 +909,45 @@ class KnowledgeAgent:
                                 message["parameters"] = {}
                             message["parameters"]["character_slug"] = char_slug
 
+                # Make the API call with safe error handling
+                response = await self._safe_model_call(client, request_params)
+                
+                # Process the response
+                content = response.choices[0].message.content
+                
+                # Try to parse the response as JSON
                 try:
-                    response = await client.chat.completions.create(**request_params)
-                except Exception as e:
-                    error_str = str(e)
-                    if "temperature" in error_str and ("unsupported" in error_str or "not supported" in error_str):
-                        logger.warning(f"Temperature not supported by model {model}, retrying without temperature parameters")
-                        # Remember this model doesn't support temperature for future requests
-                        self._models_without_temperature.add(model)
-                        # Remove temperature-related parameters
-                        for param in ["temperature", "presence_penalty", "frequency_penalty"]:
-                            if param in request_params:
-                                del request_params[param]
-                        # Retry without temperature parameters
-                        response = await client.chat.completions.create(**request_params)
-                    else:
-                        # If it's not a temperature-related error, re-raise
-                        raise
-
-                result = response.choices[0].message.content
-                if not result:
-                    raise ChunkGenerationError("Empty response from model")
-
-                # Split on signal_context as per prompt template
-                sections = result.split("<signal_context>")
-
-                if len(sections) > 1:
-                    thread_analysis = sections[0].strip()
-                    signal_context = sections[1].strip()
-
-                    # Parse thread analysis metrics
-                    metrics = {}
-                    for line in thread_analysis.split('\n'):
-                        if '(' in line and ')' in line:
-                            try:
-                                # Extract metrics from format: (t, metric, value, confidence)
-                                metric_str = line[line.find("(")+1:line.find(")")].strip()
-                                parts = [p.strip().strip("'\"") for p in metric_str.split(',')]
-                                if parts[0] == 't' or 'metric' in parts:
-                                    continue
-                                if len(parts) >= 4:
-                                    timestamp, metric_name, value, confidence = parts[:4]
-                                    try:
-                                        metrics[metric_name] = float(value)
-                                    except (ValueError, TypeError) as e:
-                                        logger.warning(f"Could not convert metric value to float: {value}")
-                            except Exception as e:
-                                logger.warning(f"Failed to parse metric line: {line}, error: {e}")
-
-                    # Parse context sections
-                    context_elements = self._parse_context_sections(signal_context)
-
-                    return {
-                        "analysis": {
-                            "thread_analysis": thread_analysis,
-                            "metrics": metrics
-                        },
-                        "context": context_elements,
-                        "metrics": {
-                            "sections": len(sections),
-                            "analysis_length": len(thread_analysis),
-                            "context_length": len(signal_context),
-                            **metrics
+                    result = json.loads(content)
+                    
+                    # Ensure all keys are present
+                    if not all(key in result for key in ["thread_id", "chunks", "summary"]):
+                        logger.warning(f"Unexpected structure in chunks response: {content[:50]}...")
+                        # Format as minimum viable result
+                        return {
+                            "thread_id": self._generate_thread_id(content),
+                            "chunks": [content],  # Use full content as single chunk
+                            "summary": content[:100]  # Use first 100 chars as summary
                         }
-                    }
-                else:
+                    
+                    return result
+                except json.JSONDecodeError:
+                    logger.warning(f"Could not parse chunks response as JSON: {content[:50]}...")
+                    # Return a fallback response
                     return {
-                        "analysis": {
-                            "thread_analysis": result.strip(),
-                            "metrics": {}
-                        },
-                        "context": {
-                            "key_claims": [],
-                            "supporting_text": [],
-                            "risk_assessment": [],
-                            "viral_potential": []
-                        },
-                        "metrics": {
-                            "sections": 1,
-                            "analysis_length": len(result),
-                            "context_length": 0
-                        }
+                        "thread_id": self._generate_thread_id(content),
+                        "chunks": [content],  # Use full content as single chunk
+                        "summary": content[:100]  # Use first 100 chars as summary
                     }
-            except ChunkGenerationError:
-                raise
+            
             except Exception as e:
-                logger.error(f"Error generating chunks with {provider}: {str(e)}")
-                if provider != ModelProvider.OPENAI and ModelProvider.OPENAI in self._clients:
+                logger.error(f"Error generating chunks with {provider.value}: {str(e)}")
+                
+                # If the first provider fails, try fallback to OpenAI
+                if provider != ModelProvider.OPENAI:
                     logger.warning(f"Falling back to OpenAI for chunk generation")
                     return await self.generate_chunks(content, provider=ModelProvider.OPENAI)
+                
+                # If we're already using OpenAI or all fallbacks fail, raise the error
                 raise ChunkGenerationError(f"Failed to generate chunks: {str(e)}") from e
 
     def _optimize_batch_size(self, contents: List[str], default_batch_size: int) -> int:
@@ -1411,3 +1435,20 @@ class KnowledgeAgent:
             logger.warning(f"Default provider not configured, using {provider.value}")
 
         return provider
+
+    def _generate_thread_id(self, content: str) -> str:
+        """Generate a thread ID for content that doesn't have one.
+        
+        Args:
+            content: The text content to generate an ID for
+            
+        Returns:
+            A unique thread ID based on content hash
+        """
+        # Create a hash of the content
+        content_hash = hashlib.md5(content.encode()).hexdigest()[:12]
+        
+        # Create a thread ID with a timestamp prefix for uniqueness
+        import time
+        timestamp = int(time.time())
+        return f"gen_{timestamp}_{content_hash}"
