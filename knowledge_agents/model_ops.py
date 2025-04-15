@@ -17,6 +17,7 @@ import tiktoken
 import hashlib
 import numpy as np
 from config.base import BaseConfig
+from knowledge_agents.utils import get_venice_character_slug
 # Initialize logging
 logger = logging.getLogger(__name__)
 
@@ -823,11 +824,13 @@ class KnowledgeAgent:
             request_params = self._prepare_model_params(provider, request_params)
             
             # Add venice_parameters if using Venice provider and character_slug is specified
+            # pisagor-ai https://venice.ai/c/pisagor-ai?ref=KWgrlE
+            # coinrotatorai-1 https://venice.ai/c/coinrotatorai-1?ref=rvp5n5
             if provider == ModelProvider.VENICE:
                 # Use provided character_slug or get default from config
                 char_slug = character_slug
                 if char_slug is None:
-                    char_slug = Config.get_venice_character_slug()
+                    char_slug = get_venice_character_slug()
                 
                 if char_slug:
                     # Pass character_slug in the messages parameter structure
@@ -900,7 +903,7 @@ class KnowledgeAgent:
                     # Use provided character_slug or get default from config
                     char_slug = character_slug
                     if char_slug is None:
-                        char_slug = Config.get_venice_character_slug()
+                        char_slug = get_venice_character_slug()
                     
                     if char_slug:
                         # Pass character_slug in the messages parameter structure

@@ -25,6 +25,40 @@ from config.settings import Config
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Patch for Google Cloud Storage credentials to fix the universe_domain issue
+def patch_gcs_credentials():
+    """Apply a global patch to Google Cloud Storage credentials to add universe_domain attribute.
+    
+    This fixes the AttributeError: 'Credentials' object has no attribute 'universe_domain'
+    that occurs when using newer google-cloud-storage versions with replit-object-storage.
+    """
+    try:
+        import google.auth.credentials
+        
+        # Skip if already patched
+        creds = google.auth.credentials.Credentials()
+        if hasattr(creds, 'universe_domain'):
+            return
+            
+        # Store original __init__ method
+        original_init = google.auth.credentials.Credentials.__init__
+        
+        # Create patched init method that adds the attribute
+        def patched_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            if not hasattr(self, 'universe_domain'):
+                self.universe_domain = 'googleapis.com'
+        
+        # Apply patch
+        google.auth.credentials.Credentials.__init__ = patched_init
+        logger.info("Applied patch for Google Cloud Storage credentials universe_domain attribute")
+        
+    except Exception as e:
+        logger.warning(f"Failed to apply Google Cloud Storage credentials patch: {e}")
+
+# Apply patch when module is loaded
+patch_gcs_credentials()
+
 class CompleteDataStorage(ABC):
     """Abstract interface for complete dataset storage."""
     
@@ -522,9 +556,10 @@ class ReplitCompleteDataStorage(CompleteDataStorage):
                         
                         if not filtered_chunk.empty:
                             file_record_count += len(filtered_chunk)
-                            # Store chunk in database
-                            await self.store_data(filtered_chunk)
-                            logger.info(f"Processed chunk with {len(filtered_chunk)} rows from file {file_path}")
+                            # Get source filename from DataFrame attributes if available
+                            current_filename = chunk.attrs.get('source_filename', file_path)
+                            # Store chunk in database with the source filename
+                            await self.store_data(filtered_chunk, current_filename=current_filename)
                         
                         # Yield to other tasks
                         await asyncio.sleep(0)
@@ -556,12 +591,22 @@ class ReplitCompleteDataStorage(CompleteDataStorage):
             logger.error(traceback.format_exc())
             return False
     
-    async def store_data(self, df: pd.DataFrame) -> bool:
-        """Store complete dataset in PostgreSQL database."""
+    async def store_data(self, df: pd.DataFrame, current_filename: Optional[str] = None) -> bool:
+        """Store complete dataset in PostgreSQL database.
+        
+        Args:
+            df: DataFrame containing data to sync
+            current_filename: The actual source filename for this chunk
+        """
         try:
             # Use the new sync method to only add new data
             rows_added = self.db.sync_data_from_dataframe(df)
             logger.info(f"Synchronized complete data with PostgreSQL, added {rows_added} new rows")
+            
+            # Use the passed filename if provided, otherwise use a default message
+            file_ref = current_filename if current_filename else "unknown source"
+            logger.info(f"Processed chunk with {len(df)} rows from file {file_ref}")
+            
             return True
         except Exception as e:
             logger.error(f"Error storing complete data: {e}")
@@ -621,6 +666,36 @@ class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
         self.stratified_key = "stratified_sample.json"
         self.metadata_key = "stratified_metadata.json"
     
+    def _init_object_client(self, bucket=None):
+        """Initialize Object Storage client with proper error handling.
+        
+        Returns:
+            Object Storage client instance or None if initialization fails
+        """
+        try:
+            # Apply credential patch if needed before client initialization
+            patch_gcs_credentials()
+            
+            # Import Object Storage client
+            from replit.object_storage import Client
+            
+            try:
+                if bucket:
+                    return Client(bucket=bucket)
+                else:
+                    return Client()
+            except ValueError as bucket_error:
+                # Handle no default bucket error
+                if "no default bucket" in str(bucket_error).lower():
+                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'")
+                    return Client(bucket=self.default_bucket)
+                else:
+                    raise
+        except Exception as e:
+            logger.error(f"Failed to initialize Object Storage client: {e}")
+            logger.error(traceback.format_exc())
+            return None
+    
     async def store_sample(self, df: pd.DataFrame) -> bool:
         """Store stratified sample to Object Storage."""
         if df.empty:
@@ -628,26 +703,12 @@ class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
             return False
         
         try:
-            # Import Object Storage client
-            from replit.object_storage import Client
+            # Initialize client with patched method
+            object_client = self._init_object_client()
             
-            try:
-                # Try to initialize with default bucket
-                object_client = Client()
-            except ValueError as bucket_error:
-                # If error mentions 'no default bucket', use our default
-                if "no default bucket" in str(bucket_error).lower():
-                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'. "
-                                  f"Please configure a bucket in .replit file with: bucket = \"{self.default_bucket}\"")
-                    try:
-                        # Try to use the default bucket name
-                        object_client = Client(bucket=self.default_bucket)
-                    except Exception as e:
-                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
-                        return False
-                else:
-                    # Re-raise other errors
-                    raise
+            if not object_client:
+                logger.error("Failed to initialize Object Storage client")
+                return False
             
             # Create a copy of the DataFrame for serialization
             df_copy = df.copy()
@@ -693,23 +754,20 @@ class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
     async def get_sample(self) -> Optional[pd.DataFrame]:
         """Retrieve stratified sample from Object Storage."""
         try:
-            # Import Object Storage client
-            from replit.object_storage import Client
+            # Initialize client with patched method
+            object_client = self._init_object_client()
             
-            try:
-                # Try to initialize with default bucket
-                object_client = Client()
-            except ValueError as bucket_error:
-                # If error mentions 'no default bucket', use our default
-                if "no default bucket" in str(bucket_error).lower():
-                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'")
-                    try:
-                        object_client = Client(bucket=self.default_bucket)
-                    except Exception as e:
-                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
-                        return None
-                else:
-                    raise
+            # If client initialization failed, try fallback to key-value store
+            if not object_client:
+                logger.warning("Failed to initialize Object Storage client, trying key-value store fallback")
+                from config.replit import KeyValueStore
+                kv_store = KeyValueStore()
+                sample = kv_store.get_stratified_sample()
+                if sample is not None:
+                    logger.info(f"Retrieved stratified sample with {len(sample)} rows from key-value store")
+                    return sample
+                logger.warning("No sample found in key-value store, returning empty DataFrame")
+                return pd.DataFrame()
             
             # Check if files exist in Object Storage
             objects = object_client.list()
@@ -749,28 +807,30 @@ class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
         except Exception as e:
             logger.error(f"Error retrieving stratified sample from Object Storage: {e}")
             logger.error(traceback.format_exc())
+            
+            # Try falling back to key-value store
+            logger.warning("Trying key-value store fallback")
+            try:
+                from config.replit import KeyValueStore
+                kv_store = KeyValueStore()
+                sample = kv_store.get_stratified_sample()
+                if sample is not None:
+                    logger.info(f"Retrieved stratified sample with {len(sample)} rows from key-value store")
+                    return sample
+            except Exception as kv_error:
+                logger.error(f"Failed to get sample from key-value store: {kv_error}")
+            
             return None
     
     async def sample_exists(self) -> bool:
         """Check if stratified sample exists in Object Storage."""
         try:
-            # Import Object Storage client
-            from replit.object_storage import Client
+            # Initialize client with patched method
+            object_client = self._init_object_client()
             
-            try:
-                # Try to initialize with default bucket
-                object_client = Client()
-            except ValueError as bucket_error:
-                # If error mentions 'no default bucket', use our default
-                if "no default bucket" in str(bucket_error).lower():
-                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'")
-                    try:
-                        object_client = Client(bucket=self.default_bucket)
-                    except Exception as e:
-                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
-                        return False
-                else:
-                    raise
+            if not object_client:
+                logger.warning("Failed to initialize Object Storage client, assuming sample exists")
+                return True
             
             # List objects and check if stratified sample and metadata exist
             objects = object_client.list()
@@ -788,7 +848,9 @@ class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
         except Exception as e:
             logger.error(f"Error checking if sample exists in Object Storage: {e}")
             logger.error(traceback.format_exc())
-            return False
+            # In deployed environment, assume the sample exists to prevent unnecessary refreshes
+            logger.warning("Error checking if sample exists, assuming it does exist to prevent unnecessary refreshes")
+            return True
 
 class ReplitObjectEmbeddingStorage(EmbeddingStorage):
     """Object Storage-based implementation of embedding storage for Replit."""
@@ -800,6 +862,36 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
         self.thread_map_key = "thread_id_map.json"
         self.replit_kv = None  # For state tracking only
         self.default_bucket = "knowledge-agent-embeddings"  # Default bucket name
+    
+    def _init_object_client(self, bucket=None):
+        """Initialize Object Storage client with proper error handling.
+        
+        Returns:
+            Object Storage client instance or None if initialization fails
+        """
+        try:
+            # Apply credential patch if needed before client initialization
+            patch_gcs_credentials()
+            
+            # Import Object Storage client
+            from replit.object_storage import Client
+            
+            try:
+                if bucket:
+                    return Client(bucket=bucket)
+                else:
+                    return Client()
+            except ValueError as bucket_error:
+                # Handle no default bucket error
+                if "no default bucket" in str(bucket_error).lower():
+                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'")
+                    return Client(bucket=self.default_bucket)
+                else:
+                    raise
+        except Exception as e:
+            logger.error(f"Failed to initialize Object Storage client: {e}")
+            logger.error(traceback.format_exc())
+            return None
     
     async def store_embeddings(self, embeddings: np.ndarray, thread_id_map: Dict[str, int]) -> bool:
         """Store embeddings to Object Storage and thread ID map."""
@@ -828,29 +920,12 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
             
             logger.info(f"Validated embeddings with shape {embeddings.shape} for storage")
             
-            # Import Object Storage client
-            from replit.object_storage import Client
+            # Initialize client with patched method
+            object_client = self._init_object_client()
             
-            try:
-                # Try to initialize with default bucket
-                logger.info("Initializing Replit Object Storage client")
-                object_client = Client()
-                logger.info(f"Successfully initialized Object Storage client with default bucket")
-            except ValueError as bucket_error:
-                # If error mentions 'no default bucket', use our default
-                if "no default bucket" in str(bucket_error).lower():
-                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}'. "
-                                  f"Please configure a bucket in .replit file with: bucket = \"{self.default_bucket}\"")
-                    try:
-                        # Try to use the default bucket name
-                        object_client = Client(bucket=self.default_bucket)
-                        logger.info(f"Successfully initialized Object Storage client with bucket: {self.default_bucket}")
-                    except Exception as e:
-                        logger.error(f"Failed to initialize Object Storage with default bucket: {e}")
-                        return False
-                else:
-                    # Re-raise other errors
-                    raise
+            if not object_client:
+                logger.error("Failed to initialize Object Storage client")
+                return False
             
             # Ensure consistent thread ID format (convert all to strings)
             clean_thread_map = {str(k).strip(): v for k, v in thread_id_map.items()}
@@ -934,28 +1009,12 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
         try:
             logger.info("Retrieving embeddings from Object Storage")
             
-            # Import Object Storage client
-            from replit.object_storage import Client
+            # Initialize client with patched method
+            object_client = self._init_object_client()
             
-            try:
-                # Try to initialize with default bucket
-                logger.info("Initializing Object Storage client for retrieval")
-                object_client = Client()
-                logger.info("Successfully initialized Object Storage client with default bucket")
-            except ValueError as bucket_error:
-                # If error mentions 'no default bucket', use our default
-                if "no default bucket" in str(bucket_error).lower():
-                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}' for retrieval")
-                    try:
-                        # Try to use the default bucket name
-                        object_client = Client(bucket=self.default_bucket)
-                        logger.info(f"Successfully initialized Object Storage client with bucket: {self.default_bucket}")
-                    except Exception as e:
-                        logger.error(f"Failed to initialize Object Storage with default bucket for retrieval: {e}")
-                        return None, None
-                else:
-                    # Re-raise other errors
-                    raise
+            if not object_client:
+                logger.error("Failed to initialize Object Storage client")
+                return None, None
             
             # Check if files exist in Object Storage
             logger.info("Checking if embeddings and thread map exist in Object Storage")
@@ -1039,25 +1098,12 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
     async def embeddings_exist(self) -> bool:
         """Check if embeddings exist in Object Storage."""
         try:
-            # Import Object Storage client
-            from replit.object_storage import Client
+            # Initialize client with patched method
+            object_client = self._init_object_client()
             
-            try:
-                # Try to initialize with default bucket
-                object_client = Client()
-            except ValueError as bucket_error:
-                # If error mentions 'no default bucket', use our default
-                if "no default bucket" in str(bucket_error).lower():
-                    logger.warning(f"No default bucket configured. Using '{self.default_bucket}' for retrieval")
-                    try:
-                        # Try to use the default bucket name
-                        object_client = Client(bucket=self.default_bucket)
-                    except Exception as e:
-                        logger.error(f"Failed to initialize Object Storage with default bucket for retrieval: {e}")
-                        return False
-                else:
-                    # Re-raise other errors
-                    raise
+            if not object_client:
+                logger.error("Failed to initialize Object Storage client")
+                return False
             
             # List objects and check if embeddings and thread map exist
             objects = object_client.list()

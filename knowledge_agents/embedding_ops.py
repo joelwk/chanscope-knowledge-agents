@@ -1,3 +1,8 @@
+"""Embedding operations for NLP tasks.
+
+Functions for handling embeddings, including generation, loading, and vectorized search.
+"""
+
 import os
 import json
 import time
@@ -12,20 +17,50 @@ import gc
 import tempfile
 import pytz
 from tqdm import tqdm
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Tuple, Union, Awaitable
 from filelock import FileLock, Timeout
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 import hashlib
 from config.settings import Config
+from config.base_settings import get_base_settings
+from config.logging_config import get_logger
+from config.env_loader import is_replit_environment
 
+# Configure logger
+logger = get_logger(__name__)
+
+# Define fallback dimensions for mock embeddings
+DEFAULT_EMBEDDING_DIM = 3072  # OpenAI's text-embedding-3-large dimension
+
+# Import ModelProvider, ModelConfig, and KnowledgeAgent using a try/except to break circular imports
 try:
-    # Import everything needed from model_ops
-    from .model_ops import ModelProvider, ModelConfig as Config, KnowledgeAgent
-except ImportError:
-    # Fallback for direct imports
-    from knowledge_agents.model_ops import ModelProvider, ModelConfig as Config, KnowledgeAgent
+    from enum import Enum
+    
+    # Define a local copy of ModelProvider enum to avoid circular imports
+    class ModelProvider(str, Enum):
+        """Supported model providers."""
+        OPENAI = "openai"
+        GROK = "grok"
+        VENICE = "venice"
+        
+    # Now import the real classes, but handle potential circular imports gracefully
+    try:
+        from knowledge_agents.model_ops import ModelProvider as ExternalModelProvider
+        from knowledge_agents.model_ops import ModelConfig, KnowledgeAgent
+        # If successful, use the external ModelProvider
+        ModelProvider = ExternalModelProvider
+    except ImportError:
+        # Keep using our local ModelProvider if there's a circular import
+        logger.warning("Using local ModelProvider enum due to import issues")
+except Exception as e:
+    logger.error(f"Error setting up ModelProvider: {e}")
+    # Define a minimal ModelProvider if everything else fails
+    class ModelProvider:
+        OPENAI = "openai"
+        GROK = "grok"
+        VENICE = "venice"
 
 # Define KnowledgeDocument class here since it doesn't exist in model_ops.py
 class KnowledgeDocument:
@@ -57,9 +92,6 @@ class KnowledgeDocument:
             "posted_date_time": self.posted_date_time,
             "text_clean": self.text_clean
         }
-
-# Initialize logging
-logger = logging.getLogger(__name__)
 
 # Use thread-safe singleton pattern for KnowledgeAgent
 _agent_instance = None
@@ -834,38 +866,6 @@ async def process_sub_batch(
         f"avg_length={sum(text_lengths)/len(text_lengths):.1f}"
     )
 
-    # Generate mock embeddings helper function to avoid code duplication
-    def generate_mock_embeddings(articles):
-        embedding_dim = 3072  # Match OpenAI's text-embedding-3-large dimension
-        batch_results = []
-
-        # Log sample thread IDs for debugging
-        sample_thread_ids = [article.thread_id for article in articles[:5]] if len(articles) > 0 else []
-        logger.info(f"Sample thread_ids in generate_mock_embeddings: {sample_thread_ids}")
-        logger.info(f"Thread ID types: {[type(article.thread_id).__name__ for article in articles[:5]]}")
-
-        for article in articles:
-            # Ensure thread_id is a string
-            thread_id_str = str(article.thread_id)
-
-            # Generate a deterministic seed from the article ID
-            seed = int(hashlib.md5(thread_id_str.encode()).hexdigest(), 16) % (2**32)
-            np.random.seed(seed)
-
-            # Generate mock embedding (normalized for realistic values)
-            mock_embedding = np.random.normal(0, 0.1, embedding_dim)
-            mock_embedding = mock_embedding / np.linalg.norm(mock_embedding)
-
-            batch_results.append((
-                thread_id_str,  # Use the string version of thread_id
-                article.posted_date_time, 
-                article.text_clean, 
-                mock_embedding.tolist()
-            ))
-
-        logger.info(f"Generated {len(batch_results)} mock embeddings as fallback")
-        return batch_results
-
     try:
         async with asyncio.timeout(30):  # 30 second timeout (reduced from 60)
             try:
@@ -922,7 +922,7 @@ async def process_sub_batch(
                 else:
                     logger.warning("Empty or null response from embedding API")
                     # Fall back to mock embeddings for empty responses
-                    return generate_mock_embeddings(valid_articles)
+                    return []
 
                 return batch_results
 
@@ -930,17 +930,17 @@ async def process_sub_batch(
                 logger.error(f"Error in API request: {e}")
                 logger.error(traceback.format_exc())
                 # Fall back to mock embeddings on API error
-                return generate_mock_embeddings(valid_articles)
+                return []
 
     except asyncio.TimeoutError:
         logger.warning("Timeout waiting for embedding API response")
         # Fall back to mock embeddings on timeout
-        return generate_mock_embeddings(valid_articles)
+        return []
     except Exception as e:
         logger.error(f"Unexpected error in sub-batch processing: {e}")
         logger.error(traceback.format_exc())
         # Fall back to mock embeddings on unexpected error
-        return generate_mock_embeddings(valid_articles)
+        return []
 
 async def process_batch(
     articles: List[KnowledgeDocument],

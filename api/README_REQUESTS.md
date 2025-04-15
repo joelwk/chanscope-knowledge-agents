@@ -13,6 +13,7 @@ This document provides detailed information about the Knowledge Agent API endpoi
 - [Embedding Management Endpoints](#embedding-management-endpoints)
 - [Debug Endpoints](#debug-endpoints)
 - [Error Handling](#error-handling)
+- [Natural Language Database Query](#natural-language-database-query)
 
 ## Overview
 
@@ -560,4 +561,119 @@ curl -X POST "http://localhost/api/v1/query" \
     "chunk_provider": "venice",
     "summary_provider": "grok"
   }'
-``` 
+```
+
+## Natural Language Database Query
+
+### `POST /api/v1/nl_query`
+
+Process a natural language query against the database using LLM-generated SQL. This endpoint converts natural language like "Show me posts from the last hour" into SQL and executes it using a two-stage LLM architecture.
+
+#### Request Body
+
+```json
+{
+  "query": "Give me threads from the last hour",
+  "limit": 100,
+  "provider": "openai"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| query | string | Yes | Natural language query to execute |
+| limit | integer | No | Maximum number of results to return (default: 100) |
+| provider | string | No | Model provider to use for SQL generation (default: system default) |
+
+> **Note:** It's recommended to use the `limit` parameter to control result size, especially for broad queries without specific filters that could return large result sets. Consider using a more specific time filter (e.g., "last hour" instead of "last month") when searching for common terms.
+
+#### Response
+
+```json
+{
+  "status": "success",
+  "query": "Give me threads from the last hour",
+  "description": {
+    "original_query": "Give me threads from the last hour",
+    "query_time": "2023-08-01T12:34:56.789Z",
+    "filters": ["Time: Last hour"],
+    "time_filter": "Last hour"
+  },
+  "sql": "SELECT * FROM complete_data WHERE posted_date_time >= %s ORDER BY posted_date_time DESC LIMIT %s",
+  "record_count": 15,
+  "data": [
+    {
+      "id": 1234,
+      "thread_id": "abc123",
+      "content": "Example post content",
+      "posted_date_time": "2023-08-01T12:30:00Z",
+      "channel_name": "tech",
+      "author": "username"
+    },
+    // ...more records
+  ],
+  "execution_time_ms": 123.45,
+  "metadata": {
+    "processing_time_ms": 123.45,
+    "sql_generation_method": "llm",
+    "timestamp": "2023-08-01T12:34:56.789Z",
+    "provider": "openai"
+  }
+}
+```
+
+#### How It Works
+
+The system uses a two-stage LLM approach:
+
+1. **SQL Generation**: Your query is passed to an LLM to convert natural language to SQL
+2. **SQL Validation**: A second step validates the SQL for security and correctness
+3. **Parameter Extraction**: Parameters are automatically extracted from your query
+4. **Query Execution**: The final SQL is executed against the PostgreSQL database
+
+For common query patterns, a hybrid approach is used that matches templates first before falling back to the LLM, providing both speed and flexibility.
+
+#### Example Queries
+
+- `"Give me threads from the last hour"`
+- `"Show posts from yesterday containing crypto"`
+- `"Find messages from the last 3 days by author john"`
+- `"Get threads from board tech about AI from this week"`
+- `"Show messages containing machine learning from this month"`
+
+#### Supported Time Filters
+
+- Last hour: `"last hour"`, `"past hour"`, `"previous hour"`, `"recent hour"`
+- Last X hours: `"last 5 hours"`, `"past 12 hours"`, etc.
+- Today: `"today"`, `"this day"`
+- Yesterday: `"yesterday"`, `"previous day"`
+- Last X days: `"last 7 days"`, `"past 30 days"`, etc.
+- This week: `"this week"`, `"current week"`
+- Last week: `"last week"`, `"previous week"`
+- This month: `"this month"`, `"current month"`
+- Last month: `"last month"`, `"previous month"`
+
+#### Content Filters
+
+- `"containing [term]"`, `"with [term]"`, `"about [term]"`, `"mentioning [term]"`
+
+#### Author Filters
+
+- `"by author [name]"`
+
+#### Channel/Board Filters
+
+- `"from board [name]"`, `"in channel [name]"`, `"on board [name]"`
+
+#### Advanced Usage
+
+The LLM-based approach allows for more complex queries:
+
+- **Combinations**: `"Find posts from channel tech about AI by author john from last week"`
+- **Contextual Understanding**: `"Show me recent discussions about the latest crypto regulations"`
+- **Natural Phrasing**: `"What are people saying about market trends this month?"`
+
+#### Errors
+
+- 400: Invalid query format or couldn't parse natural language
+- 500: Database error or other server-side issue 

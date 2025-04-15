@@ -18,6 +18,8 @@ The system provides a robust API layer that can be integrated with autonomous AI
 
 - **Multi-agent Query Processing**: Distributed processing of queries across specialized components resembles cellular specialization in complex organisms.
 
+- **Enhanced Natural Language Query Processing**: The NL query endpoint now incorporates a robust validation mechanism that retains the original query context in the SQL generation process, ensuring that essential filters (particularly content filters) are applied accurately. This mirrors natural quality control in biological systems.
+
 - **Environmental Adaptation**: Automatic environment detection and configuration adjustment similar to how organisms adapt to their surroundings.
 
 ## System Architecture
@@ -55,7 +57,7 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
 1. **Data Ingestion**: Retrieves data from S3 starting from `DATA_RETENTION_DAYS` ago.
 2. **Stratification**: Samples the complete dataset using `sampler.py` to create a representative subset.
 3. **Embedding Generation**: Creates embeddings stored in `.npz` format with thread ID mappings.
-4. **Query Processing**: Leverages embeddings for semantic search and generates summaries through multi-stage LLM processing.
+4. **Query Processing**: Leverages embeddings for semantic search and incorporates an enhanced natural language query processing module. This module uses LLMSQLGenerator to convert natural language queries into SQL queries while preserving the original query context and enforcing essential filters (particularly content filters). This approach mirrors biological quality control mechanisms, ensuring precise data retrieval.
 
 ## Quick Start Guide
 

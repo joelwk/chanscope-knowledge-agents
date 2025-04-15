@@ -57,11 +57,16 @@ async def lifespan(app: FastAPI):
     try:
         # Only initialize if specified in environment
         auto_check_data = os.environ.get('AUTO_CHECK_DATA', 'true').lower() in ('true', '1', 'yes')
+        logger.info(f"AUTO_CHECK_DATA environment variable: {os.environ.get('AUTO_CHECK_DATA', 'not set')}")
+        logger.info(f"AUTO_CHECK_DATA parsed value: {auto_check_data}")
         
         if auto_check_data:
             logger.info("AUTO_CHECK_DATA is enabled, initiating data preparation in background")
             # Create the task but don't await it - let it run fully in background
-            asyncio.create_task(initialize_background_data())
+            task = asyncio.create_task(initialize_background_data())
+            # Add a name to the task for easier debugging
+            task.set_name("background_data_init")
+            logger.info(f"Created background task: {task.get_name()}")
         else:
             logger.info("AUTO_CHECK_DATA is disabled, skipping initial data preparation")
     except Exception as e:
@@ -258,88 +263,224 @@ async def healthz():
         "timestamp": datetime.now().isoformat()
     }
 
+@app.get("/trigger-data-processing")
+async def trigger_data_processing():
+    """Manually trigger data processing."""
+    logger.info("Manual data processing triggered via endpoint")
+    
+    # Create a background task
+    task = asyncio.create_task(initialize_background_data())
+    task.set_name("manual_data_init")
+    logger.info(f"Created task from endpoint: {task.get_name()}")
+    
+    return {
+        "status": "processing_started",
+        "message": "Data processing has been triggered",
+        "time": datetime.now().isoformat()
+    }
+
+@app.get("/api/v1/force-initialization")
+async def force_initialization():
+    """Force data initialization even if AUTO_CHECK_DATA is false."""
+    logger.info("Manual data initialization triggered via endpoint")
+    
+    # Get current AUTO_CHECK_DATA setting to report it
+    auto_check_data = os.environ.get('AUTO_CHECK_DATA', 'true').lower() in ('true', '1', 'yes')
+    
+    # Override environment variable temporarily
+    original_value = os.environ.get('AUTO_CHECK_DATA')
+    os.environ['AUTO_CHECK_DATA'] = 'true'
+    
+    # Log the values
+    logger.info(f"Original AUTO_CHECK_DATA: {original_value}")
+    logger.info(f"Original parsed value: {auto_check_data}")
+    logger.info(f"Temporarily set AUTO_CHECK_DATA to: true")
+    
+    # Create a background task
+    task = asyncio.create_task(initialize_background_data())
+    task.set_name("manual_force_init")
+    logger.info(f"Created initialization task: {task.get_name()}")
+    
+    # Restore original value if it was set
+    if original_value is not None:
+        os.environ['AUTO_CHECK_DATA'] = original_value
+    else:
+        del os.environ['AUTO_CHECK_DATA']
+    
+    return {
+        "status": "initialization_started",
+        "message": "Data initialization has been triggered",
+        "original_auto_check_data": original_value,
+        "original_parsed_value": auto_check_data,
+        "time": datetime.now().isoformat()
+    }
+
+@app.get("/api/v1/initialization-status")
+async def initialization_status():
+    """Check initialization status."""
+    # Get current environment variables
+    auto_check_data = os.environ.get('AUTO_CHECK_DATA')
+    force_refresh = os.environ.get('FORCE_DATA_REFRESH')
+    skip_embeddings = os.environ.get('SKIP_EMBEDDINGS')
+    
+    # Check for data files
+    data_config = chanscope_config.get_env_specific_attributes()
+    
+    # Get file paths
+    complete_data_file = data_config.get('complete_data_file')
+    stratified_file = data_config.get('stratified_file')
+    embeddings_file = data_config.get('embeddings_file')
+    thread_id_map_file = data_config.get('thread_id_map_file')
+    
+    # Check if files exist
+    complete_data_exists = os.path.exists(complete_data_file) if complete_data_file else False
+    stratified_exists = os.path.exists(stratified_file) if stratified_file else False
+    embeddings_exist = os.path.exists(embeddings_file) if embeddings_file else False
+    thread_map_exists = os.path.exists(thread_id_map_file) if thread_id_map_file else False
+    
+    return {
+        "environment_variables": {
+            "AUTO_CHECK_DATA": auto_check_data,
+            "FORCE_DATA_REFRESH": force_refresh,
+            "SKIP_EMBEDDINGS": skip_embeddings
+        },
+        "data_files": {
+            "complete_data": {
+                "path": str(complete_data_file),
+                "exists": complete_data_exists
+            },
+            "stratified_sample": {
+                "path": str(stratified_file),
+                "exists": stratified_exists
+            },
+            "embeddings": {
+                "path": str(embeddings_file),
+                "exists": embeddings_exist
+            },
+            "thread_id_map": {
+                "path": str(thread_id_map_file),
+                "exists": thread_map_exists
+            }
+        },
+        "ready": complete_data_exists and stratified_exists and (embeddings_exist or skip_embeddings == "true"),
+        "time": datetime.now().isoformat()
+    }
+
 async def initialize_background_data():
     """Initialize data in background without blocking API startup."""
     try:
+        logger.info("Background data initialization task started")
+        logger.info(f"Environment variables at task start: AUTO_CHECK_DATA={os.environ.get('AUTO_CHECK_DATA')}, SKIP_EMBEDDINGS={os.environ.get('SKIP_EMBEDDINGS')}")
+        
         # Add additional delay to ensure health checks have succeeded first
         # Increase the delay to give more time for health checks to complete
-        await asyncio.sleep(10.0)  # Ensure we've had enough time to pass initial healthchecks
+        logger.info("Waiting 20 seconds before starting data initialization...")
+        await asyncio.sleep(20.0)  # Increased from 10.0 to 20.0 to ensure health checks pass
         
         # Get environment type from centralized function
         env_type = detect_environment()
+        logger.info(f"Detected environment type: {env_type}")
+        
+        # Read environment variables again to ensure they haven't changed
         force_refresh = os.environ.get('FORCE_DATA_REFRESH', 'false').lower() in ('true', '1', 'yes')
         skip_embeddings = os.environ.get('SKIP_EMBEDDINGS', 'false').lower() in ('true', '1', 'yes')
         
-        # Log startup delay for Replit environment in particular
-        if env_type == 'replit':
-            logger.info("Running in Replit environment, using extended initialization sequence")
+        logger.info(f"Data initialization parameters: force_refresh={force_refresh}, skip_embeddings={skip_embeddings}")
+        
+        if env_type.lower() == 'replit':
+            # For Replit, use database row count as a check
+            logger.info("Running in Replit environment, checking database status")
             
-            # Add an additional delay for Replit deployments to ensure health checks succeed
-            logger.info("Waiting additional time before starting heavy operations...")
-            await asyncio.sleep(5.0)
-            
-            # Only do one small operation at a time with yields to allow health checks to complete
-            
-            # Initialize PostgreSQL schema if needed - lightweight operation
-            from config.replit import PostgresDB
             try:
-                logger.info("Step 1/4: Initializing PostgreSQL schema")
+                # Import and initialize PostgreSQL database connection
+                from config.replit import PostgresDB
                 db = PostgresDB()
-                # Check if schema needs initialization
-                db.initialize_schema()
-                logger.info("PostgreSQL schema verified/initialized")
-                
-                # Yield control to allow other operations
-                await asyncio.sleep(0.1)
-                
-                logger.info("Step 2/4: Checking data status")
-                # Check if database is empty and we need to load data
-                row_count = await data_manager.complete_data_storage.get_row_count()
-                logger.info(f"PostgreSQL database has {row_count} rows")
-                
-                # Yield control to allow other operations
-                await asyncio.sleep(0.1)
+                row_count = db.get_row_count()
+                logger.info(f"Database row count: {row_count}")
                 
                 if row_count == 0:
-                    logger.info("PostgreSQL database is empty, force-refreshing data")
-                    # Force refresh to ensure data is loaded
+                    logger.info("Database is empty, setting force_refresh=True")
                     force_refresh = True
-                else:
-                    # Check if data is already fresh
-                    logger.info("Step 3/4: Checking data freshness")
-                    is_fresh = await data_manager.complete_data_storage.is_data_fresh()
-                    if is_fresh:
-                        logger.info(f"Database already contains {row_count} rows and data is fresh. Skipping data preparation.")
-                        # Check if stratified sample exists
-                        strat_exists = await data_manager.stratified_storage.sample_exists()
-                        if strat_exists:
-                            # Check if embeddings exist
-                            embeddings_exist = await data_manager.embedding_storage.embeddings_exist()
-                            if embeddings_exist or skip_embeddings:
-                                logger.info("All required data components already exist. No data preparation needed.")
-                                return
-                            else:
-                                logger.info("Embeddings missing, will only generate embeddings")
-                                skip_embeddings = False
-                                force_refresh = False
-                        else:
-                            logger.info("Stratified sample missing, will prepare stratified data")
-                            # Don't need to refresh complete data
-                            force_refresh = False
-                
-                logger.info("Step 4/4: Ensuring data is ready. This may take several minutes.")
             except Exception as e:
-                logger.error(f"Error initializing PostgreSQL schema: {e}")
+                logger.error(f"Error checking database status: {e}")
+                # Continue with initialization
+        else:
+            # For Docker environment, check data files directly
+            logger.info("Running in Docker environment, checking data files")
+            
+            # Check if the data directory has files
+            # Use get_env_specific_attributes() method instead of direct attribute access
+            env_specific = data_manager.config.get_env_specific_attributes()
+            complete_data_path = env_specific.get('complete_data_file')
+            stratified_path = data_manager.config.stratified_data_path
+            
+            if complete_data_path and os.path.exists(str(complete_data_path)):
+                logger.info(f"Complete data file exists: {complete_data_path}")
+            else:
+                logger.info(f"Complete data file not found, will need to create it")
+                force_refresh = True
+                
+            stratified_file = os.path.join(stratified_path, 'stratified_sample.csv')
+            if os.path.exists(stratified_file):
+                logger.info(f"Stratified file exists: {stratified_file}")
+            else:
+                logger.info(f"Stratified file not found, will need to create it")
+                
+            embeddings_file = os.path.join(stratified_path, 'embeddings.npz')
+            if os.path.exists(embeddings_file):
+                logger.info(f"Embeddings file exists: {embeddings_file}")
+            else:
+                logger.info(f"Embeddings file not found, will need to create it")
         
         # Use the unified data manager approach to ensure data is ready
         logger.info(f"Starting data preparation with force_refresh={force_refresh}, skip_embeddings={skip_embeddings}")
-        success = await data_manager.ensure_data_ready(force_refresh=force_refresh, skip_embeddings=skip_embeddings)
+        
+        # Mark initialization in progress
+        await data_manager.state_manager.mark_operation_start("background_initialization")
+        
+        # Ensure data is ready
+        success = await data_manager.ensure_data_ready(
+            force_refresh=force_refresh,
+            skip_embeddings=skip_embeddings
+        )
+        
+        # Mark initialization complete
         if success:
-            logger.info("Data preparation completed successfully via the unified data manager")
+            await data_manager.state_manager.mark_operation_complete(
+                "background_initialization",
+                {"status": "success", "timestamp": datetime.now().isoformat()}
+            )
+            logger.info("Data preparation completed successfully")
+            
+            # Create a task to periodically check data freshness if enabled
+            refresh_interval = int(os.environ.get('DATA_REFRESH_INTERVAL', '86400'))  # Default to daily
+            if os.environ.get('AUTO_REFRESH_DATA', 'false').lower() in ('true', '1', 'yes') and refresh_interval > 0:
+                logger.info(f"Setting up periodic data refresh every {refresh_interval} seconds")
+                asyncio.create_task(periodic_refresh(refresh_interval))
         else:
-            logger.warning("Data preparation completed with warnings")
+            await data_manager.state_manager.mark_operation_complete(
+                "background_initialization",
+                {"status": "error", "timestamp": datetime.now().isoformat()}
+            )
+            logger.error("Data preparation failed")
+            
+        return success
     except Exception as e:
-        logger.error(f"Error during background data initialization: {e}", exc_info=True)
+        logger.error(f"Error during background data initialization: {e}")
+        # Try to log the full stack trace for debugging
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        # Try to mark initialization as failed
+        try:
+            await data_manager.state_manager.mark_operation_complete(
+                "background_initialization",
+                {"status": "error", "error": str(e), "timestamp": datetime.now().isoformat()}
+            )
+        except Exception as mark_error:
+            logger.error(f"Error marking operation as failed: {mark_error}")
+            
+        return False
 
 # Run server directly if module is executed
 if __name__ == "__main__":

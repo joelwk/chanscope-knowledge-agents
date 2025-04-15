@@ -10,7 +10,6 @@ import traceback
 
 # Import centralized logging configuration
 from config.logging_config import get_logger
-from knowledge_agents.embedding_ops import load_embeddings, load_thread_id_map
 
 # Create a logger using the centralized configuration
 logger = get_logger('knowledge_agents.utils')
@@ -355,6 +354,8 @@ async def _fetch_embeddings_for_threads(thread_ids: List[str]) -> Dict[str, List
         
         # Get embeddings and thread map from Object Storage
         try:
+            # Directly use the embedding_storage's get_embeddings method
+            # This avoids any circular imports with embedding_ops
             embeddings_array, thread_id_map = await embedding_storage.get_embeddings()
             
             if embeddings_array is None or thread_id_map is None:
@@ -511,3 +512,35 @@ async def save_embeddings_to_numpy(
         
         # Return the original path even if save failed
         return file_path
+    
+    
+def get_venice_character_slug(character_slug: Optional[str] = None) -> str:
+    """Get the Venice character slug from environment or config.
+    
+    Args:
+        character_slug: Optional custom character slug to use
+        
+    Returns:
+        Character slug to use with Venice API
+    """
+    # Priority 1: Use explicitly provided slug if given
+    if character_slug:
+        return character_slug
+        
+    # Priority 2: Check environment variable
+    env_slug = os.environ.get("VENICE_CHARACTER_SLUG")
+    if env_slug:
+        return env_slug
+        
+    # Priority 3: Check Config class if available
+    try:
+        from config.settings import Config
+        config_slug = Config.get_venice_character_slug()
+        if config_slug:
+            return config_slug
+    except (ImportError, AttributeError):
+        logger.debug("Could not import Config or get_venice_character_slug method not found")
+        
+    # Priority 4: Use default
+    return "pisagor-ai"  # Default character
+

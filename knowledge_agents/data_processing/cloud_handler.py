@@ -278,6 +278,8 @@ class S3Handler:
                             logger.info(
                                 f"Yielding chunk with {len(chunk)} rows from {s3_key} (Total processed: {total_rows_processed})"
                             )
+                            # Pass both the chunk and the current filename
+                            chunk.attrs['source_filename'] = s3_key  # Store filename in DataFrame attributes
                             yield chunk
                 except Exception as e:
                     logger.exception(f"Error processing file {s3_key}")

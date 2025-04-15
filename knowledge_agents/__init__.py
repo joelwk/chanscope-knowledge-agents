@@ -7,7 +7,9 @@ It is designed to be configuration-agnostic and receive its settings from the ap
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
-from .model_ops import ModelProvider, ModelOperation, ModelConfig
+
+# Remove direct imports from model_ops to prevent circular imports
+# These classes will be re-exported at the bottom of this file
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,21 @@ class KnowledgeDocument:
             except:
                 return None
 
-# Export public interface
+# Export public interface - use lazy imports to avoid circular dependencies
+# This approach defers the imports until they're actually needed
 from .run import run_inference
+
+# Create placeholder names that will be imported only when used
 __all__ = ['ModelConfig', 'ModelProvider', 'ModelOperation', 'run_inference', 'KnowledgeDocument']
+
+# Define __getattr__ to lazily load modules only when accessed
+def __getattr__(name):
+    if name in ('ModelConfig', 'ModelProvider', 'ModelOperation'):
+        from .model_ops import ModelConfig, ModelProvider, ModelOperation
+        if name == 'ModelConfig': 
+            return ModelConfig
+        elif name == 'ModelProvider':
+            return ModelProvider
+        elif name == 'ModelOperation':
+            return ModelOperation
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

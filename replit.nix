@@ -1,43 +1,24 @@
 { pkgs }: {
   deps = [
-    pkgs.python311Packages.fastjsonschema
-    pkgs.python311Packages.python-dotenv
     pkgs.rustc
     pkgs.libiconv
     pkgs.cargo
-    pkgs.libxcrypt
-    pkgs.glibcLocales
-    pkgs.python311Packages.hypercorn
-    # Core Python and development tools
-    pkgs.python3
-    pkgs.poetry
-    pkgs.git
-
-    # Build dependencies
-    pkgs.gcc
+    pkgs.pgadmin4
     pkgs.pkg-config
-
-    # System libraries
-    pkgs.openssl
-    pkgs.zlib
-    pkgs.stdenv.cc.cc.lib
+    pkgs.arrow-cpp
+    pkgs.glibcLocales
+    pkgs.libxcrypt
+    pkgs.python310
+    pkgs.poetry
+    pkgs.nodePackages.pyright
+    pkgs.black
+    pkgs.python310Packages.pip
+    pkgs.python310Packages.poetry-core
+    pkgs.python310Packages.virtualenv
   ];
-
   env = {
-    LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-      pkgs.stdenv.cc.cc.lib
-      "${pkgs.zlib}/lib"
-      "${pkgs.openssl}/lib"
-    ];
-    PYTHONBIN = "${pkgs.python3}/bin/python3";
-    LANG = "en_US.UTF-8";
-    POETRY_VERSION = "1.7.1";
-    POETRY_HOME = "${pkgs.poetry}";
-    POETRY_VIRTUALENVS_CREATE = "true";
     POETRY_VIRTUALENVS_IN_PROJECT = "true";
-    POETRY_CACHE_DIR = "/tmp/.cache/pypoetry";
-    PYTHONUNBUFFERED = "1";
-    FLASK_APP = "api.app";
-    FLASK_ENV = "development";
+    POETRY_VIRTUALENVS_CREATE = "true";
+    PYTHONPATH = "${pkgs.python310}/lib/python3.10/site-packages";
   };
 }

@@ -338,6 +338,18 @@ class DataOperations:
         self._in_progress_flag_file = self.config.temp_path / 'data_update_inprogress.json'
         self._lock_timeout = 300  # 5 minutes timeout for lock acquisition
 
+        # Initialize storage implementations
+        from config.storage import StorageFactory
+        storage = StorageFactory.create(self.config)
+        
+        # Initialize embedding generator from embedding_ops
+        from knowledge_agents.embedding_ops import generate_embeddings
+        
+        # Initialize storages
+        self.embedding_storage = storage['embeddings']
+        self.complete_data_storage = storage['complete_data']
+        self.stratified_storage = storage['stratified_sample']
+
     def _acquire_lock(self) -> Optional[FileLock]:
         """Attempt to acquire the file lock, clearing stale locks if necessary."""
         try:
@@ -491,11 +503,8 @@ class DataOperations:
             all_embeddings = []
             thread_id_map = {}
             
-            # Initialize the embedding provider
-            if not hasattr(self, 'embedding_provider'):
-                from knowledge_agents.embedding import EmbeddingProvider
-                self.embedding_provider = EmbeddingProvider()
-                logger.info("Initialized embedding provider")
+            # Import the generate_embeddings function
+            from knowledge_agents.embedding_ops import generate_embeddings
             
             total_batches = (len(content) + batch_size - 1) // batch_size
             logger.info(f"Processing embeddings in {total_batches} batches of up to {batch_size} items each")
@@ -517,7 +526,7 @@ class DataOperations:
                 
                 # Generate embeddings for batch
                 try:
-                    batch_embeddings = await self.embedding_provider.get_embeddings(batch_text)
+                    batch_embeddings = await generate_embeddings(batch_text)
                     
                     if batch_embeddings is None:
                         logger.error(f"Failed to generate embeddings for batch {batch_num}")
@@ -841,9 +850,8 @@ class DataOperations:
             stratified_data = pd.read_csv(stratified_file)
             logger.info(f"Loaded {len(stratified_data)} rows from {stratified_file}")
             
-            # Initialize embedding provider
-            from .embedding import EmbeddingProvider
-            embedding_provider = EmbeddingProvider()
+            # Import embedding generation function
+            from knowledge_agents.embedding_ops import generate_embeddings
             
             # Ensure we have the necessary text field for embedding
             text_column = 'text_clean'
@@ -879,7 +887,7 @@ class DataOperations:
                 logger.info(f"Processing embedding batch {i//batch_size + 1}/{len(text_content)//batch_size + 1}")
                 
                 # Generate embeddings for batch
-                batch_embeddings = await embedding_provider.get_embeddings(batch_text)
+                batch_embeddings = await generate_embeddings(batch_text)
                 
                 if batch_embeddings is None:
                     logger.error("Failed to generate batch embeddings")
@@ -1021,16 +1029,8 @@ class DataOperations:
     async def _load_stratified_data(self) -> pd.DataFrame:
         """Load stratified data and merge with embeddings from Object Storage."""
         try:
-            # Determine environment
-            env_type = detect_environment()
-            
-            # Initialize storage based on environment
-            from config.storage import StorageFactory
-            storage = StorageFactory.create(self.config)
-            stratified_storage = storage['stratified_sample']
-            
             # Load stratified data using appropriate storage
-            stratified_data = await stratified_storage.get_sample()
+            stratified_data = await self.stratified_storage.get_sample()
             if stratified_data is None or stratified_data.empty:
                 logger.warning("Loaded stratified data is empty")
                 return pd.DataFrame()
@@ -1039,37 +1039,53 @@ class DataOperations:
             if 'embedding' not in stratified_data.columns:
                 logger.info("Embeddings not present in stratified data, loading from Object Storage")
                 
-                # Get embeddings storage
-                embedding_storage = storage['embeddings']
-                
-                # Get embeddings and thread map from storage
-                embeddings_array, thread_id_map = await embedding_storage.get_embeddings()
-                
-                if embeddings_array is not None and thread_id_map is not None:
-                    logger.info(f"Merging {len(embeddings_array)} embeddings with stratified data")
+                try:
+                    # Try to get embeddings from Object Storage
+                    embeddings_array, thread_id_map = await self.embedding_storage.get_embeddings()
                     
-                    # Add embedding column
-                    stratified_data["embedding"] = None
-                    
-                    # Convert thread IDs to strings for consistent comparison
-                    stratified_data["thread_id"] = stratified_data["thread_id"].astype(str)
-                    thread_id_map = {str(k): v for k, v in thread_id_map.items()}
-                    
-                    # Map embeddings to rows
-                    matched = 0
-                    for idx, row in stratified_data.iterrows():
-                        thread_id = str(row["thread_id"])
-                        if thread_id in thread_id_map:
-                            emb_idx = thread_id_map[thread_id]
-                            if isinstance(emb_idx, (int, str)) and str(emb_idx).isdigit():
-                                emb_idx = int(emb_idx)
-                                if 0 <= emb_idx < len(embeddings_array):
-                                    stratified_data.at[idx, "embedding"] = embeddings_array[emb_idx]
-                                    matched += 1
-                    
-                    logger.info(f"Successfully matched {matched} embeddings out of {len(stratified_data)} rows")
-                else:
-                    logger.warning("Failed to load embeddings from storage")
+                    if embeddings_array is not None and thread_id_map is not None:
+                        logger.info(f"Merging {len(embeddings_array)} embeddings with stratified data")
+                        
+                        # Add embedding column
+                        stratified_data["embedding"] = None
+                        
+                        # Convert thread IDs to strings for consistent comparison
+                        stratified_data["thread_id"] = stratified_data["thread_id"].astype(str)
+                        thread_id_map = {str(k): v for k, v in thread_id_map.items()}
+                        
+                        # Map embeddings to rows
+                        matched = 0
+                        for idx, row in stratified_data.iterrows():
+                            thread_id = str(row["thread_id"])
+                            if thread_id in thread_id_map:
+                                emb_idx = thread_id_map[thread_id]
+                                if isinstance(emb_idx, (int, str)) and str(emb_idx).isdigit():
+                                    emb_idx = int(emb_idx)
+                                    if 0 <= emb_idx < len(embeddings_array):
+                                        stratified_data.at[idx, "embedding"] = embeddings_array[emb_idx]
+                                        matched += 1
+                        
+                        logger.info(f"Successfully matched {matched} embeddings out of {len(stratified_data)} rows")
+                    else:
+                        logger.warning("Failed to load embeddings from Object Storage, generating new embeddings")
+                        # Generate new embeddings for the data
+                        from knowledge_agents.embedding_ops import generate_embeddings
+                        text_content = stratified_data['text_clean'].tolist()
+                        embeddings = await generate_embeddings(text_content)
+                        if embeddings is not None:
+                            stratified_data['embedding'] = embeddings
+                            logger.info(f"Generated {len(embeddings)} new embeddings")
+                            
+                except Exception as e:
+                    logger.warning(f"Error loading embeddings from Object Storage: {e}")
+                    logger.info("Generating new embeddings for the data")
+                    # Generate new embeddings for the data
+                    from knowledge_agents.embedding_ops import generate_embeddings
+                    text_content = stratified_data['text_clean'].tolist()
+                    embeddings = await generate_embeddings(text_content)
+                    if embeddings is not None:
+                        stratified_data['embedding'] = embeddings
+                        logger.info(f"Generated {len(embeddings)} new embeddings")
             
             # Ensure we have the necessary text field for inference
             if "text_clean" not in stratified_data.columns and "content" in stratified_data.columns:

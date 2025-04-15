@@ -4,7 +4,7 @@ import traceback
 import os
 import yaml
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Optional, Dict, Any, Union, List
 
@@ -15,8 +15,11 @@ import pytz
 import pandas as pd
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Depends, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 import secrets
 import re
+import copy
+import numpy as np
 
 from knowledge_agents.model_ops import (
     ModelProvider, 
@@ -47,6 +50,9 @@ from api.cache import CACHE_HITS, CACHE_MISSES, CACHE_ERRORS, cache
 
 from config.env_loader import is_replit_environment, get_replit_paths, detect_environment
 from knowledge_agents.utils import save_query_output
+
+# Import the LLM-based SQL generator
+from knowledge_agents.llm_sql_generator import LLMSQLGenerator, NLQueryParsingError
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -101,7 +107,8 @@ API_DOCS = {
         "trigger_embedding_generation": "/trigger_embedding_generation",
         "embedding_status": "/embedding_status",
         "debug_routes": "/debug/routes",
-        "debug_request": "/debug/request"
+        "debug_request": "/debug/request",
+        "nl_query": "/nl_query"
     }
 }
 
@@ -634,25 +641,35 @@ async def base_query(
                 if 'embedding' not in library_df.columns:
                     logger.warning("Embeddings not present in loaded data, checking if they need to be loaded separately")
                     # Check if embeddings need to be loaded separately
-                    embeddings, thread_map = await data_ops.embedding_storage.get_embeddings()
-                    if embeddings is not None and thread_map is not None:
-                        logger.info(f"Merging {len(embeddings)} embeddings with stratified data...")
-                        library_df["embedding"] = None
+                    try:
+                        # Use the StorageFactory instead of direct attribute access on data_ops
+                        from config.storage import StorageFactory
+                        storage = StorageFactory.create(data_ops.config, 'replit')
+                        embedding_storage = storage['embeddings']
                         
-                        # Add embeddings to the DataFrame
-                        matched = 0
-                        for idx, row in library_df.iterrows():
-                            thread_id = str(row["thread_id"])
-                            if thread_id in thread_map:
-                                emb_idx = thread_map[thread_id]
-                                if isinstance(emb_idx, (int, str)) and str(emb_idx).isdigit():
-                                    emb_idx = int(emb_idx)
-                                    if 0 <= emb_idx < len(embeddings):
-                                        library_df.at[idx, "embedding"] = embeddings[emb_idx]
-                                        matched += 1
-                        
-                        logger.info(f"Successfully matched {matched} embeddings out of {len(library_df)} rows")
-                    else:
+                        embeddings, thread_map = await embedding_storage.get_embeddings()
+                        if embeddings is not None and thread_map is not None:
+                            logger.info(f"Merging {len(embeddings)} embeddings with stratified data...")
+                            library_df["embedding"] = None
+                            
+                            # Add embeddings to the DataFrame
+                            matched = 0
+                            for idx, row in library_df.iterrows():
+                                thread_id = str(row["thread_id"])
+                                if thread_id in thread_map:
+                                    emb_idx = thread_map[thread_id]
+                                    if isinstance(emb_idx, (int, str)) and str(emb_idx).isdigit():
+                                        emb_idx = int(emb_idx)
+                                        if 0 <= emb_idx < len(embeddings):
+                                            library_df.at[idx, "embedding"] = embeddings[emb_idx]
+                                            matched += 1
+                            
+                            logger.info(f"Successfully matched {matched} embeddings out of {len(library_df)} rows")
+                        else:
+                            logger.warning("Failed to load separate embeddings, proceeding with potentially limited functionality")
+                    except Exception as e:
+                        logger.error(f"Error loading embeddings: {e}")
+                        logger.error(traceback.format_exc())
                         logger.warning("Failed to load separate embeddings, proceeding with potentially limited functionality")
                 
                 # Ensure we have the necessary text field for inference
@@ -2153,4 +2170,324 @@ async def stratify_data(request: Request):
         # TODO: Implement this
     except Exception as e:
         handle_error(e)
+
+# Define request models
+class NLQueryRequest(BaseModel):
+    """Natural language query request model."""
+    query: str
+    limit: Optional[int] = 100  # Default limit of 100 records
+    provider: Optional[str] = None  # This parameter is ignored; static providers are always used
+    format_for_llm: Optional[bool] = True  # Whether to format the response for LLM consumption
+    
+    class Config:
+        """Pydantic model configuration."""
+        schema_extra = {
+            "example": {
+                "query": "Find 5 rows from the last 12 hours containing tarrif",
+                "limit": 5,
+                "format_for_llm": True
+            }
+        }
+
+class NLQueryResponse(BaseModel):
+    """Natural language query response model."""
+    status: str = "success"
+    query: str
+    description: Dict[str, Any]
+    sql: str
+    record_count: int
+    data: List[Dict[str, Any]]
+    execution_time_ms: float
+    metadata: Dict[str, Any] = {}
+    
+    class Config:
+        """Pydantic model configuration."""
+        # Allow for arbitrary types like numpy to be converted to JSON-compatible formats
+        json_encoders = {
+            # Convert numpy types to Python native types
+            np.integer: lambda x: int(x),
+            np.floating: lambda x: float(x),
+            np.ndarray: lambda x: x.tolist(),
+            # Ensure dates are formatted consistently
+            datetime: lambda x: x.isoformat(),
+            date: lambda x: x.isoformat(),
+        }
+        # Populate by field name to ensure consistency
+        populate_by_name = True
+        # Schema configuration for better OpenAPI documentation
+        schema_extra = {
+            "example": {
+                "status": "success",
+                "query": "Find 5 rows from the last 12 hours containing tarrif",
+                "description": {
+                    "original_query": "Find 5 rows from the last 12 hours containing tarrif",
+                    "query_time": "2025-04-14T18:25:17.987595+00:00",
+                    "filters": [
+                        "Time: Last 12 hours", 
+                        "Limit: 5 rows",
+                        "Content: Contains 'tarrif'"
+                    ],
+                    "time_filter": "Last 12 hours",
+                    "limit": 5,
+                    "content_filter": "tarrif"
+                },
+                "sql": "SELECT * FROM complete_data WHERE posted_date_time >= %s AND content ILIKE %s ORDER BY posted_date_time DESC LIMIT 5",
+                "record_count": 5,
+                "data": [
+                    {
+                        "id": 385250,
+                        "content": "Discussion about recent tarrif changes affecting trade policies and economic outlook.",
+                        "posted_date_time": "2025-04-14T13:31:41+00:00",
+                        "thread_id": "17647448"
+                    },
+                    {
+                        "id": 385251,
+                        "content": "The new tarrif implementation has sparked debate among economists.",
+                        "posted_date_time": "2025-04-14T13:30:46+00:00",
+                        "thread_id": "17647447"
+                    }
+                ],
+                "execution_time_ms": 189.72,
+                "metadata": {
+                    "processing_time_ms": 189.72,
+                    "sql_generation_method": "llm",
+                    "timestamp": "2025-04-14T18:25:18.177317+00:00",
+                    "providers_used": {
+                        "enhancer": "openai",
+                        "generator": "venice"
+                    }
+                }
+            }
+        }
+
+@router.post("/nl_query", response_model=NLQueryResponse)
+async def natural_language_query(
+    request: NLQueryRequest,
+    agent: KnowledgeAgent = Depends(get_agent)
+) -> Dict[str, Any]:
+    """
+    Process a natural language query against the database using LLM-generated SQL.
+    
+    This endpoint converts a natural language query string to SQL using a three-stage LLM process
+    and executes it against the complete_data table in the PostgreSQL database.
+    
+    The SQL generation uses fixed providers:
+    - OpenAI for query enhancement
+    - Venice for SQL generation and validation
+    
+    Args:
+        request: The NLQueryRequest containing the natural language query
+        
+    Returns:
+        JSON response with query results and metadata
+        
+    Example queries:
+        - "Give me threads from the last hour"
+        - "Show posts from yesterday containing crypto"
+        - "Find messages from the last 3 days by author john"
+        - "Get threads from board tech about AI from this week"
+        - "Find 5 rows from the last 12 hours containing tarrif"
+        - "Find 8 rows from the last 24 hours that contains bitcoin"
+        - "Show me 10 random posts mentioning ethereum"
+    """
+    start_time = time.time()
+    
+    # Check if we're in a Replit environment
+    from config.env_loader import detect_environment, is_replit_environment
+    env_type = detect_environment()
+    
+    if not is_replit_environment():
+        # Return a helpful error message for Docker/local environments
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "ENVIRONMENT_RESTRICTION",
+                "message": "Natural language queries are only available in the Replit environment where PostgreSQL is properly configured.",
+                "environment": env_type,
+                "possible_solution": "This feature requires a PostgreSQL database with the complete_data table. Please check the documentation for setup instructions."
+            }
+        )
+    
+    try:
+        logger.info(f"Processing natural language query: {request.query}")
+        
+        # Create SQL generator
+        sql_generator = LLMSQLGenerator(agent)
+        
+        # Get the query description for user feedback
+        description = sql_generator.get_query_description(request.query)
+        
+        # Convert NL to SQL - Note that provider parameter is ignored, static providers are used
+        sql_query, params = await sql_generator.generate_sql(
+            nl_query=request.query,
+            provider=None,  # This is ignored, static providers are used
+            use_hybrid_approach=True  # Use template matching for common patterns
+        )
+        
+        # Apply limit if not already in the query
+        if request.limit and "LIMIT" not in sql_query.upper():
+            sql_query += f" LIMIT %s"
+            params.append(request.limit)
+        
+        # Initialize the database connection
+        from config.replit import PostgresDB
+        db = PostgresDB()
+        
+        # Execute the query
+        with db.get_connection() as conn:
+            # Use pandas to read from database with parameterized query
+            try:
+                logger.info(f"Executing SQL query: {sql_query}")
+                logger.debug(f"With parameters: {params}")
+                df = pd.read_sql(sql_query, conn, params=params)
+                logger.info(f"Query returned {len(df)} rows")
+            except Exception as e:
+                logger.error(f"Error executing SQL query: {e}")
+                logger.error(traceback.format_exc())
+                raise ProcessingError(
+                    message=f"Error executing SQL query: {str(e)}",
+                    operation="sql_execution"
+                )
+        
+        # Convert to dictionaries for JSON response
+        # Handle datetime columns by converting to ISO format strings
+        records = []
+        for _, row in df.iterrows():
+            record = {}
+            for column, value in row.items():
+                # Skip less valuable fields
+                if column in ['author', 'channel_name', 'inserted_at']:
+                    continue
+                    
+                if isinstance(value, pd.Timestamp) or isinstance(value, datetime):
+                    record[column] = value.isoformat()
+                else:
+                    record[column] = value
+                    
+                # Trim long content to a reasonable length for LLM consumption
+                if column == 'content' and isinstance(value, str) and len(value) > 500:
+                    record[column] = value[:500] + "..."
+            
+            records.append(record)
+        
+        # Calculate execution time
+        execution_time_ms = round((time.time() - start_time) * 1000, 2)
+        
+        # Build metadata
+        metadata = {
+            "processing_time_ms": execution_time_ms,
+            "sql_generation_method": "llm",
+            "timestamp": datetime.now(pytz.UTC).isoformat(),
+            "providers_used": {
+                "enhancer": sql_generator.PROVIDER_ENHANCER.value,
+                "generator": sql_generator.PROVIDER_GENERATOR.value
+            }
+        }
+        
+        # Construct response
+        response = {
+            "status": "success",
+            "query": request.query,
+            "description": description,
+            "sql": sql_query,
+            "record_count": len(records),
+            "data": records,
+            "execution_time_ms": execution_time_ms,
+            "metadata": metadata
+        }
+        
+        # Format the response for better LLM readability if requested
+        if request.format_for_llm:
+            response = format_response_for_llm(response)
+        
+        # Log endpoint call
+        log_endpoint_call(
+            logger=logger, 
+            endpoint="/nl_query",
+            method="POST", 
+            duration_ms=execution_time_ms,
+            params={"query": request.query, "limit": request.limit, "record_count": len(records)}
+        )
+        
+        return response
+        
+    except NLQueryParsingError as e:
+        # Handle parsing errors
+        error = ValidationError(
+            message=f"Could not parse natural language query: {str(e)}",
+            field="query",
+            value=request.query
+        )
+        error.log_error(logger)
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_dict()
+        )
+    except ProcessingError as e:
+        # Forward processing errors
+        e.log_error(logger)
+        raise HTTPException(
+            status_code=e.status_code,
+            detail=e.to_dict()
+        )
+    except Exception as e:
+        # Handle unexpected errors
+        error = APIError(
+            message=f"Error processing natural language query: {str(e)}",
+            status_code=500,
+            error_code="NL_QUERY_ERROR",
+            details={"query": request.query, "error": str(e)}
+        )
+        error.log_error(logger)
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_dict()
+        )
+
+def format_response_for_llm(response: Dict[str, Any]) -> Dict[str, Any]:
+    """Format response data to be more friendly for LLM consumption."""
+    # Create a copy to avoid modifying the original
+    formatted = copy.deepcopy(response)
+    
+    # Ensure consistent spacing and formatting in the response
+    if "data" in formatted and isinstance(formatted["data"], list):
+        # Ensure each record has the same keys in the same order
+        if formatted["data"]:
+            # Get all possible keys from all records
+            all_keys = set()
+            for record in formatted["data"]:
+                all_keys.update(record.keys())
+            
+            # Sort keys for consistent order (id first, then content, then others alphabetically)
+            sorted_keys = sorted(all_keys)
+            if "id" in sorted_keys:
+                sorted_keys.remove("id")
+                sorted_keys = ["id"] + sorted_keys
+            if "content" in sorted_keys:
+                sorted_keys.remove("content")
+                sorted_keys.insert(1, "content")
+            if "posted_date_time" in sorted_keys:
+                sorted_keys.remove("posted_date_time")
+                sorted_keys.insert(2, "posted_date_time")
+            
+            # Reorder all records to have the same keys in the same order
+            formatted_data = []
+            for record in formatted["data"]:
+                formatted_record = {}
+                for key in sorted_keys:
+                    if key in record:
+                        formatted_record[key] = record[key]
+                formatted_data.append(formatted_record)
+            
+            formatted["data"] = formatted_data
+    
+    return formatted
+
+@router.post("/api/v1/nl_query", response_model=NLQueryResponse)
+async def nl_query_api_v1(
+    request: NLQueryRequest,
+    agent: KnowledgeAgent = Depends(get_agent)
+) -> Dict[str, Any]:
+    """API v1 endpoint for natural language queries."""
+    return await natural_language_query(request, agent)
 
