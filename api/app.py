@@ -18,8 +18,9 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 import asyncio
 # Import configuration utilities
-from config.env_loader import load_environment, detect_environment
+from config.env_loader import load_environment, detect_environment, is_replit_environment
 from config.logging_config import setup_logging
+from config.settings import Config
 
 # Import the unified data manager
 from knowledge_agents.data_processing.chanscope_manager import ChanScopeDataManager
@@ -486,12 +487,13 @@ async def initialize_background_data():
 if __name__ == "__main__":
     import uvicorn
     
-    # Get port from environment or use default
-    port = int(os.environ.get('API_PORT', 80))
-    host = os.environ.get('API_HOST', '0.0.0.0')
+    # Get port and host from Config instead of direct os.getenv
+    api_settings = Config.get_api_settings()
+    port = api_settings['port']
+    host = api_settings['host']
     
     # Ensure we're listening on the correct port for Replit deployments
-    if os.environ.get('REPLIT_ENV'):
+    if is_replit_environment():
         logger.info("Running in Replit environment, using port 80 and host 0.0.0.0")
         port = 80
         host = '0.0.0.0'

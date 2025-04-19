@@ -742,7 +742,7 @@ Format your response as a JSON object with the following fields:
             enhanced = await self.agent.generate_chunks(
                 content=prompt,
                 provider=self.PROVIDER_ENHANCER,
-                character_slug=get_venice_character_slug()
+                character_slug=get_venice_character_slug(character_slug="the-architect-of-precision-the-architect")
             )
             
             # Extract the content from chunks response
@@ -778,7 +778,7 @@ Format your response as a JSON object with the following fields:
             response = await self.agent.generate_chunks(
                 content=prompt,
                 provider=provider,
-                character_slug=get_venice_character_slug()
+                character_slug=get_venice_character_slug(character_slug="sqlman")
             )
             
             # Extract the content from chunks response
@@ -862,7 +862,7 @@ Format your response as a JSON object with the following fields:
             response = await self.agent.generate_chunks(
                 content=prompt,
                 provider=provider,
-                character_slug=get_venice_character_slug()
+                character_slug=get_venice_character_slug(character_slug="sqlman")
             )
             
             # Extract the content from chunks response
@@ -917,23 +917,23 @@ Format your response as a JSON object with the following fields:
     def _extract_content_term(self, nl_query: str) -> Optional[str]:
         """Extract content search term from natural language query."""
         nl_lower = nl_query.lower()
-        # Try multiple patterns for content extraction
+        # Improved regex patterns with non-greedy matching and lookahead to avoid capturing time/other filters
         content_patterns = [
-            r"containing ([a-zA-Z0-9_\s]+)",
-            r"about ([a-zA-Z0-9_\s]+)",
-            r"with ([a-zA-Z0-9_\s]+)",
-            r"mentions ([a-zA-Z0-9_\s]+)",
-            r"mentioning ([a-zA-Z0-9_\s]+)",
-            r"contains ([a-zA-Z0-9_\s]+)",
-            r"that contains ([a-zA-Z0-9_\s]+)",
-            r"that contain ([a-zA-Z0-9_\s]+)",
-            r"has ([a-zA-Z0-9_\s]+)",
-            r"having ([a-zA-Z0-9_\s]+)",
-            r"including ([a-zA-Z0-9_\s]+)",
-            r"related to ([a-zA-Z0-9_\s]+)"
+            r"containing ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"about ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"with ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"mentions ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"mentioning ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"contains ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"that contains ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"that contain ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"has ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"having ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"including ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
+            r"related to ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)"
         ]
         
-        # First try exact pattern matching
+        # First try pattern matching with improved non-greedy patterns
         for pattern in content_patterns:
             content_match = re.search(pattern, nl_lower)
             if content_match:
@@ -956,34 +956,41 @@ Format your response as a JSON object with the following fields:
                 # Get the text after the indicator
                 text_after = nl_lower[pos:].strip()
                 if text_after:
-                    # Extract the first few words (likely the content term)
-                    words = text_after.split()
-                    # Skip common connectors
-                    skip_words = ["to", "the", "a", "an", "with", "for", "of", "in", "on", "by"]
-                    term_words = []
-                    for word in words[:3]:  # Consider first 3 words at most
-                        if word not in skip_words:
-                            term_words.append(word)
-                        if len(term_words) == 2:  # Limit to 2 meaningful words
-                            break
-                    
-                    if term_words:
-                        extracted_term = " ".join(term_words)
-                        logger.info(f"Extracted content term using indicator '{indicator}': '{extracted_term}'")
-                        return extracted_term
+                    # Extract the main term before any time/other filters
+                    main_term = re.split(r'\sfrom|\sin|\son|\sduring|\slast|\spast', text_after)[0].strip()
+                    if main_term:
+                        # Split into words and filter out stop words
+                        words = main_term.split()
+                        # Skip common connectors
+                        skip_words = ["to", "the", "a", "an", "with", "for", "of", "in", "on", "by"]
+                        term_words = []
+                        for word in words[:3]:  # Consider first 3 words at most
+                            if word not in skip_words:
+                                term_words.append(word)
+                            if len(term_words) == 2:  # Limit to 2 meaningful words
+                                break
+                        
+                        if term_words:
+                            extracted_term = " ".join(term_words)
+                            logger.info(f"Extracted content term using indicator '{indicator}': '{extracted_term}'")
+                            return extracted_term
         
-        # Special case for "that contains" pattern since it's causing issues
+        # Special case for "that contains/contain" pattern
         if "that contain" in nl_lower:
-            # Get everything after "that contain"
-            text_after = nl_lower.split("that contain")[1].strip()
-            if text_after:
-                # Extract the first word that's not a connector
-                words = text_after.split()
-                skip_words = ["s", "the", "a", "an", "with", "for", "of", "in", "on", "by"]
-                for word in words:
-                    if word not in skip_words:
-                        logger.info(f"Extracted content term from 'that contain': '{word}'")
-                        return word
+            # Get everything after "that contain" but before time filters
+            parts = re.split(r"that contain\s+", nl_lower, 1)
+            if len(parts) > 1:
+                text_after = parts[1]
+                # Split at time filters or other common delimiters
+                main_term = re.split(r'\sfrom|\sin|\son|\sduring|\slast|\spast', text_after)[0].strip()
+                if main_term:
+                    # Extract first meaningful word
+                    words = main_term.split()
+                    skip_words = ["s", "the", "a", "an", "with", "for", "of", "in", "on", "by"]
+                    for word in words:
+                        if word not in skip_words:
+                            logger.info(f"Extracted content term from 'that contain': '{word}'")
+                            return word
         
         return None
 

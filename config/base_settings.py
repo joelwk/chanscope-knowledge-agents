@@ -87,7 +87,9 @@ def get_base_settings() -> Dict[str, Any]:
             'docker_env': os.getenv('DOCKER_ENV', 'false').lower().strip() == 'true',
             'openai_api_key': os.getenv('OPENAI_API_KEY', '').strip(),
             'grok_api_key': os.getenv('GROK_API_KEY', '').strip(),
-            'venice_api_key': os.getenv('VENICE_API_KEY', '').strip()
+            'venice_api_key': os.getenv('VENICE_API_KEY', '').strip(),
+            'use_mock_data': os.getenv('USE_MOCK_DATA', 'false').lower().strip() in ('true', 'yes', '1'),
+            'use_mock_embeddings': os.getenv('USE_MOCK_EMBEDDINGS', 'false').lower().strip() in ('true', 'yes', '1')
         },
         'model': {
             'default_embedding_provider': os.getenv('DEFAULT_EMBEDDING_PROVIDER', 'openai').strip(),
@@ -132,7 +134,9 @@ def get_base_settings() -> Dict[str, Any]:
             'select_board': os.getenv('SELECT_BOARD'),
             'use_batching': os.getenv('USE_BATCHING', 'true').lower() == 'true',
             'cache_ttl': int(os.getenv('CACHE_TTL', '3600')),
-            'batch_size': int(os.getenv('BATCH_SIZE', '64'))
+            'batch_size': int(os.getenv('BATCH_SIZE', '64')),
+            'use_mock_data': os.getenv('USE_MOCK_DATA', 'false').lower() == 'true',
+            'use_mock_embeddings': os.getenv('USE_MOCK_EMBEDDINGS', 'false').lower() == 'true'
         },
         'sample': {
             'max_sample_size': 100000,

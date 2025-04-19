@@ -293,9 +293,8 @@ class Config:
 
     @classmethod
     def get_aws_settings(cls) -> Dict[str, Any]:
-        """Get AWS settings from configuration."""
+        """Get AWS-related settings."""
         aws_settings = config_manager.get_aws_settings()
-        # Rename keys to match expected format
         return {
             'aws_access_key_id': aws_settings['access_key_id'],
             'aws_secret_access_key': aws_settings['secret_access_key'],
@@ -305,6 +304,53 @@ class Config:
             's3_bucket_processed': aws_settings['s3_bucket_processed'],
             's3_bucket_models': aws_settings['s3_bucket_models']
         }
+
+    @classmethod
+    def use_mock_data(cls) -> bool:
+        """Check if mock data should be used instead of real data."""
+        all_settings = cls.get_all_settings()
+        # Look first in api settings, then try processing settings
+        api_settings = all_settings.get('api', {})
+        processing_settings = all_settings.get('processing', {})
+        
+        # Try different possible keys where this setting might be stored
+        use_mock = (
+            api_settings.get('use_mock_data', '').lower() in ('true', 'yes', '1') or
+            processing_settings.get('use_mock_data', '').lower() in ('true', 'yes', '1')
+        )
+        return use_mock
+        
+    @classmethod
+    def use_mock_embeddings(cls) -> bool:
+        """Check if mock embeddings should be used instead of real embeddings."""
+        all_settings = cls.get_all_settings()
+        # Look first in api settings, then try processing settings
+        api_settings = all_settings.get('api', {})
+        processing_settings = all_settings.get('processing', {})
+        model_settings = all_settings.get('model', {})
+        
+        # Try different possible keys where this setting might be stored
+        use_mock = False
+        
+        # Check for string values
+        for settings_dict, key in [
+            (api_settings, 'use_mock_embeddings'),
+            (processing_settings, 'use_mock_embeddings'),
+            (model_settings, 'use_mock_embeddings')
+        ]:
+            value = settings_dict.get(key)
+            if isinstance(value, bool):
+                if value:
+                    use_mock = True
+                    break
+            elif isinstance(value, str) and value.lower() in ('true', 'yes', '1'):
+                use_mock = True
+                break
+                
+        # Also check if the default provider is explicitly set to 'mock'
+        mock_provider = cls.get_default_embedding_provider().lower() == 'mock'
+        
+        return use_mock or mock_provider
 
 # Initialize paths
 ensure_base_paths()

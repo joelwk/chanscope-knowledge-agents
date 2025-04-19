@@ -7,7 +7,7 @@ try:
 except ImportError:
     # fcntl not available on Windows
     HAS_FCNTL = False
-from typing import List
+from typing import List, Optional
 from functools import lru_cache
 from pathlib import Path
 import traceback
@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from knowledge_agents.data_ops import DataConfig, DataOperations
 from config.logging_config import get_logger
 from config.env_loader import is_replit_environment, is_docker_environment
+from config.settings import Config
 
 # Setup logging using centralized configuration
 logger = get_logger(__name__)
@@ -40,7 +41,8 @@ def load_environment() -> None:
 @lru_cache()
 def get_environment() -> str:
     """Get the current environment."""
-    return os.getenv("ENVIRONMENT", "development")
+    api_settings = Config.get_api_settings()
+    return api_settings.get('environment', 'development')
 
 @lru_cache()
 def get_api_urls() -> List[str]:
@@ -613,24 +615,30 @@ def get_app() -> FastAPI:
 # Create the application instance
 app = get_app()
 
-async def wait_for_initialization(timeout: int = 600) -> bool:
-    """Wait for data initialization to complete.
-    
-    This function checks for the completion marker file that indicates
-    the primary worker has finished initializing the data.
+async def wait_for_initialization(
+    timeout: Optional[int] = None,
+    check_interval: Optional[int] = None
+) -> bool:
+    """Wait for initialization to complete.
     
     Args:
-        timeout: Maximum time to wait in seconds (default: 10 minutes)
+        timeout: Maximum time to wait in seconds
+        check_interval: Check interval in seconds
         
     Returns:
         bool: True if initialization completed, False if timed out
     """
+    processing_settings = Config.get_processing_settings()
+    
+    # Use environment vars or defaults for timeout/check interval
+    timeout = timeout or int(processing_settings.get('setup_timeout', 120))
+    check_interval = int(processing_settings.get('setup_check_interval', 5))
+    
     data_dir = Path("data")
     completion_marker = data_dir / ".initialization_complete"
     init_marker = data_dir / ".initialization_in_progress"
     
     start_time = asyncio.get_event_loop().time()
-    check_interval = int(os.getenv('INIT_CHECK_INTERVAL', '5'))
     logger.info(f"Waiting for initialization to complete (timeout: {timeout}s, check interval: {check_interval}s)...")
     
     while not completion_marker.exists():
@@ -659,3 +667,45 @@ async def wait_for_initialization(timeout: int = 600) -> bool:
     elapsed = asyncio.get_event_loop().time() - start_time
     logger.info(f"Initialization completed in {elapsed:.1f}s")
     return True
+
+async def _initialize_data_ops(timeout: Optional[int] = None) -> bool:
+    """Initialize data operations with timeout.
+    
+    This function initializes the data operations and waits for
+    the initialization to complete.
+    
+    Args:
+        timeout: Timeout in seconds
+        
+    Returns:
+        bool: True if initialization completed, False otherwise
+    """
+    global _initialization_error
+    from config.settings import Config
+    processing_settings = Config.get_processing_settings()
+    
+    init_timeout = int(processing_settings.get("init_wait_time", 3600))  # 60 minutes default
+    if timeout is not None:
+        init_timeout = timeout
+        
+    logger.info(f"Initializing data operations with timeout {init_timeout}s")
+    
+    try:
+        # Create data directory structure
+        data_dir = Path("data")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get data operations
+        from knowledge_agents.data_ops import DataOperations
+        data_ops = DataOperations()
+        
+        # Initialize data operations with timeout
+        async with asyncio.timeout(init_timeout):
+            await data_ops.ensure_data_ready()
+            
+        logger.info("Data operations initialized successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error initializing data operations: {e}")
+        _initialization_error = str(e)
+        return False

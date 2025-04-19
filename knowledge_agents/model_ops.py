@@ -1278,9 +1278,9 @@ class KnowledgeAgent:
     ) -> EmbeddingResponse:
         """Request embeddings from the specified provider with batching support."""
         async with self._embedding_lock:
-            # Check if mock embeddings are explicitly requested via environment variable
-            use_mock_embeddings = os.getenv('USE_MOCK_EMBEDDINGS', '').lower() in ('true', 'yes', '1')
-            mock_provider = os.getenv('DEFAULT_EMBEDDING_PROVIDER', '').lower() == 'mock'
+            # Check if mock embeddings are explicitly requested via Config
+            use_mock_embeddings = Config.use_mock_embeddings()
+            mock_provider = Config.get_default_embedding_provider().lower() == 'mock'
             
             config = self._validate_config()
             provider = provider or self._get_default_provider(ModelOperation.EMBEDDING)
@@ -1404,8 +1404,8 @@ class KnowledgeAgent:
         Raises:
             ValueError: If the specified operation is unknown
         """
-        # Check if mock embeddings are explicitly requested via environment variable
-        use_mock_embeddings = os.getenv('USE_MOCK_EMBEDDINGS', '').lower() in ('true', 'yes', '1')
+        # Check if mock embeddings are explicitly requested via Config
+        use_mock_embeddings = Config.use_mock_embeddings()
         if use_mock_embeddings and operation == ModelOperation.EMBEDDING:
             logger.info("Using mock embeddings as requested by USE_MOCK_EMBEDDINGS environment variable")
             # Return a provider that will trigger mock embeddings

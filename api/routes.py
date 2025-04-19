@@ -150,6 +150,12 @@ async def healthz():
 @router.get("/health_replit", response_model=dict)
 async def health_check_replit():
     """Extended health check with Replit-specific info."""
+    from config.env_loader import is_replit_environment
+    from config.settings import Config
+    
+    # Get Replit environment variables from centralized config
+    api_settings = Config.get_api_settings()
+    
     # Get Replit environment variables
     replit_env = os.getenv('REPLIT_ENV', '')
     replit_id = os.getenv('REPL_ID', '')
@@ -167,25 +173,25 @@ async def health_check_replit():
     else:
         service_url = None
 
-    # Get port configuration
-    port = os.getenv('PORT', '80')
-    api_port = os.getenv('API_PORT', port)
-    host = os.getenv('HOST', '0.0.0.0')
+    # Get port configuration from Config
+    port = api_settings.get('port', 80)
+    api_port = port
+    host = api_settings.get('host', '0.0.0.0')
     
     # Check if running in Replit environment
-    is_replit = replit_env in ['true', 'replit', 'production']
+    is_replit_env = is_replit_environment()
     
     # Get additional environment information
     environment_vars = {
-        "is_replit": is_replit,
+        "is_replit": is_replit_env,
         "replit_env": replit_env,
         "repl_id": replit_id,
         "repl_slug": replit_slug,
         "repl_owner": replit_owner,
         "replit_dev_domain": replit_dev_domain,
         "python_path": os.getenv('PYTHONPATH', ''),
-        "fastapi_env": os.getenv('FASTAPI_ENV', ''),
-        "fastapi_debug": os.getenv('FASTAPI_DEBUG', '')
+        "fastapi_env": api_settings.get('fastapi_env', ''),
+        "fastapi_debug": api_settings.get('fastapi_debug', '')
     }
     
     # Get service configuration
@@ -196,7 +202,7 @@ async def health_check_replit():
         "host": host,
         "api_url": f"{service_url}/api" if service_url else None,
         "api_v1_url": f"{service_url}/api/v1" if service_url else None,
-        "api_base_path": os.getenv('API_BASE_PATH', '/api/v1'),
+        "api_base_path": api_settings.get('base_path', '/api/v1'),
         "docs_url": f"{service_url}/docs" if service_url else None
     }
     

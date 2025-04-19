@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any
 import threading
 import multiprocessing
+from config.base_settings import get_base_settings, get_base_paths
 
 # Thread-safe singleton lock
 _logging_lock = threading.Lock()
@@ -18,15 +19,20 @@ def setup_logging() -> None:
     with _logging_lock:
         if _is_logging_configured:
             return
-            
+        
+        # Get settings from base_settings
+        settings = get_base_settings()
+        api_settings = settings.get('api', {})
+        
         # Clean and normalize the log level to uppercase
-        log_level = os.getenv('LOG_LEVEL', 'INFO').strip().upper()
+        log_level = api_settings.get('log_level', 'INFO').strip().upper()
         
         # Get worker ID for log file naming
         worker_id = multiprocessing.current_process().name.replace('Process-', '')
         
         # Ensure log directory exists
-        log_dir = Path(os.getenv('LOGS_DIR', 'logs')).resolve()
+        paths = get_base_paths()
+        log_dir = paths.get('logs', Path('logs')).resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
         
         log_config: Dict[str, Any] = {
@@ -34,8 +40,8 @@ def setup_logging() -> None:
             "disable_existing_loggers": False,
             "formatters": {
                 "default": {
-                    "format": os.getenv(
-                        'LOG_FORMAT', 
+                    "format": api_settings.get(
+                        'log_format', 
                         f'%(asctime)s - [Worker-{worker_id}] - %(name)s - %(levelname)s - %(message)s'
                     ).strip(),
                     "datefmt": "%Y-%m-%d %H:%M:%S",
