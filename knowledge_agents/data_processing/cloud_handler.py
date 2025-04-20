@@ -28,11 +28,11 @@ class S3Handler:
         self.region_name = aws_settings['aws_default_region'].strip()
         self.aws_access_key_id = aws_settings['aws_access_key_id'].strip()
         self.aws_secret_access_key = aws_settings['aws_secret_access_key'].strip()
-        
+
         # Fix for handling None value in select_board
         select_board = processing_settings.get('select_board')
         self.select_board = select_board.strip() if select_board else None
-        
+
         self.s3 = self._create_s3_client()
 
     @property
@@ -65,30 +65,30 @@ class S3Handler:
     def get_latest_data_key(self) -> Optional[str]:
         """
         Get the key of the most recently modified CSV file in S3.
-        
+
         Returns:
             Optional[str]: The S3 key of the most recently modified CSV file, or None if no CSV files found
         """
         if not self.is_configured:
             logger.warning("S3 not configured, cannot get latest data key")
             return None
-            
+
         try:
             response = self.s3.list_objects_v2(
                 Bucket=self.bucket_name,
                 Prefix=self.bucket_prefix
             )
-            
+
             if 'Contents' not in response:
                 logger.warning(f"No objects found in bucket {self.bucket_name} with prefix {self.bucket_prefix}")
                 return None
-                
+
             # Filter CSV files and apply board filter if needed
             csv_files = []
             for item in response.get('Contents', []):
                 key = item['Key']
                 last_modified = item['LastModified']
-                
+
                 if key.endswith('.csv'):
                     # Apply board filter if set
                     if self.select_board:
@@ -96,39 +96,39 @@ class S3Handler:
                             csv_files.append((key, last_modified))
                     else:
                         csv_files.append((key, last_modified))
-            
+
             if not csv_files:
                 logger.warning(f"No CSV files found in bucket {self.bucket_name} with prefix {self.bucket_prefix}")
                 if self.select_board:
                     logger.warning(f"Board filter '{self.select_board}' may be excluding all files")
                 return None
-                
+
             # Sort by last modified date (newest first)
             csv_files.sort(key=lambda x: x[1], reverse=True)
-            
+
             # Return the most recently modified file key
             latest_key = csv_files[0][0]
             logger.info(f"Latest S3 data key: {latest_key} (modified: {csv_files[0][1]})")
             return latest_key
-            
+
         except Exception as e:
             logger.exception(f"Error getting latest data key: {e}")
             return None
-    
+
     def get_object_metadata(self, s3_key: str) -> Optional[Dict[str, Any]]:
         """
         Get metadata for an S3 object.
-        
+
         Args:
             s3_key: The S3 key of the object
-            
+
         Returns:
             Optional[Dict[str, Any]]: Object metadata or None if object doesn't exist
         """
         if not self.is_configured:
             logger.warning("S3 not configured, cannot get object metadata")
             return None
-            
+
         try:
             response = self.s3.head_object(
                 Bucket=self.bucket_name,
@@ -412,7 +412,7 @@ def parse_filter_date(date_str: Optional[str]) -> Optional[datetime]:
     if not date_str:
         logger.warning("No filter date provided, will process all available data")
         return None
-    
+
     try:
         logger.info(f"Parsing filter date: {date_str}")
         dt = pd.to_datetime(date_str)
@@ -432,19 +432,19 @@ async def load_all_csv_data_from_s3(
 ) -> AsyncGenerator[pd.DataFrame, None]:
     """
     Load and process CSV data from S3 incrementally.
-    
+
     Args:
         latest_date_processed: Filter data to only include items after this date
         chunk_size: Size of data chunks to process at once
         board_id: Filter data to only include items from this board
-    
+
     Yields:
         DataFrame chunks with filtered data
     """
     logger.info("=== Starting S3 Data Loading ===")
     logger.info(f"Latest date processed: {latest_date_processed}")
     logger.info(f"Board filter: {board_id or 'None'}")
-    
+
     filter_date = parse_filter_date(latest_date_processed)
     if filter_date:
         logger.info(f"Using filter timestamp: {filter_date.isoformat()} UTC")
@@ -463,7 +463,7 @@ async def load_all_csv_data_from_s3(
         s3_handler.select_board = board_id
     else:
         s3_handler = S3Handler()
-    
+
     try:
         try:
             s3_handler.s3.head_bucket(Bucket=s3_handler.bucket_name)

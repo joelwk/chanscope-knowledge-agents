@@ -127,7 +127,7 @@ export WORKER_ID="Spawn1"
 export ENABLE_DATA_SCHEDULER="${ENABLE_DATA_SCHEDULER:-true}"
 export DATA_UPDATE_INTERVAL="${DATA_UPDATE_INTERVAL:-3600}"  # Default: 1 hour in seconds
 # Data retention settings
-export DATA_RETENTION_DAYS="${DATA_RETENTION_DAYS:-30}"  # Default: 30 days retention
+export DATA_RETENTION_DAYS="${DATA_RETENTION_DAYS:-14}"  # Default: 30 days retention
 
 # Set Replit-specific environment variables if in Replit
 if [ "$IS_REPLIT" = true ]; then

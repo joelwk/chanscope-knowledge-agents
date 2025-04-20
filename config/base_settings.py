@@ -24,7 +24,7 @@ def get_base_paths() -> Dict[str, Path]:
         'temp': root / 'temp_files',
         'logs': root / 'logs'
     }
-    
+
 def ensure_base_paths() -> None:
     """Ensure base paths exist."""
     paths = get_base_paths()
@@ -40,12 +40,12 @@ def get_env_path() -> Path:
 def load_env_vars() -> None:
     """Load environment variables."""
     global _env_loaded
-    
+
     # Skip if environment is already loaded
     if _env_loaded or os.getenv('ENVIRONMENT_LOADED'):
         logging.debug("Environment variables already loaded, skipping")
         return
-        
+
     env_path = get_env_path()
     if env_path.exists():
         load_dotenv(env_path)
@@ -55,7 +55,7 @@ def load_env_vars() -> None:
 
 def get_base_settings() -> Dict[str, Any]:
     """Get base settings from environment variables.
-    
+
     This is the single source of truth for all environment variables.
     All other modules should import and use these settings rather than
     reading environment variables directly.
@@ -66,18 +66,18 @@ def get_base_settings() -> Dict[str, Any]:
 
     # Load environment variables if not already loaded
     load_env_vars()
-    
+
     # Format the filter date in ISO format for consistent parsing
     try:
         retention_days = int(os.getenv('DATA_RETENTION_DAYS', '30'))
     except (ValueError, TypeError):
         logging.warning("Invalid DATA_RETENTION_DAYS value, using default of 30 days")
         retention_days = 30
-        
+
     filter_date = (
         datetime.now(pytz.UTC) - timedelta(days=retention_days)
     ).isoformat()
-    
+
     _settings_cache = {
         'api': {
             'host': os.getenv('API_HOST', '0.0.0.0').strip(),
@@ -147,15 +147,13 @@ def get_base_settings() -> Dict[str, Any]:
             'time_column': os.getenv('TIME_COLUMN', 'posted_date_time'),
             'strata_column': os.getenv('STRATA_COLUMN', None),
             'column_types': {
-                'thread_id': str,
                 'posted_date_time': str,
                 'text_clean': str,
-                'posted_comment': str
             }
         },
         'paths': get_base_paths()
     }
-    
+
     return _settings_cache
 
 # Initialize environment variables and cache settings on module import

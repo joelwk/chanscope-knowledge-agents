@@ -250,10 +250,8 @@ class DataProcessor:
             initial_sample_size=config.sample_size
         )
         self.required_columns = {
-            'thread_id': str,
             'posted_date_time': str,
             'text_clean': str,
-            'posted_comment': str
         }
 
     async def stratify_data(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -1089,8 +1087,9 @@ class DataOperations:
             
             # Ensure we have the necessary text field for inference
             if "text_clean" not in stratified_data.columns and "content" in stratified_data.columns:
-                logger.info("Adding text_clean field from content field")
+                logger.warning("text_clean column not found in stratified data, mapping from content column as fallback")
                 stratified_data["text_clean"] = stratified_data["content"]
+                logger.warning("This mapping from content to text_clean should be temporary. The primary flow should store text_clean in the database.")
             
             return stratified_data
             

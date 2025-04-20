@@ -139,21 +139,25 @@ class PostgresDB:
         # Log the incoming dataframe columns and shape
         logger.info(f"Inserting data with shape {df.shape} and columns {list(df.columns)}")
 
+        # Create a copy of the DataFrame to avoid SettingWithCopyWarning
+        df = df.copy()
+
+        # ONLY use text_clean for content column, never use incoming content column
+        if 'text_clean' in df.columns:
+            df['content'] = df['text_clean']
+            logger.info("Using 'text_clean' column as the source for database 'content' column")
+        else:
+            logger.warning("No 'text_clean' column found; defaulting content to empty string")
+            df['content'] = ''
+
         # Ensure expected columns exist
-        required_columns = ['thread_id', 'content']
+        required_columns = ['thread_id', 'content'] 
         missing_columns = [col for col in required_columns if col not in df.columns]
 
         if missing_columns:
             # Try to automatically map columns
             for missing_col in missing_columns:
-                if missing_col == 'content' and any(col in df.columns for col in ['text', 'text_clean', 'message']):
-                    # Map a text-like column to content
-                    for possible_col in ['text', 'text_clean', 'message']:
-                        if possible_col in df.columns:
-                            df['content'] = df[possible_col]
-                            logger.info(f"Mapped {possible_col} to content column")
-                            break
-                elif missing_col == 'thread_id' and any(col in df.columns for col in ['id', 'message_id', 'post_id']):
+                if missing_col == 'thread_id' and any(col in df.columns for col in ['id', 'message_id', 'post_id']):
                     # Map an ID-like column to thread_id
                     for possible_col in ['id', 'message_id', 'post_id']:
                         if possible_col in df.columns:
@@ -500,22 +504,28 @@ class PostgresDB:
 
         # Log incoming data information
         logger.info(f"Syncing data with shape {df.shape} and columns {list(df.columns)}")
+        
+        # Check if this is a unified format (has source column or other indicators)
+        is_unified_format = 'source' in df.columns
+        if is_unified_format:
+            logger.info("Detected unified format data during database sync")
 
-        # Ensure expected columns exist with same mapping logic as insert_complete_data
+        # ONLY use text_clean for content column, never use incoming content column
+        if 'text_clean' in df.columns:
+            df.loc[:, 'content'] = df['text_clean']
+            logger.info("Using 'text_clean' column as the source for database 'content' column")
+        else:
+            logger.warning("No 'text_clean' column found; defaulting content to empty string")
+            df.loc[:, 'content'] = ''
+
+        # Ensure expected columns exist
         required_columns = ['thread_id', 'content']
         missing_columns = [col for col in required_columns if col not in df.columns]
 
         if missing_columns:
             # Try to automatically map columns
             for missing_col in missing_columns:
-                if missing_col == 'content' and any(col in df.columns for col in ['text', 'text_clean', 'message']):
-                    # Map a text-like column to content
-                    for possible_col in ['text', 'text_clean', 'message']:
-                        if possible_col in df.columns:
-                            df.loc[:, 'content'] = df[possible_col]
-                            logger.info(f"Mapped {possible_col} to content column")
-                            break
-                elif missing_col == 'thread_id' and any(col in df.columns for col in ['id', 'message_id', 'post_id']):
+                if missing_col == 'thread_id' and any(col in df.columns for col in ['id', 'message_id', 'post_id']):
                     # Map an ID-like column to thread_id
                     for possible_col in ['id', 'message_id', 'post_id']:
                         if possible_col in df.columns:
@@ -526,7 +536,7 @@ class PostgresDB:
             # Check if we still have missing columns
             missing_columns = [col for col in required_columns if col not in df.columns]
             if missing_columns:
-                error_msg = f"Missing required columns: {missing_columns}"
+                error_msg = f"Missing required columns: {missing_columns}. Available columns: {list(df.columns)}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 

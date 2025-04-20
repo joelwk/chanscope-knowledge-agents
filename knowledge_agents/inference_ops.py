@@ -224,7 +224,20 @@ async def strings_ranked_by_relatedness(
         results = []
         for i, idx in enumerate(top_df_indices):
             sim_score = similarities[top_similarity_indices[i]]
-            results.append((df.iloc[idx]["text_clean"], float(sim_score), {
+            
+            # Get the text content - prioritize text_clean but fall back to content column
+            # This ensures compatibility with both S3 data (text_clean) and PostgreSQL data (content)
+            if "text_clean" in df.columns and pd.notna(df.iloc[idx].get("text_clean", "")):
+                text_content = df.iloc[idx]["text_clean"]
+            elif "content" in df.columns and pd.notna(df.iloc[idx].get("content", "")):
+                text_content = df.iloc[idx]["content"]
+            else:
+                # If neither column exists or both are null, use an empty string
+                text_content = ""
+                logger.warning(f"Row {idx} has no valid text content in either text_clean or content columns")
+            
+            # Create result tuple with text content and metadata
+            results.append((text_content, float(sim_score), {
                 "thread_id": str(df.iloc[idx]["thread_id"]),
                 "posted_date_time": str(df.iloc[idx]["posted_date_time"]),
                 "similarity_score": float(sim_score)
@@ -352,6 +365,16 @@ async def retrieve_unique_strings(
     provider: Optional[ModelProvider] = None) -> List[Dict[str, Any]]:
     """Retrieve unique strings from the library based on query relevance."""
     try:
+        # Ensure we have appropriate text columns for searching
+        if "text_clean" not in library_df.columns and "content" in library_df.columns:
+            logger.info("Library using 'content' column (database source) for text search")
+        elif "text_clean" in library_df.columns and "content" not in library_df.columns:
+            logger.info("Library using 'text_clean' column (S3 source) for text search")
+        elif "text_clean" in library_df.columns and "content" in library_df.columns:
+            logger.info("Library has both 'text_clean' and 'content' columns, will prioritize 'text_clean'")
+        else:
+            logger.warning("Library missing both 'text_clean' and 'content' columns")
+            
         # Get initial ranked strings
         ranked_strings = await strings_ranked_by_relatedness(
             query=query,
@@ -365,7 +388,7 @@ async def retrieve_unique_strings(
         unique_strings = []
 
         for item in ranked_strings:
-            # Extract text from dictionary result
+            # Extract text from tuple result: (text, similarity, metadata)
             text = item[0]
             
             if text not in seen_texts and is_valid_chunk(text):

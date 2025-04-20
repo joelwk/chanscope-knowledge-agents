@@ -93,7 +93,7 @@ class ChanScopeConfig:
         
         # Common configuration
         filter_date = os.environ.get('FILTER_DATE')
-        sample_size = int(os.environ.get('SAMPLE_SIZE', '100000'))
+        sample_size = int(os.environ.get('SAMPLE_SIZE', '10000'))
         time_column = os.environ.get('TIME_COLUMN', 'posted_date_time')
         strata_column = os.environ.get('STRATA_COLUMN')
         embedding_batch_size = int(os.environ.get('EMBEDDING_BATCH_SIZE', '10'))
