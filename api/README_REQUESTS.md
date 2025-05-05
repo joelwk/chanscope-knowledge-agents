@@ -17,7 +17,7 @@ This document provides detailed information about the Knowledge Agent API endpoi
 
 ## Overview
 
-The Knowledge Agent API provides a comprehensive set of endpoints for querying and analyzing data from 4chan. The API follows RESTful principles and returns responses in JSON format.
+The Knowledge Agent API provides a comprehensive set of endpoints for querying and analyzing data from multiple social media platforms. The API follows RESTful principles and returns responses in JSON format.
 
 ## Base URLs
 
@@ -79,7 +79,7 @@ curl -X GET "http://localhost/api/health/s3"
   "bucket_access": true,
   "bucket_name": "your-bucket-name",
   "bucket_details": {
-    "prefix": "4chan/",
+    "prefix": "unified/",
     "region": "us-east-1",
     "has_contents": true
   },
@@ -189,7 +189,7 @@ curl -X POST "http://localhost/api/v1/query" \
       "score": 0.92,
       "metadata": {
         "timestamp": "2023-05-15T08:45:12Z",
-        "board": "biz",
+        "source": "4chan",
         "thread_id": "12345678"
       }
     },
@@ -198,12 +198,12 @@ curl -X POST "http://localhost/api/v1/query" \
       "score": 0.87,
       "metadata": {
         "timestamp": "2023-05-16T14:22:33Z",
-        "board": "biz",
+        "source": "X",
         "thread_id": "12345679"
       }
     }
   ],
-  "summary": "Recent discussions on 4chan's /biz/ board indicate growing interest in renewable energy investments, particularly in solar and wind power. Several users have highlighted the potential for significant growth in these sectors, with solar energy investments projected to grow by 25% in the next year and wind power capacity expected to double in the next five years. There are also mentions of government incentives and tax credits making these investments more attractive.",
+  "summary": "Recent discussions across social media platforms indicate growing interest in renewable energy investments, particularly in solar and wind power. Several users have highlighted the potential for significant growth in these sectors, with solar energy investments projected to grow by 25% in the next year and wind power capacity expected to double in the next five years. There are also mentions of government incentives and tax credits making these investments more attractive.",
   "metadata": {
     "processing_time_ms": 1234.56,
     "num_relevant_strings": 5,
@@ -261,7 +261,7 @@ curl -X GET "http://localhost/api/v1/batch_status/query_1654321098_abcd"
   "status": "completed",
   "result": {
     "chunks": [...],
-    "summary": "Recent discussions on 4chan's /biz/ board indicate...",
+    "summary": "Recent discussions across social media platforms indicate...",
     "metadata": {...}
   }
 }
@@ -326,17 +326,17 @@ curl -X POST "http://localhost/api/v1/batch_process" \
   "results": [
     {
       "query": "Investment opportunities in renewable energy",
-      "summary": "Recent discussions on 4chan's /biz/ board indicate...",
+      "summary": "Recent discussions across social media platforms indicate...",
       "chunks": [...]
     },
     {
       "query": "Cryptocurrency market trends",
-      "summary": "Analysis of cryptocurrency discussions on 4chan reveals...",
+      "summary": "Analysis of cryptocurrency discussions across platforms reveals...",
       "chunks": [...]
     },
     {
       "query": "AI developments in finance",
-      "summary": "Discussions about AI in finance on 4chan highlight...",
+      "summary": "Discussions about AI in finance on various platforms highlight...",
       "chunks": [...]
     }
   ],
@@ -522,9 +522,9 @@ curl -X POST "http://localhost/api/v1/query" \
   }'
 ```
 
-### Board-Specific Queries
+### Source-Specific Queries
 
-Filter queries to a specific board:
+Filter queries to a specific source:
 
 ```bash
 curl -X POST "http://localhost/api/v1/query" \
@@ -607,7 +607,7 @@ Process a natural language query against the database using LLM-generated SQL. T
       "thread_id": "abc123",
       "content": "Example post content",
       "posted_date_time": "2023-08-01T12:30:00Z",
-      "channel_name": "tech",
+      "source": "X",
       "author": "username"
     },
     // ...more records
@@ -638,7 +638,7 @@ For common query patterns, a hybrid approach is used that matches templates firs
 - `"Give me threads from the last hour"`
 - `"Show posts from yesterday containing crypto"`
 - `"Find messages from the last 3 days by author john"`
-- `"Get threads from board tech about AI from this week"`
+- `"Get content from source X about AI from this week"`
 - `"Show messages containing machine learning from this month"`
 
 #### Supported Time Filters
@@ -661,15 +661,15 @@ For common query patterns, a hybrid approach is used that matches templates firs
 
 - `"by author [name]"`
 
-#### Channel/Board Filters
+#### Source Filters
 
-- `"from board [name]"`, `"in channel [name]"`, `"on board [name]"`
+- `"from source [name]"`, `"from [platform]"`, `"on [platform]"`
 
 #### Advanced Usage
 
 The LLM-based approach allows for more complex queries:
 
-- **Combinations**: `"Find posts from channel tech about AI by author john from last week"`
+- **Combinations**: `"Find posts from source X about AI by author john from last week"`
 - **Contextual Understanding**: `"Show me recent discussions about the latest crypto regulations"`
 - **Natural Phrasing**: `"What are people saying about market trends this month?"`
 

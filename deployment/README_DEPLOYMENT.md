@@ -101,7 +101,7 @@ Key environment variables used in the Docker setup:
 ### Production Variables
 - `OPENAI_API_KEY`: Required for OpenAI API access
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`: Required for S3 access
-- `S3_BUCKET`: The S3 bucket containing 4chan data
+- `S3_BUCKET`: The S3 bucket containing social media data
 - `API_PORT`: Port on which the API will be exposed (default: 80)
 - `API_WORKERS`: Number of Gunicorn workers (default: 4)
 - `LOG_LEVEL`: Logging level (default: info)

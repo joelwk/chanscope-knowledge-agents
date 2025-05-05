@@ -1,8 +1,28 @@
 query:
-  description: "Tweet-optimized queries for extracting concise insights"
-  example:
-    - "What's the latest shift in market sentiment, and which trends are emerging in the global economy?"
-    - "What's the latest development in global hotspots, and which underreported conflicts have potential for escalation?"
-    - "What's the latest development in key policy initiatives, and which emerging trends in public opinion have potential for significant impact?"
-    - "What's the latest development in alternative investment strategies, and which emerging trends have potential for significant growth?"
-    - "What's the latest development in emerging technologies, and which underreported demographic trends have potential for significant impact?"
+  biz:
+    description: "Tweet-optimized queries for extracting concise insights from /biz/"
+    queries:
+      - "What cryptocurrencies are users most bullish on this week and why?"
+      - "What on-chain metrics or signals are being discussed as indicators for Bitcoin's next move?"
+      - "How are users interpreting recent Federal Reserve statements regarding interest rates?"
+      - "What alternative investments beyond crypto are generating discussion?"
+      - "Which DeFi protocols are users claiming to be actively using or investing in?"
+      - "What market indicators are users citing when predicting the next stock market correction?"
+      - "How are users connecting macroeconomic news to specific trading strategies?"
+      - "What earnings reports are generating the most discussion and sentiment?"
+  
+  pol:
+    description: "Tweet-optimized queries for extracting concise insights from /pol/"
+    queries:
+      - "How are users interpreting current developments in the Russia-Ukraine conflict?"
+      - "What conspiracy theories are gaining traction regarding recent political events?"
+      - "How are users discussing the economic impact of current immigration policies?"
+      - "What emerging geopolitical hotspots are users predicting will escalate next?"
+      - "How are users connecting current political events to historical patterns?"
+      - "What narratives are forming around upcoming elections or political transitions?"
+      - "How are users interpreting recent government policy changes and their potential impacts?"
+      - "What connections are users making between media coverage and political developments?"
+      - "What's the latest shift in market sentiment, and which trends are emerging in the global economy?"
+      - "What's the latest development in global hotspots, and which underreported conflicts have potential for escalation?"
+      - "What's the latest development in key policy initiatives, and which emerging trends in public opinion have potential for significant impact?"
+      - "What's the latest development in alternative investment strategies, and which emerging trends have potential for significant growth?"

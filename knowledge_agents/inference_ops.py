@@ -544,15 +544,26 @@ async def process_query(
             
         logger.info(f"Generated {len(processed_chunks)} processed chunks")
         
-        # Calculate temporal context from processed chunks
-        dates = pd.to_datetime([r["posted_date_time"] for r in processed_chunks], utc=True, errors='coerce')
-        valid_dates = dates[~pd.isna(dates)]
-        
-        temporal_context = {
-            "start_date": valid_dates.min().strftime("%Y-%m-%d") if not valid_dates.empty else "Unknown",
-            "end_date": valid_dates.max().strftime("%Y-%m-%d") if not valid_dates.empty else "Unknown"
-        }
-        
+        # --- NEW: Calculate temporal context from full library data for accurate range ---
+        try:
+            library_dates = pd.to_datetime(library_df["posted_date_time"], utc=True, errors="coerce")
+            valid_library_dates = library_dates[~pd.isna(library_dates)]
+            if not valid_library_dates.empty:
+                temporal_context = {
+                    "start_date": valid_library_dates.min().strftime("%Y-%m-%d"),
+                    "end_date": valid_library_dates.max().strftime("%Y-%m-%d")
+                }
+            else:
+                raise ValueError("No valid dates in library_df")
+        except Exception as e:
+            logger.warning(f"Falling back to processed chunks for temporal context due to: {e}")
+            dates = pd.to_datetime([r["posted_date_time"] for r in processed_chunks], utc=True, errors='coerce')
+            valid_dates = dates[~pd.isna(dates)]
+            temporal_context = {
+                "start_date": valid_dates.min().strftime("%Y-%m-%d") if not valid_dates.empty else "Unknown",
+                "end_date": valid_dates.max().strftime("%Y-%m-%d") if not valid_dates.empty else "Unknown"
+            }
+
         # Step 5: Generate summary (with or without batching)
         logger.info(f"Generating summary for {len(processed_chunks)} chunks with batch size {summary_batch_size}")
         

@@ -180,12 +180,17 @@ CRITICAL INSTRUCTIONS:
 7. If a channel filter is specified, use ILIKE for partial matching
 8. For time-based filtering, refer to the current time as NOW() in your explanation
 9. Consider pagination and performance by adding LIMIT statements when appropriate
-10. EXPLAIN your reasoning but PUT THE FINAL SQL AS THE LAST LINE in the response
+10. PLATFORM-AGNOSTIC HANDLING: When query mentions social media platforms (X, Twitter, Facebook, etc.), treat it as a general content search
+    - For example: "trending topics on X" means "content containing popular topics generally"
+    - Do NOT require the platform to be explicitly in the data schema
+11. For queries about "trending" or "popular" topics, simply return recent content ordered by recency
+12. EXPLAIN your reasoning but PUT THE FINAL SQL AS THE LAST LINE in the response
 
 QUERY PARSING GUIDE:
 - Time filters: Look for "last hour", "last 3 hours", "today", "this week", etc.
 - Content filters: Look for "containing X", "about Y", "with Z", "contains", "mentioning"
 - Check specifically for phrases like "that contains X" or "containing X" and ensure X is included as a content filter
+- Platform references: When query contains "on X", "on Twitter", "on Facebook", etc., interpret as general content queries, not specific platform filters
 
 RESPONSE FORMAT:
 1. First provide your reasoning
@@ -208,6 +213,14 @@ SELECT * FROM complete_data WHERE posted_date_time >= %s AND content ILIKE %s OR
 Query: "Show posts from channel tech about AI from this month"
 Reasoning: We need posts with channel_name containing "tech", content containing "AI", and posted this month (starting from the first day of the current month).
 SELECT * FROM complete_data WHERE channel_name ILIKE %s AND content ILIKE %s AND posted_date_time >= %s ORDER BY posted_date_time DESC LIMIT 50
+
+Query: "What are the current trending topics on X?"
+Reasoning: This is asking for recent content without specific platform restrictions. Since we're looking for "trending" content, we'll return recent posts ordered by recency, which is our best proxy for trending content in this schema.
+SELECT * FROM complete_data ORDER BY posted_date_time DESC LIMIT 50
+
+Query: "Find discussions about crypto on Twitter from yesterday"
+Reasoning: This is asking for content containing "crypto" from yesterday. The reference to "Twitter" is treated as general context, not a specific filter on platform.
+SELECT * FROM complete_data WHERE content ILIKE %s AND posted_date_time >= %s AND posted_date_time < %s ORDER BY posted_date_time DESC LIMIT 50
 """
 
     def _get_validation_prompt(self) -> str:
@@ -715,43 +728,25 @@ Format your response as a JSON object with the following fields:
     async def _enhance_instructions(self, nl_query: str) -> str:
         """
         Enhance natural language query with structured instructions.
-        
-        Takes a natural language query and refines it into clearer instructions
-        while preserving the original intent.
-        
-        Args:
-            nl_query: Original natural language query
-            
-        Returns:
-            Enhanced instructions with structured details
         """
-        prompt = f"""You are an expert in understanding database query intent.
-        Analyze this natural language query and enhance it with specific details:
-        
-        1. Identify all time-based filters (last hour, today, etc.)
-        2. Identify content filters (contains X, about Y)
-        3. Identify author or channel filters
-        4. Structure these identified elements clearly
-        5. Preserve ALL original query intent
-        
-        Original query: {nl_query}
-        
-        Enhanced instructions:"""
-        
+        # Try to get prompt and character_slug from YAML
+        sql_prompts = self.agent.prompts.get('sql_prompts', {})
+        enhance_cfg = sql_prompts.get('enhance_instructions', {})
+        prompt_template = enhance_cfg.get('system_prompt')
+        character_slug = enhance_cfg.get('character_slug', 'the-architect-of-precision-the-architect')
+        if not prompt_template:
+            prompt_template = """You are an expert in understanding database query intent.\nAnalyze this natural language query and enhance it with specific details:\n\n1. Identify all time-based filters (last hour, today, etc.)\n2. Identify content filters (contains X, about Y)\n3. Identify author or channel filters\n4. Structure these identified elements clearly\n5. Preserve ALL original query intent"""
+        prompt = f"{prompt_template}\n\nOriginal query: {nl_query}\n\nEnhanced instructions:"
         try:
             enhanced = await self.agent.generate_chunks(
                 content=prompt,
                 provider=self.PROVIDER_ENHANCER,
-                character_slug=get_venice_character_slug(character_slug="the-architect-of-precision-the-architect")
+                character_slug=get_venice_character_slug(character_slug=character_slug)
             )
-            
-            # Extract the content from chunks response
             if isinstance(enhanced, dict) and "chunks" in enhanced and enhanced["chunks"]:
                 enhanced_text = enhanced["chunks"][0]
             else:
                 enhanced_text = str(enhanced)
-            
-            # Append original query to ensure no information is lost
             return f"{enhanced_text.strip()}\n\nOriginal query: {nl_query}"
         except Exception as e:
             logger.warning(f"Error enhancing query: {e}, using original query")
@@ -764,45 +759,34 @@ Format your response as a JSON object with the following fields:
     ) -> str:
         """
         Generate raw SQL from instructions using LLM.
-        
-        Args:
-            instructions: Enhanced query instructions
-            provider: Model provider to use
-            
-        Returns:
-            Raw SQL query string
         """
-        prompt = f"{self._get_generation_prompt()}\n\nQuery: {instructions}\n\nReasoning:"
-        
+        sql_prompts = self.agent.prompts.get('sql_prompts', {})
+        gen_cfg = sql_prompts.get('generate_sql', {})
+        prompt_template = gen_cfg.get('system_prompt')
+        character_slug = gen_cfg.get('character_slug', 'sqlman')
+        if not prompt_template:
+            prompt_template = self._get_generation_prompt()
+        prompt = f"{prompt_template}\n\nQuery: {instructions}\n\nReasoning:"
         try:
             response = await self.agent.generate_chunks(
                 content=prompt,
                 provider=provider,
-                character_slug=get_venice_character_slug(character_slug="sqlman")
+                character_slug=get_venice_character_slug(character_slug=character_slug)
             )
-            
-            # Extract the content from chunks response
             if isinstance(response, dict) and "chunks" in response and response["chunks"]:
                 response_text = response["chunks"][0]
             else:
                 response_text = str(response)
-            
-            # Extract just the SQL query (last line of the response)
             lines = response_text.strip().split('\n')
             sql_line = lines[-1].strip()
-            
-            # Verify it looks like a SELECT statement
             if not sql_line.upper().startswith("SELECT"):
-                # Try to find any SELECT statement in the response
                 for line in reversed(lines):
                     if line.upper().strip().startswith("SELECT"):
                         sql_line = line.strip()
                         break
                 else:
                     raise NLQueryParsingError("No valid SELECT statement found in LLM response")
-            
             return sql_line
-            
         except Exception as e:
             logger.error(f"Error generating SQL: {e}")
             raise NLQueryParsingError(f"Failed to generate SQL: {e}")
@@ -815,25 +799,13 @@ Format your response as a JSON object with the following fields:
     ) -> Dict[str, Any]:
         """
         Validate SQL for security and correctness using LLM.
-        
-        Args:
-            sql_query: SQL query to validate
-            provider: Model provider to use
-            nl_query: Original natural language query for completeness validation
-            
-        Returns:
-            Dictionary with validation results
         """
-        # First, do basic validation without LLM
-        # Check if it's a SELECT statement
         if not sql_query.upper().strip().startswith("SELECT"):
             return {
                 "is_safe": False,
                 "reason": "Only SELECT statements are allowed",
                 "corrected_sql": None
             }
-        
-        # Check for common SQL injection patterns
         for pattern in ["--", ";", "DROP", "DELETE", "UPDATE", "INSERT", "TRUNCATE", "ALTER"]:
             if pattern in sql_query.upper():
                 return {
@@ -841,77 +813,57 @@ Format your response as a JSON object with the following fields:
                     "reason": f"Potential SQL injection detected: '{pattern}'",
                     "corrected_sql": None
                 }
-        
-        # Check for missing content filters if content is mentioned in the query
         if nl_query:
             nl_lower = nl_query.lower()
             content_terms = ["contain", "about", "with", "mention"]
             has_content_reference = any(term in nl_lower for term in content_terms)
-            
             if has_content_reference and "content ILIKE" not in sql_query.lower():
-                # Add content filter validation
                 logger.warning(f"Content filter mentioned in query but missing in SQL: {nl_query}")
-        
-        # Include the original query in the validation prompt if available
+        sql_prompts = self.agent.prompts.get('sql_prompts', {})
+        val_cfg = sql_prompts.get('validate_sql', {})
+        prompt_template = val_cfg.get('system_prompt')
+        character_slug = val_cfg.get('character_slug', 'sqlman')
+        if not prompt_template:
+            prompt_template = self._get_validation_prompt()
         if nl_query:
-            prompt = f"{self._get_validation_prompt()}\n\nOriginal Query: {nl_query}\nSQL Query: {sql_query}"
+            prompt = f"{prompt_template}\n\nOriginal Query: {nl_query}\nSQL Query: {sql_query}"
         else:
-            prompt = f"{self._get_validation_prompt()}\n\nSQL Query: {sql_query}"
-        
+            prompt = f"{prompt_template}\n\nSQL Query: {sql_query}"
         try:
             response = await self.agent.generate_chunks(
                 content=prompt,
                 provider=provider,
-                character_slug=get_venice_character_slug(character_slug="sqlman")
+                character_slug=get_venice_character_slug(character_slug=character_slug)
             )
-            
-            # Extract the content from chunks response
             if isinstance(response, dict) and "chunks" in response and response["chunks"]:
                 response_text = response["chunks"][0]
             else:
                 response_text = str(response)
-            
-            # Parse the JSON response
-            # Find the JSON object in the response
             json_match = re.search(r'{[\s\S]*}', response_text)
             if not json_match:
                 logger.warning(f"Could not find JSON in validation response: {response_text}")
-                # Perform simple validation fallback
                 return self._simple_validation_fallback(sql_query, nl_query)
-            
             validation_json = json_match.group(0)
             validation = json.loads(validation_json)
-            
-            # Ensure required fields are present
             if "is_safe" not in validation:
                 logger.warning(f"Validation response missing 'is_safe' field: {validation}")
                 validation["is_safe"] = False
                 validation["reason"] = "Invalid validation response"
-            
-            # Check if there are missing filters
             if "missing_filters" in validation and validation["missing_filters"]:
                 logger.warning(f"Missing filters detected: {validation['missing_filters']}")
-                # Attempt to correct the SQL if content filter is missing
                 if "content_filter" in validation["missing_filters"] and nl_query:
                     content_term = self._extract_content_term(nl_query)
                     if content_term and "corrected_sql" in validation:
-                        # Add content filter to the corrected SQL
                         corrected_sql = validation["corrected_sql"]
                         if "WHERE" in corrected_sql:
-                            # Add content filter to existing WHERE clause
                             corrected_sql = corrected_sql.replace("WHERE", f"WHERE content ILIKE '%{content_term}%' AND")
                         else:
-                            # Add new WHERE clause with content filter before ORDER BY
                             corrected_sql = corrected_sql.replace("ORDER BY", f"WHERE content ILIKE '%{content_term}%' ORDER BY")
-                        
                         validation["corrected_sql"] = corrected_sql
                         logger.info(f"Corrected SQL with missing content filter: {corrected_sql}")
-            
             return validation
-            
         except Exception as e:
             logger.error(f"Error validating SQL: {e}")
-            # Perform simple validation fallback
             return self._simple_validation_fallback(sql_query, nl_query)
 
     def _extract_content_term(self, nl_query: str) -> Optional[str]:

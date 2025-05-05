@@ -1,26 +1,24 @@
-# Chanscope: Biologically-Inspired 4chan Analysis System
+# Chanscope Retrieval
 
 ## Overview
+An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice) for comprehensive social data analysis to extract actionable insights and patterns. The system provides a robust API layer that can be integrated with autonomous AI agents and agentic systems. It employs intelligent sampling techniques and a multi-stage analysis pipeline to process large volumes of 4chan and X data, enabling temporal analysis, cross-source verification, and predictive analytics.
 
-Chanscope is an advanced data ingestion, embedding, and generative query pipeline specifically designed for comprehensive 4chan data analysis. Inspired by biological systems, Chanscope orchestrates multi-stage processing workflows to extract actionable insights from large volumes of thread data using stratified sampling, distributed embedding generation, and context-aware summarization.
+### Platform Integration
+- **Traditional Deployment**: Docker-based local or server deployment for controlled environments
+- **[Replit Cloud](https://replit.com/@jwkonitzer/chanscope-knowledge-agents)**: 
+  - Zero-setup cloud deployment with optimized performance
+  - Automated hourly data updates
+  - Environment-specific path handling
+  - Optimized memory management
 
-The system provides a robust API layer that can be integrated with autonomous AI agents and agentic systems, enabling temporal analysis, cross-source verification, and predictive analytics through a biologically-inspired architecture that mimics natural information processing systems.
-
-## Key Features & Biological Parallels
-
-- **Adaptive Data Ingestion**: Like organisms absorbing nutrients selectively, Chanscope ingests data from S3 storage with configurable retention periods and temporal filtering.
-
-- **Stratified Sampling**: Similar to how biological systems extract relevant signals from noise, the system performs intelligent stratification of raw data to maximize insight from minimal processing.
-
-- **Dynamic Embedding Generation**: Analogous to neural encoding in biological systems, Chanscope transforms text data into vector representations stored in optimized `.npz` format.
-
-- **Homeostatic Refresh Mechanisms**: The system maintains data freshness through feedback loops that trigger refresh operations only when needed, mimicking homeostasis in living systems.
-
-- **Multi-agent Query Processing**: Distributed processing of queries across specialized components resembles cellular specialization in complex organisms.
-
-- **Enhanced Natural Language Query Processing**: The NL query endpoint now incorporates a robust validation mechanism that retains the original query context in the SQL generation process, ensuring that essential filters (particularly content filters) are applied accurately. This mirrors natural quality control in biological systems.
-
-- **Environmental Adaptation**: Automatic environment detection and configuration adjustment similar to how organisms adapt to their surroundings.
+### Current Uses 
+- **Agentic System Integration**: 
+  - **[Virtuals Protocol](https://app.virtuals.io/prototypes/0x2cc92Fc77180815834FfdAa72C58f72d457C4308)/[X](https://x.com/4Chanscope)**: The system can be integrated with autonomous AI agents through its API layer, enabling:
+    - Consumption of 4chan and X data analysis through standardized API endpoints
+    - Integration with agent memory systems for persistent context
+    - Support for agent-driven data exploration and pattern recognition
+    - Potential for onchain data validation and verification
+    - Extensibility for custom agent-specific analysis patterns
 
 ## System Architecture
 
@@ -59,291 +57,385 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
 3. **Embedding Generation**: Creates embeddings stored in `.npz` format with thread ID mappings.
 4. **Query Processing**: Leverages embeddings for semantic search and incorporates an enhanced natural language query processing module. This module uses LLMSQLGenerator to convert natural language queries into SQL queries while preserving the original query context and enforcing essential filters (particularly content filters). This approach mirrors biological quality control mechanisms, ensuring precise data retrieval.
 
-## Quick Start Guide
+## Repository Structure
 
-Chanscope supports multiple deployment environments with environment-specific optimizations:
-
-### Docker Environment
-
-```bash
-# Clone repository and navigate to project directory
-git clone https://github.com/your-org/chanscope.git
-cd chanscope
-
-# Build and run containers
-docker-compose -f deployment/docker-compose.yml build
-docker-compose -f deployment/docker-compose.yml up -d
-
-# Check system status
-curl http://localhost/api/v1/health/all
-
-# Run a basic query
-curl -X POST "http://localhost/api/v1/query" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Analyze recent cryptocurrency trends"}'
+```
+├── api/                  # FastAPI application and endpoints
+│   ├── app.py            # Main API application
+│   ├── routes.py         # API route definitions
+│   ├── models.py         # Data models and schemas
+│   ├── cache.py          # Caching mechanisms
+│   └── errors.py         # Error handling
+├── config/               # Configuration files and settings
+├── deployment/           # Docker and deployment configurations
+│   ├── docker-compose.yml       # Production deployment configuration
+│   ├── docker-compose.test.yml  # Testing deployment configuration
+│   ├── Dockerfile               # Container definition
+│   └── setup.sh                 # Setup script for container initialization
+├── docs/                 # Documentation files
+│   ├── chanscope_implementation.md  # Implementation details
+│   ├── llm_sql_feature.md       # LLM-SQL query feature documentation
+│   ├── stratification_guide.md  # Stratification best practices
+│   └── example_queries.md       # Example NL query examples
+├── knowledge_agents/     # Core business logic and data processing
+│   ├── data_ops.py       # Data operations and processing
+│   ├── embedding_ops.py  # Embedding generation and management
+│   ├── inference_ops.py  # Inference and query processing
+│   ├── model_ops.py      # Model management and configuration
+│   ├── llm_sql_generator.py # Natural language to SQL conversion
+│   └── run.py            # Main execution logic
+├── scripts/              # Utility scripts for testing and deployment
+│   ├── run_tests.sh      # Main test runner
+│   ├── validate_chanscope_approach.py # Chanscope approach validation
+│   ├── process_data.py   # Data processing utilities
+│   ├── scheduled_update.py # Scheduled data update script
+│   └── test_and_deploy.sh  # Combined test and deployment workflow
+├── tests/                # Test suites and fixtures
+│   ├── test_data_ingestion.py     # Data ingestion tests
+│   ├── test_embedding_pipeline.py # Embedding generation tests
+│   ├── test_endpoints.py          # API endpoint tests
+│   └── test_chanscope_approach.py # Chanscope approach tests
+└── examples/             # Example usage and integrations
 ```
 
-### Replit Environment
+## Core Architecture
 
-```bash
-# Fork the Replit project: https://replit.com/@jwkonitzer/chanscope-knowledge-agents
+- **Multi-Provider Architecture**
+  - OpenAI (Primary): GPT-4o, text-embedding-3-large
+  - Grok (Optional): grok-3, grok-3-mini
+  - Venice (Optional): dolphin-2.9.2-qwen2-72b, deepseek-r1-671b
 
-# The .replit file will automatically run deployment/setup.sh
-# This sets up appropriate environment variables for Replit
+- **Intelligent Data Processing**
+  - Automated hourly data updates with incremental processing
+  - Time-based and category-based stratified sampling with configurable weights
+  - Board-specific data filtering and validation
+  - Efficient large dataset handling with reservoir sampling
+  - Automated data chunking and embedding generation
+  - Configurable data retention with `DATA_RETENTION_DAYS` environment variable
+  - Three-stage data processing pipeline:
+    1. Complete data ingestion and storage
+    2. Stratified sample generation
+    3. Embedding generation and storage
+  - Flexible regeneration options:
+    - `--regenerate --stratified-only`: Regenerate only stratified sample
+    - `--regenerate --embeddings-only`: Regenerate only embeddings
+    - `--force-refresh`: Force refresh all data stages
+  - Environment-specific storage backends:
+    - Replit: PostgreSQL for complete data, Key-Value store for stratified samples, Object Storage for embeddings
+    - Docker: File-based storage with CSV, NPZ, and JSON formats
 
-# Check system status
-curl https://chanscope-knowledge-agents.jwkonitzer.repl.co/api/v1/health/all
+- **Advanced Analysis Pipeline**
+  - Real-time monitoring with 6-hour rolling window
+  - Context-aware temporal analysis with validation
+  - Parallel processing with automatic model fallback
+  - Event mapping and relationship extraction
+  - Cross-platform data synchronization
+  - Enhanced S3 data streaming with board filtering
+  - Optimized batch processing for query efficiency
+  - Dual processing modes with `force_refresh` flag:
+    - When enabled: Regenerates stratified samples and embeddings
+    - When disabled: Uses existing data for faster processing
 
-# Run a basic query
-curl -X POST "https://chanscope-knowledge-agents.jwkonitzer.repl.co/api/v1/query" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Analyze recent cryptocurrency trends"}'
+- **LLM-Based SQL Generation**
+  - Natural language to SQL conversion for database queries
+  - Three-stage LLM architecture (enhancement, generation, validation)
+  - Template matching for common query patterns
+  - Parameter extraction with time-awareness
+  - Full schema validation and security checks
+  - Caching for improved performance
+
+- **API-First Design**
+  - RESTful endpoints for all core functionality
+  - Structured JSON responses for easy integration
+  - Comprehensive error handling with detailed feedback
+  - Batch processing for high-volume requests
+  - Authentication and rate limiting for production use
+  - Persistent task tracking with detailed status reporting
+  - Automatic cleanup of old results with history preservation
+  - Background processing with `use_background` parameter
+  - Custom task IDs for integration with external systems
+
+For greater technical details and examples, refer to the documentation in the `docs/` directory and the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
+
+## Analysis Capabilities
+
+### 1. Temporal Analysis
+- Thread dynamics tracking
+- Activity burst detection
+- Topic evolution mapping
+- Cross-reference analysis
+- Real-time trend prediction
+
+### 2. Signal Processing
+- Source credibility rating
+- Cross-mention validation
+- Topic persistence assessment
+- Impact measurement with confidence intervals
+
+### 3. Pattern Detection
+- Temporal sequence mapping
+- Viral trigger identification
+- Information flow tracking
+- Anomaly detection
+
+### 4. Metrics & Variables
+- **Temporal**: timestamps, response times, activity frequency
+- **Cascade**: thread depth, topic spread, lifetime
+- **Content**: toxicity, relevance, uniqueness, influence
+- **Forecast**: event probability, confidence bounds, reliability
+
+## Integration with Agentic Systems
+
+The Chanscope Retrieval is designed to serve as a backend for AI agents and agentic systems through its API layer:
+
+### Agent Integration Patterns
+- **Direct API Consumption**: Agents can directly query the API endpoints
+- **Memory Augmentation**: Results can be stored in agent memory systems
+- **Decision Support**: Analysis can inform agent decision-making processes
+- **Autonomous Monitoring**: Agents can set up scheduled queries for monitoring
+
+### Agent Capabilities Enabled
+- **Contextual Understanding**: Deep understanding of 4chan discussions and trends
+- **Pattern Recognition**: Identification of emerging patterns and anomalies
+- **Temporal Awareness**: Understanding of how topics evolve over time
+- **Cross-Reference Analysis**: Connecting related discussions across threads and boards
+
+## Environment Configuration
+
+The project uses an intelligent environment detection system that automatically configures settings based on the deployment context:
+
+### Environment Detection
+- **Replit Detection**: Automatically detects Replit environment through multiple indicators
+- **Docker Detection**: Identifies Docker containers through environment markers
+- **Local Development**: Falls back to local configuration when neither is detected
+
+### Environment-Specific Settings
+1. **Replit Environment**:
+   - Optimized path configuration for Replit filesystem
+   - Automatic directory structure creation
+   - Memory-optimized batch sizes and worker counts
+   - Default configuration for mock data and embeddings
+
+2. **Docker Environment**:
+   - Container-specific path configuration
+   - Optimized worker counts for containerized deployment
+   - Enhanced batch processing settings
+   - Automatic volume management
+
+3. **Local Environment**:
+   - Flexible path configuration
+   - Development-friendly defaults
+   - Easy-to-modify settings
+
+### Configuration Sections
+The `.env` file supports section-based configuration:
+```ini
+[replit]
+# Replit-specific settings
+USE_MOCK_DATA=false
+EMBEDDING_BATCH_SIZE=10
+MAX_WORKERS=2
+
+[docker]
+# Docker-specific settings
+EMBEDDING_BATCH_SIZE=20
+MAX_WORKERS=4
+
+[local]
+# Local development settings
 ```
 
-### Local Environment
+## Quick Start
 
+### 1. Setup Environment
 ```bash
-# Clone repository and navigate to project directory
-git clone https://github.com/your-org/chanscope.git
-cd chanscope
-
-# Set up Python environment
-poetry install
-
-# Load environment variables
-cp .env.example .env
-# Edit .env with your configuration
-
-# Initialize data and start API server
-poetry run python scripts/scheduled_update.py refresh
-poetry run uvicorn api.app:app --host 0.0.0.0 --port 8000
-
-# Run a basic query
-curl -X POST "http://localhost:8000/api/v1/query" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Analyze recent cryptocurrency trends"}'
+git clone https://github.com/joelwk/knowledge-agents.git
+cd knowledge-agents
+cp .env.template .env  # Configure your API keys
 ```
 
-## Detailed Usage
+### 2. Required Environment Variables
+- `OPENAI_API_KEY`: Primary provider (Required)
+- `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`: For S3 access (Required)
+- `DATA_RETENTION_DAYS`: Number of days to retain data (Optional, defaults to 30)
 
-### Data Operations
+### 3. Environment-Specific Configuration
+The system automatically detects and configures based on your environment:
 
+#### Replit Deployment
 ```bash
-# Standard refresh (processes all data but reuses existing stratified sample and embeddings)
-# Note: This does NOT regenerate the stratified sample unless it's missing
-poetry run python scripts/scheduled_update.py refresh
-
-# Force complete refresh (regenerates stratified sample and embeddings)
-# This ensures your stratified sample and embeddings reflect the latest data
-poetry run python scripts/scheduled_update.py refresh --force-refresh
-
-# Two-stage refresh (sample now, embeddings later)
-# Analogous to staged biological processes
-poetry run python scripts/scheduled_update.py refresh --force-refresh --skip-embeddings
-poetry run python scripts/scheduled_update.py embeddings
-
-# Continuous scheduled refresh with forced stratification regeneration
-# Ensures both data processing and stratified sample stay current
-poetry run python scripts/scheduled_update.py refresh --continuous --force-refresh --interval=3600
-
-# Check system status (data freshness, embedding status)
-# Like monitoring an organism's vital signs
-poetry run python scripts/scheduled_update.py status
+# Set in Replit Secrets:
+OPENAI_API_KEY=your_key
+AWS_ACCESS_KEY_ID=your_key
+AWS_SECRET_ACCESS_KEY=your_key
 ```
 
-> **Important**: The `--force-refresh` flag controls whether to regenerate the stratified sample and embeddings. Without this flag, existing stratified samples and embeddings will be reused even if they're outdated. The system always processes all data files regardless of this flag.
-
-### Query Processing
-
-Chanscope's query processing resembles a neural network's distributed processing:
-
+#### Docker Deployment
 ```bash
-# Standard query
+# In your .env file:
+DOCKER_ENV=true
+EMBEDDING_BATCH_SIZE=20
+MAX_WORKERS=4
+```
+
+#### Local Development
+```bash
+# In your .env file:
+# Leave DOCKER_ENV and REPLIT_ENV unset for local detection
+```
+
+### 4. Launch Application
+```bash
+# For Docker
+docker-compose -f deployment/docker-compose.yml up --build -d
+
+# Access Services
+API: http://localhost:80
+```
+
+### 5. Basic API Usage
+
+#### Synchronous Query
+```bash
 curl -X POST "http://localhost/api/v1/query" \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "Analyze cryptocurrency trends in relation to federal policy"
+    "query": "Investment opportunities in renewable energy",
+    "force_refresh": false
   }'
+```
 
-# Multi-provider query with fallback chain (biological redundancy)
+#### Background Processing
+```bash
+# Submit background task
 curl -X POST "http://localhost/api/v1/query" \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "Analyze cryptocurrency trends in relation to federal policy",
-    "providers": {
-      "summarization": ["openai", "grok", "venice"],
-      "embedding": "openai",
-      "chunk_generation": "openai"
-    }
+    "query": "Bitcoin Strategic Reserve",
+    "use_background": true,
+    "task_id": "bitcoin_analysis_123"
   }'
 
-# Temporal analysis with date range (like studying evolutionary changes)
-curl -X POST "http://localhost/api/v1/query" \
+# Check task status
+curl -X GET "http://localhost/api/v1/batch_status/bitcoin_analysis_123"
+```
+
+#### Natural Language Database Query
+```bash
+# Query using natural language
+curl -X POST "http://localhost/api/v1/nl_query" \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "Evolution of AI model capabilities discussion",
-    "filter_date": "2025-03-15",
-    "end_date": "2025-04-10"
-  }'
-
-# Background batch processing (asynchronous processing like biological background processes)
-curl -X POST "http://localhost/api/v1/batch_process" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "queries": [
-      "Latest developments in AI regulation",
-      "Public sentiment toward AI safety measures",
-      "Corporate responses to regulation proposals"
-    ],
-    "task_id": "ai_regulation_analysis",
-    "use_background": true
+    "query": "Show posts about Bitcoin from last week",
+    "limit": 20
   }'
 ```
 
-## Recommended Workflows
+## Deployment Options
 
-Chanscope supports distinct workflows for different stages of development and deployment:
+The project supports multiple deployment options:
 
-### Testing Workflow
+### Docker Deployment
+For detailed Docker deployment instructions, see [deployment/README_DEPLOYMENT.md](deployment/README_DEPLOYMENT.md)
 
-#### Docker Environment
-```bash
-# Run tests in isolation using dedicated testing compose file
-docker-compose -f deployment/docker-compose.test.yml build
-docker-compose -f deployment/docker-compose.test.yml up
-```
+### Replit Deployment
+The project is configured to run seamlessly on Replit with optimized settings:
 
-#### Replit Environment
-```bash
-# Run tests in Replit using dedicated setup script
-bash scripts/run_tests.sh --env=replit
-```
+1. Fork the repository to your Replit account
+2. Set up environment variables in Replit Secrets
+3. Click the Run button or use the appropriate startup script for Replit
 
-#### Local Environment
-```bash
-# Run tests locally
-bash scripts/run_tests.sh --env=local
-```
+## Testing Framework
 
-### Production Deployment
+The project includes a comprehensive testing framework to validate functionality across different environments:
 
-#### Docker Environment
-```bash
-# Deploy application without running tests at startup
-docker-compose -f deployment/docker-compose.yml build
-docker-compose -f deployment/docker-compose.yml up -d
-```
+- **Data Ingestion Tests**: Validate S3 data retrieval and processing
+- **Embedding Tests**: Validate embedding generation and storage
+- **API Endpoint Tests**: Validate API functionality
+- **Chanscope Approach Tests**: Validate the complete pipeline
+- **Task Management Tests**: Verify background processing and status tracking
+- **Force Refresh Tests**: Ensure proper behavior with different refresh settings
 
-#### Replit Environment
-```bash
-# Deploy in Replit using the main setup script
-bash deployment/setup.sh
-# The .replit file is configured to run this automatically
-```
+For detailed testing instructions, see [tests/README_TESTING.md](tests/README_TESTING.md)
 
-## Monitoring & Maintenance
+## API Endpoints
 
-Chanscope provides comprehensive monitoring endpoints to track system health:
+The Chanscope Retrieval provides a comprehensive set of API endpoints for querying and managing data:
 
-```bash
-# Check overall API health with connection/provider tests
-curl -X GET "http://localhost/api/v1/health/all"
+- **Health Check Endpoints**: Various health check endpoints to verify system status
+- **Query Processing Endpoints**: Synchronous and asynchronous query processing
+- **Batch Processing**: Process multiple queries in a batch
+- **Data Management**: Endpoints for triggering data stratification and embedding generation
+- **Task Management**: Enhanced task status tracking with persistent history
+- **Natural Language Queries**: Convert natural language to SQL for database queries
 
-# Check database connectivity and schema status
-curl -X GET "http://localhost/api/v1/health/connections"
+For detailed API usage examples, see [api/README_REQUESTS.md](api/README_REQUESTS.md)
 
-# Check S3 storage access and bucket status
-curl -X GET "http://localhost/api/v1/health/s3"
+## Supported Models
+The project supports multiple AI model providers:
+- **OpenAI** (Required): Default provider for both completions and embeddings
+- **Grok (X.AI)** (Optional): Alternative provider for completions and chunking
+- **Venice.AI** (Optional): Additional model provider for completion and chunking
 
-# Check embedding coverage metrics
-curl -X GET "http://localhost/api/v1/health/embeddings"
+## Documentation
 
-# View status of background tasks
-curl -X GET "http://localhost/api/v1/batch_status/ai_regulation_analysis"
-```
+- **[deployment/README_DEPLOYMENT.md](deployment/README_DEPLOYMENT.md)**: Detailed deployment instructions
+- **[tests/README_TESTING.md](tests/README_TESTING.md)**: Comprehensive testing framework documentation
+- **[docs/chanscope_implementation.md](docs/chanscope_implementation.md)**: Implementation details and technical specifications
+- **[docs/llm_sql_feature.md](docs/llm_sql_feature.md)**: LLM-based SQL generation documentation
+- **[docs/stratification_guide.md](docs/stratification_guide.md)**: Stratification best practices
+- **[api/README_REQUESTS.md](api/README_REQUESTS.md)**: API usage examples
 
-### Continuous Data Processing
+## Environment Variables
+For a complete and up-to-date list of environment variables, see [.env.template](.env.template)
 
-For long-running deployments, enable the continuous update mode:
+### Data Processing Control Variables
+- `AUTO_CHECK_DATA`: Enable/disable automatic data checking on startup (defaults to true)
+- `CHECK_EXISTING_DATA`: Check if data already exists in database before processing (defaults to true)
+- `FORCE_DATA_REFRESH`: Force refresh data even if fresh data exists (defaults to false)
+- `SKIP_EMBEDDINGS`: Skip embedding generation during data processing (defaults to false)
+- `DATA_RETENTION_DAYS`: Number of days to retain data (defaults to 14)
+- `DATA_UPDATE_INTERVAL`: How often to update data in seconds (defaults to 86400, once per day)
 
-```bash
-# Run as persistent service with hourly updates (like biological cycles)
-poetry run python scripts/scheduled_update.py refresh --continuous --interval=3600
-```
+## Test Data Generation
 
-## Configuration & Environment Variables
-
-Chanscope automatically detects the execution environment and configures itself accordingly, but you can override these settings through environment variables:
-
-| Variable | Description | Default | Notes |
-|----------|-------------|---------|-------|
-| `DATA_RETENTION_DAYS` | Number of days to retain data | `30` | Affects S3 data ingestion |
-| `ENABLE_DATA_SCHEDULER` | Enable automatic data updates | `true` | Set to `false` for manual updates only |
-| `SAMPLE_SIZE` | Size of stratified sample | `100000` | Adjust based on available memory |
-| `EMBEDDING_BATCH_SIZE` | Batch size for embedding generation | `10` | Lower for constrained environments |
-| `FORCE_ENVIRONMENT` | Override environment detection | `null` | Options: `docker`, `replit`, `local` |
-| `RUN_TESTS_ON_STARTUP` | Run tests during startup | `false` | Not recommended for production |
-
-### Environment-Specific Considerations
-
-#### Replit Environment
-- Limited CPU, memory, and disk space
-- Use smaller batch sizes and fewer workers
-- Enable mock data for development/testing
-
-#### Docker Environment
-- Configure volumes for data persistence
-- Set appropriate container resource limits
-- Configure health checks with extended start periods
-
-## Testing & Validation
-
-Chanscope includes comprehensive test suites for validating system behavior:
+For testing purposes when real data is unavailable or outdated, you can generate synthetic test data:
 
 ```bash
-# Run all tests with auto-detection of environment
-scripts/run_tests.sh
+# Generate 1000 rows of synthetic data with timestamps in the past 10 days
+poetry run python scripts/generate_test_data.py
 
-# Run specific test categories
-scripts/run_tests.sh --data-ingestion
-scripts/run_tests.sh --embedding
-scripts/run_tests.sh --endpoints
-scripts/run_tests.sh --chanscope-approach
+# Generate 5000 rows with specific date range and regenerate stratified sample & embeddings
+poetry run python scripts/generate_test_data.py --num-rows 5000 --start-date 2025-03-01T00:00:00 --end-date 2025-03-30T23:59:59 --regenerate-stratified --regenerate-embeddings
 ```
 
-Testing validates key biological-inspired patterns:
-- Data ingestion and processing pipelines (nutrient absorption)
-- Feedback mechanisms for forced vs. non-forced refresh (homeostasis)
-- Embedding generation and storage (neural encoding)
-- Query processing and summarization (higher-order cognition)
+You can also adjust the `FILTER_DATE` environment variable to include older test data:
 
-## Contributing Guidelines
+```bash
+# Set a specific filter date in .env or environment
+export FILTER_DATE=2024-04-01  # Include data from April 2024 onwards
+```
 
-Contributions to Chanscope should follow these principles:
+## References
+- Data Gathering Lambda: [chanscope-lambda](https://github.com/joelwk/chanscope-lambda)
+- Original Chanscope R&D: [Chanscope](https://github.com/joelwk/chanscope)
+- R&D Sandbox Repository: [knowledge-agents](https://github.com/joelwk/knowledge-agents)
+- Inspiration for Prompt Engineering Approach: [Temporal-Aware Language Models for Temporal Knowledge Graph Question Answering](https://arxiv.org/pdf/2410.18959) - Used for designing temporal-aware prompts and multimodal forecasting capabilities
 
-1. **Modular Design**: Each component should have well-defined interfaces, like specialized cells in an organism.
-2. **Autonomous Operation**: Components should operate independently while coordinating through clear signaling mechanisms.
-3. **Robust Error Handling**: Implement retry logic and circuit breakers, analogous to biological redundancy and repair mechanisms.
-4. **Resource Efficiency**: Optimize for memory and processing constraints, similar to energy conservation in living systems.
+### Data Processing Commands
 
-When submitting changes:
-1. Ensure tests pass in all environments
-2. Follow existing code conventions
-3. Document biological inspirations for architectural decisions
-4. Add relevant tests for new features
+Basic data processing:
+```bash
+# Process all data stages
+poetry run python scripts/process_data.py
 
-## Future Work
+# Check current data status
+poetry run python scripts/process_data.py --check
 
-Based on documented TODOs, planned enhancements include:
+# Force refresh all data
+poetry run python scripts/process_data.py --force-refresh
 
-- **Monitoring Endpoints**: Enhanced API endpoints to monitor data freshness
-- **Performance Optimization**: Parallel processing for embedding generation
-- **Error Recovery Mechanisms**: Improved retry logic for S3 operations
-- **Enhanced Testing**: Additional tests for data retention logic and embedding performance
-- **Documentation Updates**: Comprehensive API documentation and operational guides
-
-## License & Contact
-
-[License Information]
-
-For questions or contributions, please open an issue in the GitHub repository or contact the maintainers.
+# Regenerate specific components
+poetry run python scripts/process_data.py --regenerate --stratified-only  # Only regenerate stratified sample
+poetry run python scripts/process_data.py --regenerate --embeddings-only  # Only regenerate embeddings
+```

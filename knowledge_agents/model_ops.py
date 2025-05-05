@@ -315,27 +315,32 @@ class EmbeddingResponse(BaseModel):
     model: str
     usage: Dict[str, int]
 
-def load_prompts(prompt_path: str = None) -> Dict[str, Any]:
-    """Load prompts from YAML file."""
-    try:
-        if prompt_path is None:
-            # Get the path to the knowledge_agents directory
-            current_dir = Path(__file__).parent
-            prompt_path = current_dir / 'prompt.yaml'
-        if not os.path.exists(prompt_path):
-            raise FileNotFoundError(f"Prompt file not found at: {prompt_path}")
-        with open(prompt_path, 'r') as file:
-            prompts = yaml.safe_load(file)
-        if not isinstance(prompts, dict):
-            raise ValueError(f"Invalid prompt file format. Expected dict, got {type(prompts)}")
-        required_sections = {"system_prompts", "user_prompts"}
-        missing_sections = required_sections - set(prompts.keys())
-        if missing_sections:
-            raise ValueError(f"Missing required sections in prompts: {missing_sections}")
-        return prompts
-    except Exception as e:
-        logger.error(f"Error loading prompts from {prompt_path}: {str(e)}")
-        raise
+def load_prompts(prompt_path: str = None, sql_prompt_path: str = None) -> Dict[str, Any]:
+    """Load prompts from YAML files."""
+    prompts = {}
+    # Load main prompts
+    if prompt_path is None:
+        current_dir = Path(__file__).parent
+        prompt_path = current_dir / 'prompt.yaml'
+    if not os.path.exists(prompt_path):
+        raise FileNotFoundError(f"Prompt file not found at: {prompt_path}")
+    with open(prompt_path, 'r') as file:
+        prompts = yaml.safe_load(file)
+    if not isinstance(prompts, dict):
+        raise ValueError(f"Invalid prompt file format. Expected dict, got {type(prompts)}")
+    required_sections = {"system_prompts", "user_prompts"}
+    missing_sections = required_sections - set(prompts.keys())
+    if missing_sections:
+        raise ValueError(f"Missing required sections in prompts: {missing_sections}")
+    # Load SQL prompts
+    if sql_prompt_path is None:
+        sql_prompt_path = Path(__file__).parent / 'llm_sql_generator.yaml'
+    if os.path.exists(sql_prompt_path):
+        with open(sql_prompt_path, 'r') as sql_file:
+            sql_prompts = yaml.safe_load(sql_file)
+            if isinstance(sql_prompts, dict):
+                prompts['sql_prompts'] = sql_prompts
+    return prompts
 
 def load_config() -> ModelConfig:
     """Load model configuration from environment variables."""

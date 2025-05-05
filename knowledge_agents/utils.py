@@ -531,7 +531,7 @@ def get_venice_character_slug(character_slug: Optional[str] = None) -> str:
     env_slug = os.environ.get("VENICE_CHARACTER_SLUG")
     if env_slug:
         return env_slug
-        
+    
     # Priority 3: Check Config class if available
     try:
         from config.settings import Config

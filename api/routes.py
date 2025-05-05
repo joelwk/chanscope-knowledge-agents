@@ -30,7 +30,7 @@ from knowledge_agents.model_ops import (
     ModelOperation,
     ModelConfig,
     load_config)
- 
+
 from knowledge_agents.embedding_ops import get_agent
 from knowledge_agents.data_processing.cloud_handler import S3Handler
 from knowledge_agents.data_ops import DataConfig, DataOperations
@@ -152,17 +152,17 @@ async def health_check_replit():
     """Extended health check with Replit-specific info."""
     from config.env_loader import is_replit_environment
     from config.settings import Config
-    
+
     # Get Replit environment variables from centralized config
     api_settings = Config.get_api_settings()
-    
+
     # Get Replit environment variables
     replit_env = os.getenv('REPLIT_ENV', '')
     replit_id = os.getenv('REPL_ID', '')
     replit_slug = os.getenv('REPL_SLUG', '')
     replit_owner = os.getenv('REPL_OWNER', '')
     replit_dev_domain = os.getenv('REPLIT_DEV_DOMAIN', '')
-    
+
     # Construct service URL based on available info
     if replit_dev_domain:
         service_url = f"https://{replit_dev_domain}"
@@ -177,10 +177,10 @@ async def health_check_replit():
     port = api_settings.get('port', 80)
     api_port = port
     host = api_settings.get('host', '0.0.0.0')
-    
+
     # Check if running in Replit environment
     is_replit_env = is_replit_environment()
-    
+
     # Get additional environment information
     environment_vars = {
         "is_replit": is_replit_env,
@@ -193,7 +193,7 @@ async def health_check_replit():
         "fastapi_env": api_settings.get('fastapi_env', ''),
         "fastapi_debug": api_settings.get('fastapi_debug', '')
     }
-    
+
     # Get service configuration
     service_config = {
         "url": service_url,
@@ -205,11 +205,11 @@ async def health_check_replit():
         "api_base_path": api_settings.get('base_path', '/api/v1'),
         "docs_url": f"{service_url}/docs" if service_url else None
     }
-    
+
     # Get system information
     import platform
     import sys
-    
+
     system_info = {
         "python_version": sys.version,
         "platform": platform.platform(),
@@ -225,7 +225,7 @@ async def health_check_replit():
         "logs_exists": os.path.exists(paths["logs_path"]),
         "temp_exists": os.path.exists(paths["temp_path"])
     }
-    
+
     return {
         "status": "healthy",
         "message": "Replit Service is running",
@@ -319,7 +319,7 @@ async def provider_health(
     try:
         provider_enum = ModelProvider.from_str(provider)
         client = await agent._get_client(provider_enum)
-        
+
         # Provider-specific health checks
         response = {}
         if provider_enum == ModelProvider.OPENAI:
@@ -357,9 +357,9 @@ async def provider_health(
             duration_ms=duration_ms,
             params={"provider": provider}
         )
-            
+
         return response
-            
+
     except ModelProviderError as e:
         error = APIError(
             message=f"Provider error for {provider}",
@@ -406,7 +406,7 @@ async def all_providers_health(
     """Check health for all configured providers."""
     start_time = time.time()
     results = {}
-    
+
     for provider in ModelProvider:
         try:
             client = await agent._get_client(provider)
@@ -426,7 +426,7 @@ async def all_providers_health(
                 "status": "error",
                 "error": str(e)
             }
-    
+
     return {
         "status": "completed",
         "providers": results,
@@ -478,37 +478,37 @@ async def load_stratified_data(
     stratified_path: str,
 ) -> pd.DataFrame:
     """Load and merge stratified data with embeddings.
-    
+
     Args:
         stratified_path: Path to the stratified data directory
-        
+
     Returns:
         DataFrame containing merged stratified data with embeddings
     """
     from knowledge_agents.embedding_ops import merge_articles_and_embeddings
     from pathlib import Path
-    
+
     # Log input path
     logger.info(f"Loading stratified data from base path: {stratified_path}")
-    
+
     # Construct full paths - all files should be in the same stratified_path directory
     stratified_file = Path(stratified_path) / 'stratified_sample.csv'
     embeddings_file = Path(stratified_path) / 'embeddings.npz'
     thread_id_file = Path(stratified_path) / 'thread_id_map.json'
-    
+
     # Verify files exist
     logger.info(f"Checking stratified data files:")
     logger.info(f"  Stratified file: {stratified_file} (exists: {stratified_file.exists()})")
     logger.info(f"  Embeddings file: {embeddings_file} (exists: {embeddings_file.exists()})")
     logger.info(f"  Thread ID file: {thread_id_file} (exists: {thread_id_file.exists()})")
-    
+
     # Load and merge the data
     library_df = await merge_articles_and_embeddings(
         stratified_file, embeddings_file, thread_id_file
     )
-    
+
     logger.info(f"Loaded stratified data: {library_df.shape[0]} rows, {library_df.shape[1]} columns")
-    
+
     return library_df
 
 @router.post("/query", response_model=Dict[str, Any])
@@ -519,7 +519,7 @@ async def base_query(
     """Process a single query and return results."""
     start_time = time.time()
     task_id = None
-    
+
     try:
         # Validate request
         if not request.query or not isinstance(request.query, str):
@@ -528,7 +528,7 @@ async def base_query(
                 field="query",
                 value=request.query
             )
-            
+
         # Process user-provided task_id or generate one
         if request.task_id:
             # Validate user-provided task ID
@@ -538,7 +538,7 @@ async def base_query(
                     field="task_id",
                     value=request.task_id
                 )
-            
+
             # Check for collisions
             if _check_task_id_collision(request.task_id):
                 raise ValidationError(
@@ -546,21 +546,21 @@ async def base_query(
                     field="task_id",
                     value=request.task_id
                 )
-            
+
             task_id = request.task_id
             logger.info(f"Using user-provided task ID: {task_id}")
         else:
             # Generate task ID
             task_id = _generate_task_id(prefix="query")
             logger.info(f"Generated task ID: {task_id}")
-        
+
         logger.info(f"Processing query request {task_id}: {request.query[:50]}...")
-        
+
         # Get required services
         agent = await get_agent()
         data_ops = await get_data_ops()
         config = build_unified_config(request)
-        
+
         if request.use_background:
             # Add task to background processing
             background_tasks.add_task(
@@ -575,7 +575,7 @@ async def base_query(
                 skip_embeddings=request.skip_embeddings,
                 character_slug=request.character_slug
             )
-            
+
             return {
                 "status": "processing",
                 "task_id": task_id,
@@ -592,33 +592,33 @@ async def base_query(
                         "query": request.query,
                         "progress": 0
                     }
-                
+
                 # Process query
                 # Check environment type to use appropriate data readiness methods
                 from config.env_loader import detect_environment
                 env_type = detect_environment()
-                
+
                 if env_type.lower() == 'replit':
                     logger.info("Using Replit-specific storage for data readiness check")
                     # Initialize storage implementations for Replit
                     from config.storage import StorageFactory
                     storage = StorageFactory.create(config, 'replit')
-                    
+
                     # Check if data is ready using appropriate storage implementations
                     complete_data_storage = storage['complete_data']
                     stratified_storage = storage['stratified_sample']
-                    
+
                     row_count = await complete_data_storage.get_row_count()
                     logger.info(f"PostgreSQL database has {row_count} rows")
-                    
+
                     stratified_exists = await stratified_storage.sample_exists()
                     logger.info(f"Stratified sample exists: {stratified_exists}")
-                    
+
                     # Force refresh if stratified sample doesn't exist
                     if not stratified_exists:
                         logger.info("Stratified sample doesn't exist in Replit storage, forcing refresh")
                         request.force_refresh = True
-                    
+
                     # Check if we need to prepare data
                     data_is_ready = (row_count > 0 and stratified_exists)
                     if not data_is_ready or request.force_refresh:
@@ -635,14 +635,14 @@ async def base_query(
                             force_refresh=request.force_refresh,
                             skip_embeddings=request.skip_embeddings
                         )
-                
+
                 # Load the stratified data
                 logger.info("Loading stratified data for processing...")
                 library_df = await data_ops.load_stratified_data()
-                
+
                 # Log information about the data
                 logger.info(f"Loaded stratified data with {len(library_df)} rows and columns: {list(library_df.columns)}")
-                
+
                 # Verify embeddings are present
                 if 'embedding' not in library_df.columns:
                     logger.warning("Embeddings not present in loaded data, checking if they need to be loaded separately")
@@ -652,12 +652,12 @@ async def base_query(
                         from config.storage import StorageFactory
                         storage = StorageFactory.create(data_ops.config, 'replit')
                         embedding_storage = storage['embeddings']
-                        
+
                         embeddings, thread_map = await embedding_storage.get_embeddings()
                         if embeddings is not None and thread_map is not None:
                             logger.info(f"Merging {len(embeddings)} embeddings with stratified data...")
                             library_df["embedding"] = None
-                            
+
                             # Add embeddings to the DataFrame
                             matched = 0
                             for idx, row in library_df.iterrows():
@@ -669,7 +669,7 @@ async def base_query(
                                         if 0 <= emb_idx < len(embeddings):
                                             library_df.at[idx, "embedding"] = embeddings[emb_idx]
                                             matched += 1
-                            
+
                             logger.info(f"Successfully matched {matched} embeddings out of {len(library_df)} rows")
                         else:
                             logger.warning("Failed to load separate embeddings, proceeding with potentially limited functionality")
@@ -677,16 +677,16 @@ async def base_query(
                         logger.error(f"Error loading embeddings: {e}")
                         logger.error(traceback.format_exc())
                         logger.warning("Failed to load separate embeddings, proceeding with potentially limited functionality")
-                
+
                 # Ensure we have the necessary text field for inference
                 if "text_clean" not in library_df.columns and "content" in library_df.columns:
                     logger.info("Adding text_clean field from content field")
                     library_df["text_clean"] = library_df["content"]
-                
+
                 # Now process the query with the loaded data
                 logger.info(f"Processing query: '{request.query[:50]}...'")
                 processing_start = time.time()
-                
+
                 result = await process_query(
                     query=request.query,
                     agent=agent,
@@ -694,29 +694,29 @@ async def base_query(
                     config=config,
                     character_slug=request.character_slug
                 )
-                
+
                 processing_time = round((time.time() - processing_start) * 1000, 2)
                 logger.info(f"Query processed in {processing_time}ms with {len(result.get('chunks', []))} chunks")
-                
+
                 # Store result
                 success = await _store_batch_result(
                     batch_id=task_id,
                     result=result,
                     config=config
                 )
-                
+
                 if not success:
                     raise ProcessingError(
                         message="Failed to store query results",
                         operation="store_result"
                     )
-                
+
                 # Update task status
                 async with _tasks_lock:
                     if task_id in _background_tasks:
                         _background_tasks[task_id]["status"] = "completed"
                         _background_tasks[task_id]["progress"] = 100
-                
+
                 # Create complete response
                 response = {
                     "status": "completed",
@@ -725,7 +725,7 @@ async def base_query(
                     "summary": result.get("summary", ""),
                     "metadata": result.get("metadata", {})
                 }
-                
+
                 duration_ms = round((time.time() - start_time) * 1000, 2)
                 response["metadata"]["processing_time_ms"] = duration_ms
 
@@ -739,7 +739,7 @@ async def base_query(
                         query=request.query,
                         task_id=task_id
                     )
-                    
+
                     # Add file paths to response metadata
                     if "metadata" not in response:
                         response["metadata"] = {}
@@ -748,24 +748,24 @@ async def base_query(
                     }
                     if embeddings_path:
                         response["metadata"]["saved_files"]["embeddings"] = str(embeddings_path)
-                        
+
                 except Exception as e:
                     logger.error(f"Error saving query output: {e}")
                     # Continue processing even if saving fails
 
                 logger.info(f"Query {task_id} processed in {duration_ms}ms")
                 return response
-                
+
             except Exception as e:
                 logger.error(f"Error processing query {task_id}: {str(e)}")
                 logger.error(traceback.format_exc())
-                
+
                 # Update task status to failed
                 async with _tasks_lock:
                     if task_id in _background_tasks:
                         _background_tasks[task_id]["status"] = "failed"
                         _background_tasks[task_id]["error"] = str(e)
-                
+
                 # Store error result
                 error_result = {
                     "chunks": [],
@@ -775,13 +775,13 @@ async def base_query(
                         "traceback": traceback.format_exc()
                     }
                 }
-                
+
                 await _store_batch_result(
                     batch_id=task_id,
                     result=error_result,
                     config=config
                 )
-                
+
     except ValidationError as e:
         e.log_error(logger)
         raise HTTPException(
@@ -820,7 +820,7 @@ async def _process_single_query(
 ) -> Dict[str, Any]:
     """Process a single query asynchronously."""
     logger.info(f"Processing query {task_id}: {query[:50]}...")
-    
+
     try:
         # Update task status
         async with _tasks_lock:
@@ -830,37 +830,37 @@ async def _process_single_query(
                 "query": query,
                 "progress": 10
             }
-        
+
         # Check environment type to determine storage approach
         from config.env_loader import detect_environment
         env_type = detect_environment()
-        
+
         # Get data operations if not provided
         if data_ops is None:
             data_ops = await get_data_ops()
-        
+
         # Ensure data is ready based on environment
         if env_type.lower() == 'replit':
             logger.info("Using Replit-specific storage for data readiness check")
             # Initialize storage implementations for Replit
             from config.storage import StorageFactory
             storage = StorageFactory.create(data_ops.config, 'replit')
-            
+
             # Check if data preparation is needed
             complete_data_storage = storage['complete_data']
             stratified_storage = storage['stratified_sample']
-            
+
             row_count = await complete_data_storage.get_row_count()
             logger.info(f"PostgreSQL database has {row_count} rows")
-            
+
             stratified_exists = await stratified_storage.sample_exists()
             logger.info(f"Stratified sample exists: {stratified_exists}")
-            
+
             # Force refresh if stratified sample doesn't exist
             if not stratified_exists:
                 logger.info("Stratified sample doesn't exist in Replit storage, forcing refresh")
                 force_refresh = True
-            
+
             # Check if we need to prepare data
             data_is_ready = (row_count > 0 and stratified_exists)
             if not data_is_ready or force_refresh:
@@ -877,17 +877,17 @@ async def _process_single_query(
                     force_refresh=force_refresh,
                     skip_embeddings=skip_embeddings
                 )
-        
+
         # Load stratified data for background processing
         logger.info("Loading stratified data for background processing...")
         library_df = await data_ops.load_stratified_data()
         logger.info(f"Loaded {len(library_df)} rows from stratified data")
-        
+
         # Update task status
         async with _tasks_lock:
             if task_id in _background_tasks:
                 _background_tasks[task_id]["progress"] = 30
-        
+
         # Process query efficiently (with batching if enabled)
         if use_batching:
             # Use efficient batched processing
@@ -908,29 +908,29 @@ async def _process_single_query(
                 df=library_df,
                 model=config.get_provider(ModelOperation.SUMMARIZATION)
             )
-        
+
         # Update task status
         async with _tasks_lock:
             if task_id in _background_tasks:
                 _background_tasks[task_id]["progress"] = 80
-        
+
         # Store result for retrieval
         success = await _store_batch_result(
             batch_id=task_id,
             result=result,
             config=config
         )
-        
+
         if not success:
             logger.warning(f"Failed to store results for task {task_id}")
-        
+
         # Update task status
         async with _tasks_lock:
             if task_id in _background_tasks:
                 _background_tasks[task_id]["status"] = "completed"
                 _background_tasks[task_id]["progress"] = 100
                 _background_tasks[task_id]["completed_at"] = time.time()
-        
+
         # Save query output for analysis
         try:
             await save_query_output(
@@ -941,7 +941,7 @@ async def _process_single_query(
             )
         except Exception as e:
             logger.warning(f"Error saving query output: {e}")
-        
+
         return {
             "task_id": task_id,
             "status": "completed",
@@ -950,7 +950,7 @@ async def _process_single_query(
     except Exception as e:
         logger.error(f"Error processing query {task_id}: {str(e)}")
         logger.error(traceback.format_exc())
-        
+
         # Update task status to failed
         async with _tasks_lock:
             if task_id in _background_tasks:
@@ -958,7 +958,7 @@ async def _process_single_query(
                 _background_tasks[task_id]["error"] = str(e)
                 _background_tasks[task_id]["progress"] = 100
                 _background_tasks[task_id]["completed_at"] = time.time()
-        
+
         # Store error result
         error_result = {
             "chunks": [],
@@ -968,13 +968,13 @@ async def _process_single_query(
                 "traceback": traceback.format_exc()
             }
         }
-        
+
         await _store_batch_result(
             batch_id=task_id,
             result=error_result,
             config=config
         )
-        
+
         return {
             "task_id": task_id,
             "status": "failed",
@@ -990,15 +990,15 @@ async def batch_process_queries(
     start_time = time.time()
     batch_id = _generate_task_id(prefix="batch")
     logger.info(f"Processing batch of {len(request.queries)} queries: {batch_id}")
-    
+
     try:
         # Initialize the agent and config
         agent = await get_agent()
         config = load_config()
-        
+
         # Initialize data operations
         data_ops = DataOperations(DataConfig.from_config())
-        
+
         # Prepare data using the Chanscope approach
         # This ensures stratified data is available before processing
         stratified_data = await _prepare_data_if_needed(
@@ -1007,15 +1007,15 @@ async def batch_process_queries(
             force_refresh=request.force_refresh,
             skip_embeddings=request.skip_embeddings
         )
-        
+
         if stratified_data is None or stratified_data.empty:
             raise ProcessingError(
                 message="Failed to prepare stratified data for batch processing",
                 operation="batch_process"
             )
-            
+
         logger.info(f"Using stratified data with {len(stratified_data)} records for batch processing")
-        
+
         results = await process_multiple_queries_efficient(
             queries=request.queries,
             agent=agent,
@@ -1030,12 +1030,12 @@ async def batch_process_queries(
             },
             character_slug=request.character_slug
         )
-        
+
         # Log processing time
         duration_ms = round((time.time() - start_time) * 1000, 2)
         avg_time_per_query = round(duration_ms / len(request.queries), 2)
         logger.info(f"Batch processed {len(request.queries)} queries in {duration_ms}ms (avg: {avg_time_per_query}ms/query)")
-        
+
         # Return results with metadata
         return {
             "batch_id": batch_id,
@@ -1047,7 +1047,7 @@ async def batch_process_queries(
                 "timestamp": datetime.now().isoformat()
             }
         }
-        
+
     except Exception as e:
         logger.error(f"Error processing batch: {str(e)}")
         logger.error(traceback.format_exc())
@@ -1064,7 +1064,7 @@ async def batch_process_queries(
 @router.get("/batch_status/{task_id}")
 async def get_batch_status(task_id: str) -> Dict[str, Any]:
     """Get the status of a processing task.
-    
+
     This endpoint works with both query tasks and batch processing tasks.
     The task_id format is prefix_timestamp_randomhex, where prefix can be
     'query', 'batch', or other task types.
@@ -1075,7 +1075,7 @@ async def get_batch_status(task_id: str) -> Dict[str, Any]:
         logger.debug(f"_background_tasks keys: {list(_background_tasks.keys())}")
         logger.debug(f"_batch_results keys: {list(_batch_results.keys())}")
         logger.debug(f"_query_batch length: {len(_query_batch)}")
-        
+
         # First, check background tasks
         if task_id in _background_tasks:
             task_status = _background_tasks[task_id]
@@ -1126,14 +1126,14 @@ async def get_batch_status(task_id: str) -> Dict[str, Any]:
                         parts = task_id.split("_")
                         if len(parts) < 3:
                             raise ValueError("Invalid task id format.")
-                        
+
                         prefix = parts[0]
                         timestamp_str = parts[1]
                         timestamp = int(timestamp_str)
                         current_time = int(time.time())
-                        
+
                         logger.debug(f"Extracted timestamp {timestamp} from task_id {task_id}; current_time={current_time}")
-                        
+
                         if current_time - timestamp < 600:
                             # Check if embedding generation is active
                             is_embedding_active = False
@@ -1229,10 +1229,10 @@ async def process_recent_query(
     force_refresh: bool = Query(False, title="Force refresh", description="Force data refresh")
 ):
     """Process a query using recent data from the last 6 hours with batch processing.
-    
+
     This endpoint aligns with process_query by using the same batch processing system,
     ensuring consistent behavior and response formats across both endpoints.
-    
+
     Args:
         background_tasks: For background processing
         agent: Knowledge agent for processing 
@@ -1247,21 +1247,21 @@ async def process_recent_query(
         # Check environment type to determine if we need to force refresh data
         from config.env_loader import detect_environment
         env_type = detect_environment()
-        
+
         if env_type.lower() == 'replit':
             # Check if stratified sample exists in Replit storage
             from config.storage import StorageFactory
             storage = StorageFactory.create(data_ops.config, 'replit')
             stratified_storage = storage['stratified_sample']
-            
+
             stratified_exists = await stratified_storage.sample_exists()
             if not stratified_exists:
                 logger.info("Stratified sample doesn't exist in Replit storage, forcing refresh")
                 force_refresh = True
-        
+
         # Calculate time range
         end_time = datetime.now(pytz.UTC)
-        
+
         # Use provided filter_date or default to 6 hours ago
         if filter_date:
             try:
@@ -1272,14 +1272,14 @@ async def process_recent_query(
                 start_time = end_time - timedelta(hours=6)
         else:
             start_time = end_time - timedelta(hours=6)
-            
+
         query_filter_date = start_time.strftime('%Y-%m-%d %H:%M:%S+00:00')
 
         # Get base settings and paths
         base_settings = get_base_settings()
         paths = base_settings.get('paths', {})
         stored_queries_path = Path(paths.get('config', 'config')) / 'stored_queries.yaml'
-        
+
         # Load stored query based on environment
         if env_type.lower() == 'replit':
             logger.info("Using Replit environment, loading query from configuration")
@@ -1287,13 +1287,57 @@ async def process_recent_query(
             try:
                 with open(stored_queries_path, 'r') as f:
                     stored_queries = yaml.safe_load(f)
-                if not stored_queries or 'query' not in stored_queries or 'example' not in stored_queries['query']:
-                    # Use a default query if file is malformed
-                    query = "Current events with financial market impact and cryptocurrency developments"
-                    logger.info(f"Using default query: {query}")
+                
+                # Get random query based on board selection
+                if stored_queries and 'query' in stored_queries:
+                    import random
+                    
+                    if select_board == "biz" and 'biz' in stored_queries['query'] and 'queries' in stored_queries['query']['biz']:
+                        # Get random query from biz board queries
+                        biz_queries = stored_queries['query']['biz']['queries']
+                        if biz_queries:
+                            query = random.choice(biz_queries)
+                            logger.info(f"Using random biz query: {query}")
+                        else:
+                            # Fallback for empty biz queries
+                            query = "Stocks, Defi, financial market impact and cryptocurrency developments <Bitcoin, Ethereum, Solana, Chainlink, Base, MSTR, NASDAQ, S&P 500, Dow Jones, and other financial markets>"
+                            logger.info(f"Using default biz query (no queries found): {query}")
+                    
+                    elif select_board == "pol" and 'pol' in stored_queries['query'] and 'queries' in stored_queries['query']['pol']:
+                        # Get random query from pol board queries
+                        pol_queries = stored_queries['query']['pol']['queries']
+                        if pol_queries:
+                            query = random.choice(pol_queries)
+                            logger.info(f"Using random pol query: {query}")
+                        else:
+                            # Fallback for empty pol queries
+                            query = "Current events, election results, executive orders, legislation, geopolitical developments, and regulatory developments"
+                            logger.info(f"Using default pol query (no queries found): {query}")
+                    
+                    else:
+                        # No specific board or invalid board, combine all queries and select random one
+                        all_queries = []
+                        if 'biz' in stored_queries['query'] and 'queries' in stored_queries['query']['biz']:
+                            all_queries.extend(stored_queries['query']['biz']['queries'])
+                        if 'pol' in stored_queries['query'] and 'queries' in stored_queries['query']['pol']:
+                            all_queries.extend(stored_queries['query']['pol']['queries'])
+                        
+                        if all_queries:
+                            query = random.choice(all_queries)
+                            logger.info(f"Using random query (no board specified): {query}")
+                        else:
+                            # Fallback if no queries found in any board
+                            query = "Current geopolitical events and financial market developments"
+                            logger.info(f"Using default query (no queries found): {query}")
                 else:
-                    query = stored_queries['query']['example'][0]
-                    logger.info(f"Loaded query from stored_queries.yaml: {query}")
+                    # Fallback for malformed stored_queries yaml
+                    if select_board == "biz":
+                        query = "Stocks, Defi, financial market impact and cryptocurrency developments <Bitcoin, Ethereum, Solana, Chainlink, Base, MSTR, NASDAQ, S&P 500, Dow Jones, and other financial markets>"
+                    elif select_board == "pol":
+                        query = "Current events, election results, executive orders, legislation, geopolitical developments, and regulatory developments"
+                    else:
+                        query = "Current geopolitical events and financial market developments"
+                    logger.info(f"Using default query (malformed stored_queries): {query}")
             except FileNotFoundError:
                 # Use default query if file doesn't exist
                 query = "Current events with financial market impact and cryptocurrency developments"
@@ -1393,13 +1437,13 @@ async def process_recent_query(
 
 async def _run_embedding_generation(data_ops: DataOperations) -> None:
     """Background task for generating embeddings.
-    
+
     This function handles the embedding generation process with proper state tracking
     and error handling. It ensures that:
     1. Embeddings are only generated for new or modified data
     2. The process is properly logged and monitored
     3. Errors are caught and logged appropriately
-    
+
     Args:
         data_ops: DataOperations instance for data processing
     """
@@ -1468,7 +1512,7 @@ async def _run_embedding_generation(data_ops: DataOperations) -> None:
 
 async def _update_embedding_progress(current: int, total: int) -> None:
     """Update embedding generation progress in a thread-safe manner.
-    
+
     Args:
         current: Current number of processed rows
         total: Total number of rows to process
@@ -1485,12 +1529,12 @@ async def trigger_embedding_generation(
     data_ops: DataOperations = Depends(get_data_ops)
 ):
     """Trigger background embedding generation process.
-    
+
     This endpoint ensures that:
     1. Only one embedding generation process runs at a time
     2. The process state is properly tracked
     3. Errors are handled and reported appropriately
-    
+
     Returns:
         Dict[str, str]: Status message indicating whether the process started
     """
@@ -1512,10 +1556,10 @@ async def trigger_embedding_generation(
                 "message": "Stratified data needs to be updated before generating embeddings. Please trigger stratification first.",
                 "task_id": None
             }
-        
+
         # Create background task
         background_tasks.add_task(_run_embedding_generation, data_ops)
-        
+
         return {
             "status": "started",
             "message": "Embedding generation started in background",
@@ -1536,7 +1580,7 @@ async def trigger_embedding_generation(
 @router.get("/embedding_status")
 async def get_embedding_status():
     """Get detailed status of background embedding generation.
-    
+
     Returns:
         Dict[str, Any]: Detailed status information including:
         - Current status (not_started/running/completed/failed)
@@ -1550,7 +1594,7 @@ async def get_embedding_status():
                 "status": "not_started",
                 "message": "No embedding generation task has been started"
             }
-        
+
         task_info = _background_tasks[_embedding_task_key]
         return {
             "status": task_info['status'],
@@ -1622,9 +1666,9 @@ async def cache_health() -> Dict[str, Any]:
             hits = CACHE_HITS
             misses = CACHE_MISSES
             errors = CACHE_ERRORS
-        
+
         total_requests = hits + misses
-        
+
         cache_status = {
             "status": "healthy",
             "type": "in_memory",
@@ -1640,7 +1684,7 @@ async def cache_health() -> Dict[str, Any]:
                 "ttl": 3600
             }
         }
-        
+
         return cache_status
     except Exception as e:
         error = ProcessingError(
@@ -1667,39 +1711,39 @@ async def embedding_health(
     data_ops: DataOperations = Depends(get_data_ops)
 ) -> Dict[str, Any]:
     """Get detailed health metrics about embedding coverage and quality.
-    
+
     Returns:
         Dict containing metrics about embedding coverage, dimensions, and quality
     """
     try:
         metrics = await data_ops.get_embedding_coverage_metrics()
-        
+
         # Add additional health checks
         health_status = "healthy"
         issues = []
-        
+
         # Check coverage
         if metrics["coverage_percentage"] < 90:
             health_status = "degraded"
             issues.append(f"Low embedding coverage: {metrics['coverage_percentage']:.1f}%")
-            
+
         # Check dimension mismatches
         if metrics["dimension_mismatches"] > 0:
             health_status = "degraded"
             issues.append(f"Found {metrics['dimension_mismatches']} embeddings with incorrect dimensions")
-            
+
         # Check if using mock data
         if metrics["is_mock_data"]:
             health_status = "degraded"
             issues.append("Using mock embeddings instead of real embeddings")
-            
+
         return {
             "status": health_status,
             "issues": issues,
             "metrics": metrics,
             "timestamp": datetime.now(pytz.UTC).isoformat()
         }
-        
+
     except Exception as e:
         logger.error(f"Error checking embedding health: {e}")
         logger.error(traceback.format_exc())
@@ -1795,13 +1839,13 @@ async def _prepare_data_if_needed(
 ) -> pd.DataFrame:
     """
     Ensures data is ready and loads the stratified dataset.
-    
+
     Args:
         config: Model configuration
         data_ops: Data operations instance
         force_refresh: Whether to force data refresh
         skip_embeddings: Whether to skip embedding generation
-        
+
     Returns:
         Stratified data with embeddings
     """
@@ -1809,24 +1853,24 @@ async def _prepare_data_if_needed(
     from config.env_loader import detect_environment
     env_type = detect_environment()
     logger.info(f"Preparing data in {env_type} environment (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})")
-    
+
     # Step 1: Check if data is ready (using environment-appropriate methods)
     if env_type.lower() == 'replit':
         logger.info("Using Replit-specific storage for data readiness check")
         # Initialize storage implementations for Replit
         from config.storage import StorageFactory
         storage = StorageFactory.create(data_ops.config, 'replit')
-        
+
         # Check if data is ready using appropriate storage implementations
         complete_data_storage = storage['complete_data']
         stratified_storage = storage['stratified_sample']
-        
+
         row_count = await complete_data_storage.get_row_count()
         logger.info(f"PostgreSQL database has {row_count} rows")
-        
+
         stratified_exists = await stratified_storage.sample_exists()
         logger.info(f"Stratified sample exists: {stratified_exists}")
-        
+
         data_is_ready = (row_count > 0 and stratified_exists)
         if not data_is_ready or force_refresh:
             logger.info(f"Data not ready or force_refresh={force_refresh}, preparing data...")
@@ -1855,14 +1899,14 @@ async def _prepare_data_if_needed(
                     status_code=500,
                     detail={"error": "Failed to prepare data", "status": "error"}
                 )
-    
+
     # Step 2: Load stratified data
     logger.info("Loading stratified data...")
     try:
         # Use data_ops method to load stratified data (handles both environments)
         stratified_data = await data_ops.load_stratified_data()
         logger.info(f"Loaded stratified data with {len(stratified_data)} rows")
-        
+
         # Ensure we have the necessary columns
         required_columns = ['thread_id', 'text_clean']
         missing_columns = [col for col in required_columns if col not in stratified_data.columns]
@@ -1875,7 +1919,7 @@ async def _prepare_data_if_needed(
                     "status": "error"
                 }
             )
-        
+
         return stratified_data
     except Exception as e:
         logger.error(f"Error loading stratified data: {e}")
@@ -1887,7 +1931,7 @@ async def _prepare_data_if_needed(
 
 async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]], config: Union[Dict[str, Any], ModelConfig]) -> bool:
     """Store batch processing results for later retrieval.
-    
+
     Args:
         batch_id: Unique identifier for the task (format: prefix_timestamp_randomhex)
         result: Either a tuple of (chunks, summary) or a dict with chunks, summary, and metadata
@@ -1935,9 +1979,9 @@ async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]
                 "batching_enabled": metadata.get("batching_enabled", True)
             }
         }
-        
+
         logger.debug(f"Storing result for task {batch_id}")
-        
+
         # Store in Redis or another shared storage
         if redis_client:
             redis_client.set(f"task_result:{batch_id}", json.dumps({
@@ -1947,26 +1991,26 @@ async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]
             }), ex=batch_result_ttl)
         else:
             logger.warning("Redis client not available, skipping result storage")
-        
+
         # Update batch history
         await _update_batch_history({batch_id: {'timestamp': time.time(), 'query': config.query if hasattr(config, 'query') else ''}})
-        
+
         logger.info(f"Stored result for task {batch_id} (expires in {batch_result_ttl}s)")
-        
+
         # Also store results in background tasks for redundancy
         if batch_id in _background_tasks:
             _background_tasks[batch_id]['results'] = result
-        
+
         # Store in memory cache
         _batch_results[batch_id] = result_obj
-        
+
         return True
-        
+
     except Exception as e:
         logger.error(f"Error storing result: {str(e)}")
         logger.error(traceback.format_exc())
         return False
-    
+
 async def _cleanup_old_results():
     """Clean up old results to prevent memory leaks."""
     try:
@@ -1974,7 +2018,7 @@ async def _cleanup_old_results():
         current_time = time.time()
         batch_ids_to_remove = []
         batch_history_updates = {}
-        
+
         # Check all stored results
         for batch_id, result in _batch_results.items():
             # Check if the result has expired
@@ -1986,7 +2030,7 @@ async def _cleanup_old_results():
                     "status": "expired",
                     "expired_at": current_time
                 }
-        
+
         # Remove expired results
         if batch_ids_to_remove:
             memory_freed = 0
@@ -1998,24 +2042,24 @@ async def _cleanup_old_results():
                         memory_freed += result_size
                     except:
                         pass
-                    
+
                     # Remove from memory
                     del _batch_results[batch_id]
-                    
+
                     # Also try to remove from the cache
                     try:
                         cache_key = f"task_result:{batch_id}"
                         asyncio.create_task(cache.delete(cache_key))
                     except Exception as cache_error:
                         logger.debug(f"Cache removal error for {batch_id}: {str(cache_error)}")
-            
+
             # Update batch history
             await _update_batch_history(batch_history_updates)
-            
+
             logger.info(f"Cleaned up {len(batch_ids_to_remove)} old results (retention: {retention_period}s)")
             if memory_freed > 0:
                 logger.info(f"Estimated memory freed: {memory_freed / 1024:.2f} KB")
-        
+
         # Also clean up old background tasks
         if len(batch_ids_to_remove) > 10:
             # If we're cleaning up a lot of results, also clean up background tasks
@@ -2023,28 +2067,28 @@ async def _cleanup_old_results():
             for task_id, task in _background_tasks.items():
                 if task_id == _embedding_task_key:
                     continue  # Skip the embedding task
-                
+
                 timestamp = task.get("timestamp", 0)
                 if current_time - timestamp > retention_period:
                     tasks_to_remove.append(task_id)
-            
+
             if tasks_to_remove:
                 async with _tasks_lock:
                     for task_id in tasks_to_remove:
                         if task_id in _background_tasks:
                             del _background_tasks[task_id]
-                
+
                 logger.info(f"Cleaned up {len(tasks_to_remove)} old background tasks")
-        
+
     except Exception as e:
         logger.error(f"Error cleaning up old results: {str(e)}")
         logger.error(traceback.format_exc())
 
 async def _update_batch_history(updates: Dict[str, Dict[str, Any]]) -> None:
     """Update the batch history file with task status information.
-    
+
     This maintains a record of all batch tasks even after they're removed from memory.
-    
+
     Args:
         updates: Dictionary mapping batch IDs to their status information
     """
@@ -2052,10 +2096,10 @@ async def _update_batch_history(updates: Dict[str, Dict[str, Any]]) -> None:
         history_path = Path(Config.get_paths()['logs']) / "batch_history.json"
         history_lock_path = history_path.with_suffix('.lock')
         history = {}
-        
+
         # Create directory if it doesn't exist
         history_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Use file lock to prevent concurrent writes
         async with asyncio.timeout(10):  # 10 second timeout
             with FileLock(str(history_lock_path), timeout=5):
@@ -2068,10 +2112,10 @@ async def _update_batch_history(updates: Dict[str, Dict[str, Any]]) -> None:
                         logger.warning(f"Error loading batch history: {e}")
                         # If file is corrupted, start fresh
                         history = {}
-                
+
                 # Update history with new information
                 history.update(updates)
-                
+
                 # Limit history size to prevent unlimited growth
                 if len(history) > 1000:
                     # Keep only the most recent 1000 entries
@@ -2085,27 +2129,27 @@ async def _update_batch_history(updates: Dict[str, Dict[str, Any]]) -> None:
                         reverse=True
                     )
                     history = dict(sorted_entries[:1000])
-                
+
                 # Write updated history to file
                 temp_path = history_path.with_suffix('.tmp')
                 with open(temp_path, 'w') as f:
                     json.dump(history, f, indent=2)
                     f.flush()
                     os.fsync(f.fileno())
-                
+
                 # Move temp file to final location for atomic write
                 shutil.move(temp_path, history_path)
-                
+
                 logger.debug(f"Updated batch history with {len(updates)} entries")
     except Exception as e:
         logger.error(f"Error updating batch history: {e}")
 
 def _generate_task_id(prefix: str = "task") -> str:
     """Generate a unique task ID with the given prefix.
-    
+
     Args:
         prefix: Prefix for the task ID (e.g., 'query', 'batch')
-        
+
     Returns:
         A unique task ID string
     """
@@ -2115,10 +2159,10 @@ def _generate_task_id(prefix: str = "task") -> str:
 
 def _is_valid_task_id(task_id: str) -> bool:
     """Validate a task ID format.
-    
+
     Args:
         task_id: The task ID to validate
-        
+
     Returns:
         True if the task ID is valid, False otherwise
     """
@@ -2129,26 +2173,26 @@ def _is_valid_task_id(task_id: str) -> bool:
 
 def _check_task_id_collision(task_id: str) -> bool:
     """Check if a task ID already exists in the system.
-    
+
     Args:
         task_id: The task ID to check
-        
+
     Returns:
         True if the task ID exists, False otherwise
     """
     # Check in active background tasks
     if task_id in _background_tasks:
         return True
-    
+
     # Check in stored batch results
     if task_id in _batch_results:
         return True
-    
+
     # Check in query batch
     for item in _query_batch:
         if item.get("id") == task_id:
             return True
-    
+
     return False
 
 @router.post("/api/v1/data/prepare")
@@ -2156,7 +2200,7 @@ async def prepare_data(request: Request):
     """Prepare data for inference."""
     try:
         config = ChanScopeConfig.from_env()
-        
+
         # Initialize storage with environment detection
         from config.storage import StorageFactory
         storage = StorageFactory.create(config)
@@ -2184,7 +2228,7 @@ class NLQueryRequest(BaseModel):
     limit: Optional[int] = 100  # Default limit of 100 records
     provider: Optional[str] = None  # This parameter is ignored; static providers are always used
     format_for_llm: Optional[bool] = True  # Whether to format the response for LLM consumption
-    
+
     class Config:
         """Pydantic model configuration."""
         schema_extra = {
@@ -2205,7 +2249,7 @@ class NLQueryResponse(BaseModel):
     data: List[Dict[str, Any]]
     execution_time_ms: float
     metadata: Dict[str, Any] = {}
-    
+
     class Config:
         """Pydantic model configuration."""
         # Allow for arbitrary types like numpy to be converted to JSON-compatible formats
@@ -2273,20 +2317,20 @@ async def natural_language_query(
 ) -> Dict[str, Any]:
     """
     Process a natural language query against the database using LLM-generated SQL.
-    
+
     This endpoint converts a natural language query string to SQL using a three-stage LLM process
     and executes it against the complete_data table in the PostgreSQL database.
-    
+
     The SQL generation uses fixed providers:
     - OpenAI for query enhancement
     - Venice for SQL generation and validation
-    
+
     Args:
         request: The NLQueryRequest containing the natural language query
-        
+
     Returns:
         JSON response with query results and metadata
-        
+
     Example queries:
         - "Give me threads from the last hour"
         - "Show posts from yesterday containing crypto"
@@ -2297,11 +2341,11 @@ async def natural_language_query(
         - "Show me 10 random posts mentioning ethereum"
     """
     start_time = time.time()
-    
+
     # Check if we're in a Replit environment
     from config.env_loader import detect_environment, is_replit_environment
     env_type = detect_environment()
-    
+
     if not is_replit_environment():
         # Return a helpful error message for Docker/local environments
         raise HTTPException(
@@ -2313,32 +2357,32 @@ async def natural_language_query(
                 "possible_solution": "This feature requires a PostgreSQL database with the complete_data table. Please check the documentation for setup instructions."
             }
         )
-    
+
     try:
         logger.info(f"Processing natural language query: {request.query}")
-        
+
         # Create SQL generator
         sql_generator = LLMSQLGenerator(agent)
-        
+
         # Get the query description for user feedback
         description = sql_generator.get_query_description(request.query)
-        
+
         # Convert NL to SQL - Note that provider parameter is ignored, static providers are used
         sql_query, params = await sql_generator.generate_sql(
             nl_query=request.query,
             provider=None,  # This is ignored, static providers are used
             use_hybrid_approach=True  # Use template matching for common patterns
         )
-        
+
         # Apply limit if not already in the query
         if request.limit and "LIMIT" not in sql_query.upper():
             sql_query += f" LIMIT %s"
             params.append(request.limit)
-        
+
         # Initialize the database connection
         from config.replit import PostgresDB
         db = PostgresDB()
-        
+
         # Execute the query
         with db.get_connection() as conn:
             # Use pandas to read from database with parameterized query
@@ -2354,7 +2398,7 @@ async def natural_language_query(
                     message=f"Error executing SQL query: {str(e)}",
                     operation="sql_execution"
                 )
-        
+
         # Convert to dictionaries for JSON response
         # Handle datetime columns by converting to ISO format strings
         records = []
@@ -2364,21 +2408,21 @@ async def natural_language_query(
                 # Skip less valuable fields
                 if column in ['author', 'channel_name', 'inserted_at']:
                     continue
-                    
+
                 if isinstance(value, pd.Timestamp) or isinstance(value, datetime):
                     record[column] = value.isoformat()
                 else:
                     record[column] = value
-                    
+
                 # Trim long content to a reasonable length for LLM consumption
                 if column == 'content' and isinstance(value, str) and len(value) > 500:
                     record[column] = value[:500] + "..."
-            
+
             records.append(record)
-        
+
         # Calculate execution time
         execution_time_ms = round((time.time() - start_time) * 1000, 2)
-        
+
         # Build metadata
         metadata = {
             "processing_time_ms": execution_time_ms,
@@ -2389,7 +2433,7 @@ async def natural_language_query(
                 "generator": sql_generator.PROVIDER_GENERATOR.value
             }
         }
-        
+
         # Construct response
         response = {
             "status": "success",
@@ -2401,11 +2445,11 @@ async def natural_language_query(
             "execution_time_ms": execution_time_ms,
             "metadata": metadata
         }
-        
+
         # Format the response for better LLM readability if requested
         if request.format_for_llm:
             response = format_response_for_llm(response)
-        
+
         # Log endpoint call
         log_endpoint_call(
             logger=logger, 
@@ -2414,9 +2458,9 @@ async def natural_language_query(
             duration_ms=execution_time_ms,
             params={"query": request.query, "limit": request.limit, "record_count": len(records)}
         )
-        
+
         return response
-        
+
     except NLQueryParsingError as e:
         # Handle parsing errors
         error = ValidationError(
@@ -2454,7 +2498,7 @@ def format_response_for_llm(response: Dict[str, Any]) -> Dict[str, Any]:
     """Format response data to be more friendly for LLM consumption."""
     # Create a copy to avoid modifying the original
     formatted = copy.deepcopy(response)
-    
+
     # Ensure consistent spacing and formatting in the response
     if "data" in formatted and isinstance(formatted["data"], list):
         # Ensure each record has the same keys in the same order
@@ -2463,7 +2507,7 @@ def format_response_for_llm(response: Dict[str, Any]) -> Dict[str, Any]:
             all_keys = set()
             for record in formatted["data"]:
                 all_keys.update(record.keys())
-            
+
             # Sort keys for consistent order (id first, then content, then others alphabetically)
             sorted_keys = sorted(all_keys)
             if "id" in sorted_keys:
@@ -2475,7 +2519,7 @@ def format_response_for_llm(response: Dict[str, Any]) -> Dict[str, Any]:
             if "posted_date_time" in sorted_keys:
                 sorted_keys.remove("posted_date_time")
                 sorted_keys.insert(2, "posted_date_time")
-            
+
             # Reorder all records to have the same keys in the same order
             formatted_data = []
             for record in formatted["data"]:
@@ -2484,9 +2528,9 @@ def format_response_for_llm(response: Dict[str, Any]) -> Dict[str, Any]:
                     if key in record:
                         formatted_record[key] = record[key]
                 formatted_data.append(formatted_record)
-            
+
             formatted["data"] = formatted_data
-    
+
     return formatted
 
 @router.post("/api/v1/nl_query", response_model=NLQueryResponse)
