@@ -69,6 +69,24 @@ _embedding_task_key = "embedding_generation"
 
 task_response_queue: asyncio.Queue = asyncio.Queue()
 
+# Set up periodic cleanup task for memory and disk
+async def _start_periodic_cleanup():
+    """Run cleanup at regular intervals."""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Run cleanup every hour
+            await _cleanup_old_results()
+        except Exception as e:
+            logger.error(f"Error in periodic cleanup: {e}")
+            # Continue running even if an iteration fails
+            await asyncio.sleep(3600)  # Wait before retrying
+
+# Function to start cleanup task - call this during app startup
+async def start_cleanup_task():
+    """Start the periodic cleanup task when the API starts."""
+    logger.info("Starting periodic cleanup task for query results")
+    asyncio.create_task(_start_periodic_cleanup())
+
 # Import run_inference lazily to avoid circular import
 def get_run_inference():
     from knowledge_agents.run import run_inference
@@ -743,11 +761,19 @@ async def base_query(
                     # Add file paths to response metadata
                     if "metadata" not in response:
                         response["metadata"] = {}
-                    response["metadata"]["saved_files"] = {
-                        "json": str(json_path) if json_path else None
-                    }
+                    
+                    # Handle both filesystem paths and object storage keys
+                    response["metadata"]["saved_files"] = {}
+                    
+                    if json_path:
+                        response["metadata"]["saved_files"]["json"] = str(json_path)
+                    
                     if embeddings_path:
                         response["metadata"]["saved_files"]["embeddings"] = str(embeddings_path)
+                    
+                    # Add storage type to metadata
+                    from config.env_loader import is_replit_environment
+                    response["metadata"]["storage_type"] = "object_storage" if is_replit_environment() else "filesystem"
 
                 except Exception as e:
                     logger.error(f"Error saving query output: {e}")
@@ -931,16 +957,7 @@ async def _process_single_query(
                 _background_tasks[task_id]["progress"] = 100
                 _background_tasks[task_id]["completed_at"] = time.time()
 
-        # Save query output for analysis
-        try:
-            await save_query_output(
-                result=result,
-                task_id=task_id,
-                query=query,
-                base_path=Path(Config.get_paths()["generated_data"])
-            )
-        except Exception as e:
-            logger.warning(f"Error saving query output: {e}")
+        # _store_batch_result now handles saving to disk, no need for separate save_query_output call
 
         return {
             "task_id": task_id,
@@ -1036,7 +1053,51 @@ async def batch_process_queries(
         avg_time_per_query = round(duration_ms / len(request.queries), 2)
         logger.info(f"Batch processed {len(request.queries)} queries in {duration_ms}ms (avg: {avg_time_per_query}ms/query)")
 
-        # Return results with metadata
+        # Save individual results with unique IDs
+        saved_result_info = []
+        for i, (query, result) in enumerate(zip(request.queries, results)):
+            # Generate a unique ID for each result in the batch
+            result_id = f"{batch_id}_item_{i}"
+            
+            # Create a config-like object with the query for better filenaming
+            result_config = copy.deepcopy(config)
+            result_config.query = query
+            
+            # Create a structured result dictionary
+            result_dict = {
+                "chunks": result[0],  # First element is chunks
+                "summary": result[1],  # Second element is summary
+                "metadata": {
+                    "batch_id": batch_id,
+                    "item_index": i,
+                    "query": query,
+                    "processing_time_ms": duration_ms / len(request.queries)  # Approximate per-query time
+                }
+            }
+            
+            # Store the result both in memory and on disk
+            success = await _store_batch_result(
+                batch_id=result_id,
+                result=result_dict,
+                config=result_config,
+                save_to_disk=True
+            )
+            
+            if success:
+                # Track successful saves
+                saved_info = {
+                    "result_id": result_id,
+                    "query": query,
+                    "saved": success
+                }
+                if result_id in _batch_results and "metadata" in _batch_results[result_id]:
+                    # Add saved file paths if available
+                    if "saved_files" in _batch_results[result_id]["metadata"]:
+                        saved_info["file_paths"] = _batch_results[result_id]["metadata"]["saved_files"]
+                
+                saved_result_info.append(saved_info)
+
+        # Return results with metadata including save information
         return {
             "batch_id": batch_id,
             "results": results,
@@ -1044,6 +1105,7 @@ async def batch_process_queries(
                 "total_time_ms": duration_ms,
                 "avg_time_per_query_ms": avg_time_per_query,
                 "queries_processed": len(results),
+                "saved_results": saved_result_info,
                 "timestamp": datetime.now().isoformat()
             }
         }
@@ -1937,13 +1999,17 @@ async def _prepare_data_if_needed(
             detail={"error": f"Error loading stratified data: {str(e)}", "status": "error"}
         )
 
-async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]], config: Union[Dict[str, Any], ModelConfig]) -> bool:
-    """Store batch processing results for later retrieval.
+async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]], config: Union[Dict[str, Any], ModelConfig], save_to_disk: bool = True) -> bool:
+    """Store batch processing results for later retrieval and optionally save to disk.
 
     Args:
         batch_id: Unique identifier for the task (format: prefix_timestamp_randomhex)
         result: Either a tuple of (chunks, summary) or a dict with chunks, summary, and metadata
         config: Either a ModelConfig object or a dictionary with configuration
+        save_to_disk: Whether to save the result to disk in generated_data directory
+        
+    Returns:
+        bool: Whether the operation was successful
     """
     # Not active, so set to None
     redis_client = None 
@@ -1961,7 +2027,7 @@ async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]
             # Extract from dictionary format
             chunks = result.get("chunks", [])
             summary = result.get("summary", "")
-            metadata = result.get("metadata", {})
+            metadata = result.get("metadata", {}) or {}
 
         # Get batch_result_ttl from config
         if isinstance(config, ModelConfig):
@@ -1998,7 +2064,7 @@ async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]
                 'config': config if isinstance(config, dict) else config.dict()
             }), ex=batch_result_ttl)
         else:
-            logger.warning("Redis client not available, skipping result storage")
+            logger.debug("Redis client not available, skipping result storage")
 
         # Update batch history
         await _update_batch_history({batch_id: {'timestamp': time.time(), 'query': config.query if hasattr(config, 'query') else ''}})
@@ -2011,6 +2077,58 @@ async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]
 
         # Store in memory cache
         _batch_results[batch_id] = result_obj
+        
+        # Save result to disk if requested
+        if save_to_disk:
+            try:
+                # Extract query from config if available for better filenaming
+                query = config.query if hasattr(config, 'query') else None
+                
+                # Use save_query_output from knowledge_agents.utils to save result to disk
+                from knowledge_agents.utils import save_query_output
+                
+                # Create a full response object that matches what save_query_output expects
+                response_for_saving = {
+                    "task_id": batch_id,
+                    "chunks": chunks,
+                    "summary": summary,
+                    "metadata": result_obj.get("metadata", {}).copy()
+                }
+                
+                # Add original query to metadata if available
+                if query:
+                    response_for_saving["query"] = query
+                
+                # Get base path from Config
+                base_path = Path(Config.get_paths().get('generated_data', 'data/generated_data'))
+                
+                # Call save_query_output to save result to disk
+                json_path, embeddings_path = await save_query_output(
+                    response=response_for_saving,
+                    base_path=base_path,
+                    task_id=batch_id,
+                    query=query,
+                    logger=logger
+                )
+                
+                # Add saved file paths to metadata
+                if json_path or embeddings_path:
+                    saved_files = {}
+                    if json_path:
+                        saved_files["json"] = str(json_path)
+                    if embeddings_path:
+                        saved_files["embeddings"] = str(embeddings_path)
+                    
+                    # Update memory cache with file paths
+                    if "metadata" not in _batch_results[batch_id]:
+                        _batch_results[batch_id]["metadata"] = {}
+                    _batch_results[batch_id]["metadata"]["saved_files"] = saved_files
+                    
+                    logger.info(f"Saved task {batch_id} results to disk: {json_path}")
+                
+            except Exception as save_error:
+                logger.warning(f"Could not save results to disk for task {batch_id}: {save_error}")
+                # Continue even if saving fails - don't affect the overall operation
 
         return True
 
@@ -2020,13 +2138,16 @@ async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]
         return False
 
 async def _cleanup_old_results():
-    """Clean up old results to prevent memory leaks."""
+    """Clean up old results to prevent memory leaks and disk space issues."""
     try:
+        # Memory cleanup settings
         retention_period = 600  # 10 minutes
         current_time = time.time()
         batch_ids_to_remove = []
         batch_history_updates = {}
-
+        disk_files_cleaned = 0
+        
+        # First perform memory cleanup
         # Check all stored results
         for batch_id, result in _batch_results.items():
             # Check if the result has expired
@@ -2039,7 +2160,7 @@ async def _cleanup_old_results():
                     "expired_at": current_time
                 }
 
-        # Remove expired results
+        # Remove expired results from memory
         if batch_ids_to_remove:
             memory_freed = 0
             for batch_id in batch_ids_to_remove:
@@ -2064,9 +2185,50 @@ async def _cleanup_old_results():
             # Update batch history
             await _update_batch_history(batch_history_updates)
 
-            logger.info(f"Cleaned up {len(batch_ids_to_remove)} old results (retention: {retention_period}s)")
+            logger.info(f"Cleaned up {len(batch_ids_to_remove)} old results from memory (retention: {retention_period}s)")
             if memory_freed > 0:
                 logger.info(f"Estimated memory freed: {memory_freed / 1024:.2f} KB")
+
+        # Now perform disk cleanup for generated_data directory
+        try:
+            # Use a longer retention period for disk files (1 day = 86400 seconds)
+            disk_retention_period = 86400  # 1 day
+            
+            # Get base path for generated data
+            base_path = Path(Config.get_paths().get('generated_data', 'data/generated_data'))
+            if base_path.exists():
+                # Look for JSON files older than retention period
+                for json_file in base_path.glob("**/*.json"):
+                    try:
+                        # Get file modification time
+                        file_mtime = json_file.stat().st_mtime
+                        file_age = current_time - file_mtime
+                        
+                        # Delete files older than retention period
+                        if file_age > disk_retention_period:
+                            # Check for corresponding embedding files
+                            embedding_json = base_path / "embeddings" / f"{json_file.stem}_embeddings.json"
+                            embedding_npz = base_path / "embeddings" / f"{json_file.stem}_embeddings.npz"
+                            
+                            # Delete JSON file
+                            json_file.unlink()
+                            disk_files_cleaned += 1
+                            
+                            # Delete embedding files if they exist
+                            if embedding_json.exists():
+                                embedding_json.unlink()
+                                disk_files_cleaned += 1
+                            if embedding_npz.exists():
+                                embedding_npz.unlink()
+                                disk_files_cleaned += 1
+                    except Exception as file_error:
+                        logger.warning(f"Error cleaning up file {json_file}: {str(file_error)}")
+                
+                if disk_files_cleaned > 0:
+                    logger.info(f"Cleaned up {disk_files_cleaned} old files from disk (retention: {disk_retention_period/3600:.1f} hours)")
+        except Exception as disk_error:
+            logger.error(f"Error during disk cleanup: {str(disk_error)}")
+            # Continue with rest of cleanup even if disk cleanup fails
 
         # Also clean up old background tasks
         if len(batch_ids_to_remove) > 10:
@@ -2321,7 +2483,8 @@ class NLQueryResponse(BaseModel):
 @router.post("/nl_query", response_model=NLQueryResponse)
 async def natural_language_query(
     request: NLQueryRequest,
-    agent: KnowledgeAgent = Depends(get_agent)
+    agent: KnowledgeAgent = Depends(get_agent),
+    save_result: bool = Query(True, description="Whether to save query results to disk")
 ) -> Dict[str, Any]:
     """
     Process a natural language query against the database using LLM-generated SQL.
@@ -2335,6 +2498,8 @@ async def natural_language_query(
 
     Args:
         request: The NLQueryRequest containing the natural language query
+        agent: KnowledgeAgent instance
+        save_result: Whether to save query results to disk
 
     Returns:
         JSON response with query results and metadata
@@ -2454,6 +2619,53 @@ async def natural_language_query(
             "metadata": metadata
         }
 
+        # Save result to disk if requested
+        if save_result:
+            try:
+                # Generate a unique task ID for this query
+                task_id = _generate_task_id(prefix="nlquery")
+                
+                # Save response to disk
+                from knowledge_agents.utils import save_query_output
+                base_path = Path(Config.get_paths().get('generated_data', 'data/generated_data'))
+                
+                # Structure the response for saving
+                response_for_saving = {
+                    "task_id": task_id,
+                    "query": request.query,
+                    "sql": sql_query,
+                    "description": description,
+                    "data": records,
+                    "metadata": metadata.copy()
+                }
+                
+                # Save to disk
+                json_path, _ = await save_query_output(
+                    response=response_for_saving,
+                    base_path=base_path,
+                    task_id=task_id,
+                    query=request.query,
+                    logger=logger,
+                    include_embeddings=False  # NL queries don't use embeddings
+                )
+                
+                # Add saved file paths to response metadata
+                if json_path:
+                    if "saved_files" not in response["metadata"]:
+                        response["metadata"]["saved_files"] = {}
+                    response["metadata"]["saved_files"]["json"] = str(json_path)
+                    response["metadata"]["task_id"] = task_id
+                    
+                    # Add storage type to metadata
+                    from config.env_loader import is_replit_environment
+                    response["metadata"]["storage_type"] = "object_storage" if is_replit_environment() else "filesystem"
+                    
+                    logger.info(f"Saved NL query results to {json_path}")
+                
+            except Exception as save_error:
+                logger.warning(f"Could not save NL query results to disk: {save_error}")
+                # Continue even if saving fails - don't affect the overall operation
+
         # Format the response for better LLM readability if requested
         if request.format_for_llm:
             response = format_response_for_llm(response)
@@ -2544,8 +2756,105 @@ def format_response_for_llm(response: Dict[str, Any]) -> Dict[str, Any]:
 @router.post("/api/v1/nl_query", response_model=NLQueryResponse)
 async def nl_query_api_v1(
     request: NLQueryRequest,
-    agent: KnowledgeAgent = Depends(get_agent)
+    agent: KnowledgeAgent = Depends(get_agent),
+    save_result: bool = Query(True, description="Whether to save query results to disk")
 ) -> Dict[str, Any]:
     """API v1 endpoint for natural language queries."""
-    return await natural_language_query(request, agent)
+    return await natural_language_query(request, agent, save_result)
+
+@router.post("/admin/cleanup")
+async def trigger_cleanup(
+    force: bool = Query(False, description="Force cleanup of all files regardless of age")
+) -> Dict[str, Any]:
+    """Admin endpoint to manually trigger cleanup of memory and disk storage."""
+    start_time = time.time()
+    memory_items_removed = 0
+    disk_files_removed = 0
+    
+    try:
+        # Memory cleanup
+        current_time = time.time()
+        retention_period = 600  # 10 minutes for memory items
+        
+        # Count items before cleanup
+        memory_items_before = len(_batch_results)
+        
+        # Get list of expired items
+        batch_ids_to_remove = []
+        for batch_id, result in _batch_results.items():
+            timestamp = result.get("metadata", {}).get("timestamp", 0)
+            if force or (current_time - timestamp > retention_period):
+                batch_ids_to_remove.append(batch_id)
+        
+        # Remove items
+        for batch_id in batch_ids_to_remove:
+            if batch_id in _batch_results:
+                del _batch_results[batch_id]
+        
+        memory_items_removed = len(batch_ids_to_remove)
+        
+        # Disk cleanup
+        disk_retention_period = 86400  # 1 day
+        base_path = Path(Config.get_paths().get('generated_data', 'data/generated_data'))
+        
+        if base_path.exists():
+            # First count total files
+            total_files = sum(1 for _ in base_path.glob("**/*.*"))
+            
+            # Process files
+            for json_file in base_path.glob("**/*.json"):
+                try:
+                    # Get file modification time
+                    file_mtime = json_file.stat().st_mtime
+                    file_age = current_time - file_mtime
+                    
+                    # Delete files based on age or force parameter
+                    if force or file_age > disk_retention_period:
+                        # Check for corresponding embedding files
+                        embedding_json = base_path / "embeddings" / f"{json_file.stem}_embeddings.json"
+                        embedding_npz = base_path / "embeddings" / f"{json_file.stem}_embeddings.npz"
+                        
+                        # Delete JSON file
+                        json_file.unlink()
+                        disk_files_removed += 1
+                        
+                        # Delete embedding files if they exist
+                        if embedding_json.exists():
+                            embedding_json.unlink()
+                            disk_files_removed += 1
+                        if embedding_npz.exists():
+                            embedding_npz.unlink()
+                            disk_files_removed += 1
+                except Exception as file_error:
+                    logger.warning(f"Error cleaning up file {json_file}: {str(file_error)}")
+        
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        logger.info(f"Manual cleanup completed in {duration_ms}ms: {memory_items_removed} memory items, {disk_files_removed} disk files")
+        
+        return {
+            "status": "success",
+            "memory_cleanup": {
+                "items_before": memory_items_before,
+                "items_removed": memory_items_removed,
+                "items_remaining": len(_batch_results)
+            },
+            "disk_cleanup": {
+                "files_removed": disk_files_removed,
+                "retention_period_hours": int(disk_retention_period / 3600),
+                "force_applied": force
+            },
+            "duration_ms": duration_ms
+        }
+    
+    except Exception as e:
+        logger.error(f"Error during manual cleanup: {str(e)}")
+        logger.error(traceback.format_exc())
+        
+        return {
+            "status": "error",
+            "error": str(e),
+            "memory_items_removed": memory_items_removed,
+            "disk_files_removed": disk_files_removed,
+            "duration_ms": round((time.time() - start_time) * 1000, 2)
+        }
 

@@ -43,6 +43,21 @@ echo -e "${YELLOW}Starting Replit background initialization script...${NC}"
         fi
     done
 
+    # Add replit-object-storage if not already installed
+    if ! poetry run python -c "from replit.object_storage import Client" &> /dev/null; then
+        echo -e "${YELLOW}Adding replit-object-storage to Poetry dependencies...${NC}"
+        poetry add replit-object-storage
+    else
+        echo -e "${GREEN}replit-object-storage is already installed${NC}"
+    fi
+
+    # Create utils directory if it doesn't exist
+    if [ ! -d "$WORKSPACE_ROOT/utils" ]; then
+        echo -e "${YELLOW}Creating utils directory...${NC}"
+        mkdir -p "$WORKSPACE_ROOT/utils"
+        touch "$WORKSPACE_ROOT/utils/__init__.py"
+    fi
+
     # Initialize PostgreSQL schema
     echo -e "${YELLOW}Initializing PostgreSQL schema...${NC}"
     if [ -n "$DATABASE_URL" ] || [ -n "$PGHOST" ]; then
@@ -116,13 +131,50 @@ except Exception as e:
     echo -e "${YELLOW}Waiting for server to stabilize before starting data processing...${NC}"
     sleep 30
 
-    # Initialize data with stratification and embedding generation (in background)
-    echo -e "${YELLOW}Starting data processing in background...${NC}"
-    # Use nohup to keep the process running even if the parent is terminated
-    nohup poetry run python scripts/process_data.py > "$WORKSPACE_ROOT/logs/data_processing.log" 2>&1 &
-    DATA_PROCESS_PID=$!
-    echo -e "${GREEN}Data processing started in background with PID: $DATA_PROCESS_PID${NC}"
-    echo -e "${GREEN}Processing logs available at: $WORKSPACE_ROOT/logs/data_processing.log${NC}"
+    # Check if initialization was recently completed using the ProcessLockManager
+    echo -e "${YELLOW}Checking if data processing is needed...${NC}"
+    PROCESS_CHECK=$(poetry run python -c "
+import sys
+sys.path.insert(0, '.')
+try:
+    from utils.processing_lock import ProcessLockManager
+    
+    # Create lock manager and check status
+    lock_manager = ProcessLockManager()
+    needs_init, marker_data = lock_manager.check_initialization_status()
+    
+    if not needs_init and marker_data:
+        completion_time = marker_data.get('completion_time', 'unknown time')
+        print(f'SKIP: Previous initialization completed successfully at {completion_time}')
+    else:
+        if marker_data and marker_data.get('status') == 'error':
+            error = marker_data.get('error', 'unknown error')
+            print(f'RUN: Previous initialization failed with error: {error}')
+        else:
+            print('RUN: Initialization needed')
+            
+except ImportError as e:
+    print(f'RUN: Could not import ProcessLockManager: {e}')
+except Exception as e:
+    print(f'RUN: Error checking initialization status: {e}')
+    import traceback
+    traceback.print_exc()
+")
+
+    # Check if we should skip or run data processing
+    if [[ $PROCESS_CHECK == SKIP* ]]; then
+        echo -e "${GREEN}${PROCESS_CHECK#SKIP: }${NC}"
+        echo -e "${GREEN}Skipping data processing${NC}"
+    else
+        echo -e "${YELLOW}${PROCESS_CHECK#RUN: }${NC}"
+        echo -e "${YELLOW}Starting data processing in background...${NC}"
+        
+        # Use nohup to keep the process running even if the parent is terminated
+        nohup poetry run python scripts/process_data.py > "$WORKSPACE_ROOT/logs/data_processing.log" 2>&1 &
+        DATA_PROCESS_PID=$!
+        echo -e "${GREEN}Data processing started in background with PID: $DATA_PROCESS_PID${NC}"
+        echo -e "${GREEN}Processing logs available at: $WORKSPACE_ROOT/logs/data_processing.log${NC}"
+    fi
 
     # Configure and start the data scheduler if enabled
     ENABLE_DATA_SCHEDULER="${ENABLE_DATA_SCHEDULER:-true}"

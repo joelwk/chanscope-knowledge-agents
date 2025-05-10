@@ -11,6 +11,9 @@ import os
 import sys
 import asyncio
 import argparse
+import json
+import time
+from datetime import datetime
 from pathlib import Path
 
 # Ensure python path includes the project root
@@ -19,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Import after path setup
 from knowledge_agents.data_processing.chanscope_manager import ChanScopeDataManager
 from config.chanscope_config import ChanScopeConfig
+from utils.processing_lock import ProcessLockManager
 
 
 async def process_data(force_refresh: bool = False, skip_embeddings: bool = False):
@@ -31,6 +35,14 @@ async def process_data(force_refresh: bool = False, skip_embeddings: bool = Fals
     """
     print(f"Starting data processing (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})...")
     print("Text validation will be applied at each stage to ensure high-quality data")
+    
+    # Create the process lock manager
+    lock_manager = ProcessLockManager()
+    
+    # Try to acquire the processing lock
+    if not lock_manager.acquire_lock():
+        print("Another data processing instance is already running. Exiting.")
+        return False
     
     try:
         # Create configuration
@@ -74,15 +86,41 @@ async def process_data(force_refresh: bool = False, skip_embeddings: bool = Fals
                 else:
                     print("❌ Error: Failed to create stratified sample in key-value store")
             
+            # Mark initialization as complete
+            lock_manager.mark_initialization_complete(True, {
+                "force_refresh": force_refresh,
+                "skip_embeddings": skip_embeddings
+            })
+            
             print("Data is ready for use (includes stratification and embeddings)")
             return True
         else:
             print("Warning: Data could not be fully prepared")
+            lock_manager.mark_initialization_complete(False, {
+                "error": "Data not fully prepared",
+                "force_refresh": force_refresh,
+                "skip_embeddings": skip_embeddings
+            })
             return False
             
     except Exception as e:
         print(f"Error during data processing: {e}")
+        import traceback
+        print(traceback.format_exc())
+        
+        # Mark initialization as failed
+        lock_manager.mark_initialization_complete(False, {
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "force_refresh": force_refresh,
+            "skip_embeddings": skip_embeddings
+        })
+        
         return False
+    
+    finally:
+        # Always release the lock when done
+        lock_manager.release_lock()
 
 
 async def check_data_status():
@@ -143,6 +181,17 @@ async def check_data_status():
                 else:
                     print("⚠️ WARNING: Not using Object Storage for embeddings. Large embeddings may fail to store.")
         
+        # Check initialization status
+        lock_manager = ProcessLockManager()
+        needs_init, marker_data = lock_manager.check_initialization_status()
+        if marker_data:
+            print(f"Initialization status: {marker_data.get('status', 'unknown')}")
+            print(f"Last completed at: {marker_data.get('completion_time', 'unknown')}")
+            if 'error' in marker_data:
+                print(f"Last error: {marker_data['error']}")
+        else:
+            print("No initialization status found")
+        
         # Return overall status
         return row_count > 0 and strat_exists and embeddings_available
         
@@ -165,6 +214,14 @@ async def regenerate_derived_data(force_stratified: bool = True, force_embedding
         force_embeddings: Whether to force regeneration of embeddings
     """
     print(f"Regenerating derived data (stratified={force_stratified}, embeddings={force_embeddings})...")
+    
+    # Create the process lock manager
+    lock_manager = ProcessLockManager()
+    
+    # Try to acquire the processing lock
+    if not lock_manager.acquire_lock():
+        print("Another data processing instance is already running. Exiting.")
+        return False
     
     try:
         # Create configuration
@@ -208,13 +265,33 @@ async def regenerate_derived_data(force_stratified: bool = True, force_embedding
             else:
                 print("❌ Failed to regenerate embeddings")
         
+        # Mark initialization as complete if successful
+        if (not force_stratified or success) and (not force_embeddings or success):
+            lock_manager.mark_initialization_complete(True, {
+                "regenerated_stratified": force_stratified,
+                "regenerated_embeddings": force_embeddings
+            })
+        
         return True
     
     except Exception as e:
         print(f"Error regenerating derived data: {e}")
         import traceback
         print(traceback.format_exc())
+        
+        # Mark initialization as failed
+        lock_manager.mark_initialization_complete(False, {
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "regenerated_stratified": force_stratified,
+            "regenerated_embeddings": force_embeddings
+        })
+        
         return False
+        
+    finally:
+        # Always release the lock when done
+        lock_manager.release_lock()
 
 
 def parse_args():
@@ -255,6 +332,12 @@ def parse_args():
         "--embeddings-only",
         action="store_true",
         help="Only regenerate embeddings (use with --regenerate)"
+    )
+    
+    parser.add_argument(
+        "--ignore-lock",
+        action="store_true",
+        help="Ignore process locks (use with caution)"
     )
     
     return parser.parse_args()

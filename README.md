@@ -118,6 +118,10 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
   - Efficient large dataset handling with reservoir sampling
   - Automated data chunking and embedding generation
   - Configurable data retention with `DATA_RETENTION_DAYS` environment variable
+  - Robust process locking to prevent duplicate processing:
+    - Uses Replit Object Storage for persistent locks in Replit environments
+    - Uses file-based locks in Docker/local environments
+    - Tracks initialization status to avoid redundant processing
   - Three-stage data processing pipeline:
     1. Complete data ingestion and storage
     2. Stratified sample generation
@@ -126,6 +130,7 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
     - `--regenerate --stratified-only`: Regenerate only stratified sample
     - `--regenerate --embeddings-only`: Regenerate only embeddings
     - `--force-refresh`: Force refresh all data stages
+    - `--ignore-lock`: Bypass process locks (use with caution)
   - Environment-specific storage backends:
     - Replit: PostgreSQL for complete data, Key-Value store for stratified samples, Object Storage for embeddings
     - Docker: File-based storage with CSV, NPZ, and JSON formats
@@ -233,17 +238,21 @@ The project uses an intelligent environment detection system that automatically 
    - Automatic directory structure creation
    - Memory-optimized batch sizes and worker counts
    - Default configuration for mock data and embeddings
+   - Process lock management using Object Storage to prevent duplicate processing
+   - Environment-aware initialization that handles development vs deployment differences
 
 2. **Docker Environment**:
    - Container-specific path configuration
    - Optimized worker counts for containerized deployment
    - Enhanced batch processing settings
    - Automatic volume management
+   - File-based process lock management
 
 3. **Local Environment**:
    - Flexible path configuration
    - Development-friendly defaults
    - Easy-to-modify settings
+   - File-based process lock management
 
 ### Configuration Sections
 The `.env` file supports section-based configuration:
@@ -286,6 +295,7 @@ The system automatically detects and configures based on your environment:
 OPENAI_API_KEY=your_key
 AWS_ACCESS_KEY_ID=your_key
 AWS_SECRET_ACCESS_KEY=your_key
+S3_BUCKET=your_bucket
 ```
 
 #### Docker Deployment
@@ -360,8 +370,21 @@ For detailed Docker deployment instructions, see [deployment/README_DEPLOYMENT.m
 The project is configured to run seamlessly on Replit with optimized settings:
 
 1. Fork the repository to your Replit account
-2. Set up environment variables in Replit Secrets
-3. Click the Run button or use the appropriate startup script for Replit
+2. Set up environment variables in Replit Secrets:
+   ```
+   OPENAI_API_KEY=your_key
+   AWS_ACCESS_KEY_ID=your_key
+   AWS_SECRET_ACCESS_KEY=your_key
+   S3_BUCKET=your_bucket
+   ```
+3. Click the Run button to start the application
+4. The system will automatically detect the Replit environment and:
+   - Install required dependencies including replit-object-storage
+   - Initialize the PostgreSQL schema
+   - Use Object Storage for process locks and initialization status
+   - Prevent duplicate data processing during restarts
+   - Run data processing in the background
+   - Perform hourly data updates if enabled
 
 ## Testing Framework
 
@@ -447,7 +470,7 @@ Basic data processing:
 # Process all data stages
 poetry run python scripts/process_data.py
 
-# Check current data status
+# Check current data status (includes initialization status)
 poetry run python scripts/process_data.py --check
 
 # Force refresh all data
@@ -456,4 +479,26 @@ poetry run python scripts/process_data.py --force-refresh
 # Regenerate specific components
 poetry run python scripts/process_data.py --regenerate --stratified-only  # Only regenerate stratified sample
 poetry run python scripts/process_data.py --regenerate --embeddings-only  # Only regenerate embeddings
+
+# Advanced options
+poetry run python scripts/process_data.py --ignore-lock  # Bypass process locks (use with caution)
 ```
+
+### Process Lock Management
+
+The system includes a robust process lock management mechanism to prevent duplicate data processing:
+
+```bash
+# Test process lock functionality
+poetry run python scripts/test_process_lock.py --all
+
+# Test specific lock features
+poetry run python scripts/test_process_lock.py --test-contention  # Test lock contention between processes
+poetry run python scripts/test_process_lock.py --test-marker  # Test initialization markers
+```
+
+In Replit environments, the lock manager uses Object Storage for persistence across restarts, while in Docker/local environments it uses file-based locks. This ensures that:
+
+1. Development mode in Replit won't start redundant data processing on restarts
+2. Deployment mode in Replit will have proper process initialization through FastAPI lifecycle
+3. Docker and local environments have appropriate lock management for their contexts

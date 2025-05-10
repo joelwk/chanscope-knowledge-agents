@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 from typing import Dict, Any, Optional, Tuple, List, Union
 import traceback
+import hashlib
 
 # Import centralized logging configuration
 from config.logging_config import get_logger
@@ -152,7 +153,7 @@ async def save_query_output(
     save_numpy: bool = True,
     query: Optional[str] = None,
     task_id: Optional[str] = None
-) -> Tuple[Optional[Path], Optional[Path]]:
+) -> Tuple[Optional[Union[Path, str]], Optional[Union[Path, str]]]:
     """Save query output to JSON and optionally save embeddings to a separate file.
     
     Args:
@@ -180,7 +181,11 @@ async def save_query_output(
         logger.warning("No response or result provided to save_query_output")
         return None, None
     
-    # Set default base path if not provided
+    # Detect environment
+    from config.env_loader import is_replit_environment
+    is_replit = is_replit_environment()
+    
+    # Set default base path if not provided (for file system fallback)
     if base_path is None:
         try:
             from config.settings import Config
@@ -193,24 +198,7 @@ async def save_query_output(
     if isinstance(base_path, str):
         base_path = Path(base_path)
     
-    # Create base directory if it doesn't exist
-    try:
-        base_path.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        logger.warning(f"Could not create base directory {base_path}: {e}")
-        # Try fallback to current directory
-        base_path = Path('.')
-    
-    # Create embeddings directory
-    embeddings_dir = base_path / "embeddings"
-    try:
-        embeddings_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        logger.warning(f"Could not create embeddings directory {embeddings_dir}: {e}")
-        # Use base path as fallback
-        embeddings_dir = base_path
-    
-    # Generate a unique filename prefix based on timestamp and task_id
+    # Generate filename details
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     if task_id:
@@ -218,64 +206,209 @@ async def save_query_output(
     else:
         # Generate a short hash of the query if available
         if query:
-            import hashlib
             query_hash = hashlib.md5(query.encode()).hexdigest()[:8]
             filename_prefix = f"query_{query_hash}_{timestamp}"
         else:
             filename_prefix = f"query_{timestamp}"
     
-    # Prepare paths
-    json_path = base_path / f"{filename_prefix}.json"
-    embeddings_json_path = embeddings_dir / f"{filename_prefix}_embeddings.json"
-    embeddings_npy_path = embeddings_dir / f"{filename_prefix}_embeddings.npz"
+    # Process response (create copies)
+    response_without_embeddings = response.copy()
+    embeddings_data = {}
     
+    # Add the original query to the main response if provided
+    if query and "query" not in response_without_embeddings:
+        response_without_embeddings["query"] = query
+    
+    # Add task_id to the main response if provided
+    if task_id and "task_id" not in response_without_embeddings:
+        response_without_embeddings["task_id"] = task_id
+    
+    # If embeddings are requested, fetch them for each thread
+    if include_embeddings:
+        try:
+            thread_ids = [chunk["thread_id"] for chunk in response.get("chunks", [])]
+            if thread_ids:
+                thread_embeddings = await _fetch_embeddings_for_threads(thread_ids)
+                
+                # Add embeddings to response if found
+                if thread_embeddings:
+                    for chunk in response.get("chunks", []):
+                        thread_id = chunk.get("thread_id")
+                        if thread_id and thread_id in thread_embeddings:
+                            # Store embeddings in the separate data structure
+                            embeddings_data[thread_id] = thread_embeddings[thread_id]
+        except Exception as embedding_error:
+            logger.warning(f"Error processing embeddings: {embedding_error}")
+            # Continue without embeddings
+    
+    # Try to use Object Storage for Replit environment
+    if is_replit:
+        try:
+            # Save to Object Storage
+            result = await _save_to_object_storage(
+                response_without_embeddings,
+                embeddings_data,
+                filename_prefix,
+                include_embeddings,
+                save_numpy,
+                logger
+            )
+            
+            if result[0] is not None:  # If successful, return the result
+                logger.info("Successfully saved query output to Object Storage")
+                return result
+            
+            # If unsuccessful, fall back to file system
+            logger.warning("Object Storage save failed, falling back to file system")
+        except Exception as e:
+            logger.warning(f"Error using Object Storage, falling back to file system: {e}")
+    
+    # Use file system (either as primary or fallback)
+    return await _save_to_filesystem(
+        response_without_embeddings,
+        embeddings_data,
+        base_path,
+        filename_prefix,
+        include_embeddings,
+        save_numpy,
+        logger
+    )
+
+async def _save_to_object_storage(
+    response_json: Dict[str, Any],
+    embeddings_data: Dict[str, List[float]],
+    filename_prefix: str,
+    include_embeddings: bool,
+    save_numpy: bool,
+    logger: logging.Logger
+) -> Tuple[Optional[str], Optional[str]]:
+    """Save query output to Replit Object Storage.
+    
+    Args:
+        response_json: Response JSON to save
+        embeddings_data: Embeddings data to save
+        filename_prefix: Prefix for the filename
+        include_embeddings: Whether to include embeddings
+        save_numpy: Whether to save embeddings in NumPy format
+        logger: Logger instance
+        
+    Returns:
+        Tuple of (path to JSON output, path to embeddings file if saved)
+    """
     try:
-        # Create a copy of the response without embeddings for the main JSON file
-        response_without_embeddings = response.copy()
-        embeddings_data = {}
+        # Import Object Storage client
+        from replit.object_storage import Client
         
-        # Add the original query to the main response if provided
-        if query and "query" not in response_without_embeddings:
-            response_without_embeddings["query"] = query
+        # Initialize client with proper error handling
+        try:
+            client = Client()
+        except ValueError as bucket_error:
+            # Handle no default bucket error
+            if "no default bucket" in str(bucket_error).lower():
+                logger.warning("No default bucket configured. Using 'knowledge-agent'")
+                client = Client(bucket='query_results')
+            else:
+                raise
         
-        # Add task_id to the main response if provided
-        if task_id and "task_id" not in response_without_embeddings:
-            response_without_embeddings["task_id"] = task_id
+        # Save main JSON output
+        json_key = f"query_results/{filename_prefix}.json"
+        json_content = json.dumps(response_json, indent=2, ensure_ascii=False)
+        client.upload_from_text(json_key, json_content)
+        logger.info(f"Saved query output to Object Storage: {json_key}")
         
-        # If embeddings are requested, fetch them for each thread
-        if include_embeddings:
-            try:
-                thread_ids = [chunk["thread_id"] for chunk in response.get("chunks", [])]
-                if thread_ids:
-                    thread_embeddings = await _fetch_embeddings_for_threads(thread_ids)
-                    
-                    # Add embeddings to response if found
-                    if thread_embeddings:
-                        for chunk in response.get("chunks", []):
-                            thread_id = chunk.get("thread_id")
-                            if thread_id and thread_id in thread_embeddings:
-                                # Store embeddings in the separate data structure
-                                embeddings_data[thread_id] = thread_embeddings[thread_id]
-                                
-                                # Add a reference to the embeddings file in the main response
-                                if "chunks" in response_without_embeddings:
-                                    for chunk_without_embedding in response_without_embeddings["chunks"]:
-                                        if chunk_without_embedding.get("thread_id") == thread_id:
-                                            # Add references to both JSON and NPY files if applicable
-                                            embedding_refs = {
-                                                "json": str(embeddings_json_path)
-                                            }
-                                            if save_numpy:
-                                                embedding_refs["numpy"] = str(embeddings_npy_path)
-                                            chunk_without_embedding["embedding_references"] = embedding_refs
-            except Exception as embedding_error:
-                logger.warning(f"Error processing embeddings: {embedding_error}")
-                # Continue without embeddings
+        # Save embeddings if available
+        embeddings_key = None
+        if embeddings_data and include_embeddings:
+            embeddings_key = f"query_results/embeddings/{filename_prefix}_embeddings.json"
+            embeddings_content = json.dumps(embeddings_data, indent=2, ensure_ascii=False)
+            client.upload_from_text(embeddings_key, embeddings_content)
+            logger.info(f"Saved embeddings to Object Storage: {embeddings_key}")
+            
+            # Save NumPy format if requested
+            if save_numpy and embeddings_data:
+                try:
+                    # Convert to numpy array
+                    import numpy as np
+                    embeddings_list = list(embeddings_data.values())
+                    if embeddings_list:
+                        embeddings_array = np.array(embeddings_list, dtype=np.float32)
+                        
+                        # Save to temporary file first
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
+                            np.savez_compressed(temp_file.name, embeddings=embeddings_array)
+                            temp_path = temp_file.name
+                        
+                        # Upload from temporary file
+                        numpy_key = f"query_results/embeddings/{filename_prefix}_embeddings.npz"
+                        with open(temp_path, 'rb') as f:
+                            numpy_data = f.read()
+                        client.upload_from_bytes(numpy_key, numpy_data)
+                        logger.info(f"Saved NumPy embeddings to Object Storage: {numpy_key}")
+                        
+                        # Clean up temp file
+                        import os
+                        os.remove(temp_path)
+                except Exception as numpy_error:
+                    logger.warning(f"Error saving NumPy embeddings to Object Storage: {numpy_error}")
+        
+        return json_key, embeddings_key
+        
+    except Exception as e:
+        logger.error(f"Error saving to Object Storage: {e}")
+        logger.error(traceback.format_exc())
+        return None, None
+
+async def _save_to_filesystem(
+    response_json: Dict[str, Any],
+    embeddings_data: Dict[str, List[float]],
+    base_path: Path,
+    filename_prefix: str,
+    include_embeddings: bool,
+    save_numpy: bool,
+    logger: logging.Logger
+) -> Tuple[Optional[Path], Optional[Path]]:
+    """Save query output to the file system.
+    
+    Args:
+        response_json: Response JSON to save
+        embeddings_data: Embeddings data to save
+        base_path: Base directory to save output to
+        filename_prefix: Prefix for the filename
+        include_embeddings: Whether to include embeddings
+        save_numpy: Whether to save embeddings in NumPy format
+        logger: Logger instance
+        
+    Returns:
+        Tuple of (path to JSON output, path to embeddings file if saved)
+    """
+    try:
+        # Create base directory if it doesn't exist
+        try:
+            base_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Could not create base directory {base_path}: {e}")
+            # Try fallback to current directory
+            base_path = Path('.')
+        
+        # Create embeddings directory
+        embeddings_dir = base_path / "embeddings"
+        try:
+            embeddings_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Could not create embeddings directory {embeddings_dir}: {e}")
+            # Use base path as fallback
+            embeddings_dir = base_path
+        
+        # Prepare paths
+        json_path = base_path / f"{filename_prefix}.json"
+        embeddings_json_path = embeddings_dir / f"{filename_prefix}_embeddings.json"
+        embeddings_npy_path = embeddings_dir / f"{filename_prefix}_embeddings.npz"
         
         # Save main JSON output without embeddings
         try:
             with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(response_without_embeddings, f, indent=2, ensure_ascii=False)
+                json.dump(response_json, f, indent=2, ensure_ascii=False)
             logger.info(f"Saved query output to {json_path}")
         except Exception as json_error:
             logger.error(f"Error saving main JSON output: {json_error}")
@@ -294,8 +427,12 @@ async def save_query_output(
                 # Save as NumPy if requested
                 if save_numpy:
                     try:
-                        await save_embeddings_to_numpy(embeddings_data, embeddings_npy_path, logger)
-                        logger.info(f"Also saved embeddings in NumPy format to {embeddings_npy_path}")
+                        import numpy as np
+                        embeddings_list = list(embeddings_data.values())
+                        if embeddings_list:
+                            embeddings_array = np.array(embeddings_list, dtype=np.float32)
+                            np.savez_compressed(embeddings_npy_path, embeddings=embeddings_array)
+                            logger.info(f"Also saved embeddings in NumPy format to {embeddings_npy_path}")
                     except Exception as numpy_error:
                         logger.warning(f"Error saving NumPy embeddings: {numpy_error}")
             except Exception as embedding_save_error:
@@ -305,18 +442,18 @@ async def save_query_output(
         return json_path, embeddings_path
         
     except Exception as e:
-        logger.error(f"Error saving query output: {e}")
+        logger.error(f"Error saving to filesystem: {e}")
         logger.error(traceback.format_exc())
         
         # Try simplified save as fallback
         try:
             with open(json_path, 'w', encoding='utf-8') as f:
                 simplified_response = {
-                    "summary": response.get("summary", ""),
-                    "query": query,
-                    "task_id": task_id,
+                    "summary": response_json.get("summary", ""),
+                    "query": response_json.get("query", ""),
+                    "task_id": response_json.get("task_id", ""),
                     "timestamp": datetime.now().isoformat(),
-                    "error": f"Error during full save: {str(e)}"
+                    "error": "Error during full save, using simplified format"
                 }
                 json.dump(simplified_response, f, indent=2, ensure_ascii=False)
             logger.info(f"Saved simplified output to {json_path} after error")
@@ -573,4 +710,62 @@ def get_venice_character_slug(character_slug: Optional[str] = None) -> str:
         
     # Priority 4: Use default
     return "pisagor-ai"  # Default character
+
+async def clean_logs(log_dir: Union[str, Path] = None) -> bool:
+    """Clean log files on startup.
+    
+    Args:
+        log_dir: Directory containing log files to clean
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Set default log directory if not provided
+        if log_dir is None:
+            try:
+                from config.settings import Config
+                log_dir = Path(Config.get_paths().get('logs_path', 'logs'))
+            except Exception as e:
+                logger.warning(f"Error getting log directory from Config: {e}")
+                log_dir = Path('logs')
+        
+        # Convert string path to Path object if needed
+        if isinstance(log_dir, str):
+            log_dir = Path(log_dir)
+        
+        # Create logs directory if it doesn't exist
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Could not create logs directory {log_dir}: {e}")
+            return False
+        
+        # Get list of log files
+        log_files = list(log_dir.glob('*.log'))
+        
+        if not log_files:
+            logger.info(f"No log files found in {log_dir}")
+            return True
+        
+        logger.info(f"Cleaning {len(log_files)} log files in {log_dir}")
+        
+        # Clear each log file
+        for log_file in log_files:
+            try:
+                # Truncate file to 0 bytes
+                with open(log_file, 'w') as f:
+                    pass
+                logger.info(f"Cleared log file: {log_file}")
+            except Exception as e:
+                logger.warning(f"Could not clear log file {log_file}: {e}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error cleaning logs: {e}")
+        logger.error(traceback.format_exc())
+        return False
 
