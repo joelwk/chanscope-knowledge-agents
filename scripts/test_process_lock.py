@@ -76,7 +76,7 @@ else:
         del os.environ['DOCKER_ENV']
 
 # Import ProcessLockManager after environment setup
-from utils.processing_lock import ProcessLockManager, FILE_INIT_MARKER_PATH, FILE_LOCK_PATH
+from scripts.utils.processing_lock import ProcessLockManager, FILE_INIT_MARKER_PATH, FILE_LOCK_PATH
 
 def test_lock_acquisition(lock_name=None):
     """Test lock acquisition and release."""

@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Import after path setup
 from knowledge_agents.data_processing.chanscope_manager import ChanScopeDataManager
 from config.chanscope_config import ChanScopeConfig
-from utils.processing_lock import ProcessLockManager
+from scripts.utils.processing_lock import ProcessLockManager
 
 
 async def process_data(force_refresh: bool = False, skip_embeddings: bool = False):

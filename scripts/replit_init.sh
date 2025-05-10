@@ -137,7 +137,7 @@ except Exception as e:
 import sys
 sys.path.insert(0, '.')
 try:
-    from utils.processing_lock import ProcessLockManager
+    from scripts.utils.processing_lock import ProcessLockManager
     
     # Create lock manager and check status
     lock_manager = ProcessLockManager()
