@@ -27,6 +27,7 @@ from config.settings import Config
 from config.base_settings import get_base_settings
 from config.logging_config import get_logger
 from config.env_loader import is_replit_environment
+from knowledge_agents.utils import validate_text
 
 # Configure logger
 logger = get_logger(__name__)
@@ -794,26 +795,7 @@ def validate_text_for_embedding(text: str) -> Tuple[bool, str]:
     Returns:
         Tuple[bool, str]: (is_valid, reason)
     """
-    if text is None:
-        return False, "Text is None"
-
-    if not isinstance(text, str):
-        return False, f"Text is not a string (type: {type(text)})"
-
-    # Remove whitespace to check if there's actual content
-    text_clean = text.strip()
-
-    if not text_clean:
-        return False, "Text is empty or whitespace only"
-
-    if len(text_clean) < 10:
-        return False, f"Text is too short ({len(text_clean)} chars)"
-
-    # Check for excessive repetition which might confuse embedding models
-    if len(set(text_clean)) / len(text_clean) < 0.1:
-        return False, "Text has low character diversity (possible repetition)"
-
-    return True, "Valid"
+    return validate_text(text)
 
 async def process_sub_batch(
     sub_batch_articles: List[KnowledgeDocument],

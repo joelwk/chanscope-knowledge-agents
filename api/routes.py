@@ -1262,16 +1262,24 @@ async def process_recent_query(
         # Calculate time range
         end_time = datetime.now(pytz.UTC)
 
-        # Use provided filter_date or default to 6 hours ago
-        if filter_date:
-            try:
-                start_time = pd.to_datetime(filter_date, utc=True)
-                logger.info(f"Using provided filter_date: {filter_date}")
-            except Exception as e:
-                logger.warning(f"Invalid filter_date format: {filter_date}. Error: {e}. Using default 6-hour window.")
-                start_time = end_time - timedelta(hours=6)
-        else:
-            start_time = end_time - timedelta(hours=6)
+        # Always prioritize 6-hour lookback for recency
+        try:
+            # Default behavior: always look back 6 hours for current data
+            start_time = end_time - timedelta(hours=12)
+            logger.info(f"Using default 6-hour window: {start_time.isoformat()} to {end_time.isoformat()}")
+        except Exception as e:
+            # Fallback to filter_date only if there's an issue with the 6-hour calculation
+            logger.warning(f"Error calculating 6-hour window: {e}. Attempting to use filter_date instead.")
+            if filter_date:
+                try:
+                    start_time = pd.to_datetime(filter_date, utc=True)
+                    logger.info(f"Using provided filter_date as fallback: {filter_date}")
+                except Exception as e2:
+                    logger.error(f"Invalid filter_date format: {filter_date}. Error: {e2}. Using 24-hour emergency fallback.")
+                    start_time = end_time - timedelta(hours=24)
+            else:
+                logger.error("Unable to calculate window and no filter_date provided. Using 24-hour emergency fallback.")
+                start_time = end_time - timedelta(hours=24)
 
         query_filter_date = start_time.strftime('%Y-%m-%d %H:%M:%S+00:00')
 

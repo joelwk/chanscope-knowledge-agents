@@ -43,6 +43,12 @@ class LLMSQLGenerator:
     # Static provider configurations for the pipeline stages
     PROVIDER_ENHANCER = ModelProvider.OPENAI  # For enhancing instructions
     PROVIDER_GENERATOR = ModelProvider.VENICE  # For SQL generation and validation
+    
+    # Character slug configurations for each pipeline stage
+    #CHARACTER_ENHANCER = "the-architect-of-precision-the-architect"  # For enhancing instructions
+    CHARACTER_ENHANCER = "nightswan"  # For enhancing instructions
+    CHARACTER_GENERATOR = "sqlman"  # For SQL generation
+    CHARACTER_VALIDATOR = "sqlman"  # For SQL validation
 
     # Table schema information (used in prompts)
     SCHEMA_DEFINITION = """
@@ -733,7 +739,7 @@ Format your response as a JSON object with the following fields:
         sql_prompts = self.agent.prompts.get('sql_prompts', {})
         enhance_cfg = sql_prompts.get('enhance_instructions', {})
         prompt_template = enhance_cfg.get('system_prompt')
-        character_slug = enhance_cfg.get('character_slug', 'the-architect-of-precision-the-architect')
+        character_slug = enhance_cfg.get('character_slug', self.CHARACTER_ENHANCER)
         if not prompt_template:
             prompt_template = """You are an expert in understanding database query intent.\nAnalyze this natural language query and enhance it with specific details:\n\n1. Identify all time-based filters (last hour, today, etc.)\n2. Identify content filters (contains X, about Y)\n3. Identify author or channel filters\n4. Structure these identified elements clearly\n5. Preserve ALL original query intent"""
         prompt = f"{prompt_template}\n\nOriginal query: {nl_query}\n\nEnhanced instructions:"
@@ -763,7 +769,7 @@ Format your response as a JSON object with the following fields:
         sql_prompts = self.agent.prompts.get('sql_prompts', {})
         gen_cfg = sql_prompts.get('generate_sql', {})
         prompt_template = gen_cfg.get('system_prompt')
-        character_slug = gen_cfg.get('character_slug', 'sqlman')
+        character_slug = gen_cfg.get('character_slug', self.CHARACTER_GENERATOR)
         if not prompt_template:
             prompt_template = self._get_generation_prompt()
         prompt = f"{prompt_template}\n\nQuery: {instructions}\n\nReasoning:"
@@ -822,7 +828,7 @@ Format your response as a JSON object with the following fields:
         sql_prompts = self.agent.prompts.get('sql_prompts', {})
         val_cfg = sql_prompts.get('validate_sql', {})
         prompt_template = val_cfg.get('system_prompt')
-        character_slug = val_cfg.get('character_slug', 'sqlman')
+        character_slug = val_cfg.get('character_slug', self.CHARACTER_VALIDATOR)
         if not prompt_template:
             prompt_template = self._get_validation_prompt()
         if nl_query:

@@ -9,6 +9,7 @@ import boto3
 from dateutil import tz
 from config.settings import Config
 from config.config_utils import parse_filter_date
+from knowledge_agents.utils import validate_text
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -272,6 +273,30 @@ class S3Handler:
                         if not valid_mask.all():
                             logger.warning(f"Removed {(~valid_mask).sum()} rows with invalid dates in {s3_key}")
                             chunk = chunk[valid_mask]
+
+                        # Apply text validation to text_clean field if it exists
+                        if 'text_clean' in chunk.columns:
+                            text_valid_rows = []
+                            invalid_rows = 0
+                            invalid_reasons = {}
+                            
+                            for idx, row in chunk.iterrows():
+                                is_valid, reason = validate_text(row['text_clean'])
+                                if is_valid:
+                                    text_valid_rows.append(idx)
+                                else:
+                                    invalid_rows += 1
+                                    if reason not in invalid_reasons:
+                                        invalid_reasons[reason] = 0
+                                    invalid_reasons[reason] += 1
+                            
+                            if invalid_rows > 0:
+                                logger.info(f"Filtered out {invalid_rows} rows with invalid text in {s3_key}")
+                                for reason, count in invalid_reasons.items():
+                                    logger.debug(f"  - {reason}: {count} rows")
+                                
+                                # Keep only rows with valid text
+                                chunk = chunk.loc[text_valid_rows]
 
                         if not chunk.empty:
                             total_rows_processed += len(chunk)

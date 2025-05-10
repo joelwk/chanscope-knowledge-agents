@@ -25,85 +25,91 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
 Chanscope's architecture follows a biologically-inspired pattern with distinct yet interconnected processing stages:
 
 ```
-┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
-│   Data Sources  │         │  Processing Core  │         │  Query System   │
-│  ┌────────────┐ │         │  ┌────────────┐  │         │ ┌────────────┐  │
-│  │    S3      │◄├─┐       │  │ Stratified │  │     ┌───┼►│   Query    │  │
-│  │  Storage   │ │ │       │  │  Sampling  │  │     │   │ │ Processing │  │
-│  └────────────┘ │ │       │  └─────┬──────┘  │     │   │ └─────┬──────┘  │
-└─────────────────┘ │       │        │         │     │   │       │         │
-                    │       │  ┌─────▼──────┐  │     │   │ ┌─────▼──────┐  │
-┌─────────────────┐ │       │  │ Embedding  │  │     │   │ │   Chunk    │  │
-│  Memory System  │ │       │  │ Generation │  │     │   │ │ Processing │  │
-│  ┌────────────┐ │ │       │  └─────┬──────┘  │     │   │ └─────┬──────┘  │
-│  │ Complete   │◄┼─┘       │        │         │     │   │       │         │
-│  │    Data    │ │         │        │         │     │   │ ┌─────▼──────┐  │
-│  └────────────┘ │         │        │         │     │   │ │   Final    │  │
-│  ┌────────────┐ │         │        │         │     │   │ │ Summarizer │  │
-│  │ Stratified │◄├─────────┼────────┘         │     │   │ └────────────┘  │
-│  │   Sample   │ │         │                  │     │   │                 │
-│  └────────────┘ │         │                  │     │   └─────────────────┘
-│  ┌────────────┐ │         │                  │     │
-│  │ Embeddings │◄├─────────┼──────────────────┼─────┘
-│  │   (.npz)   │ │         │                  │
-│  └────────────┘ │         └──────────────────┘
+┌─────────────────┐         ┌──────────────────────────┐         ┌─────────────────┐
+│   Data Sources  │         │    Processing Core       │         │  Query System   │
+│  ┌────────────┐ │         │  ┌────────────────────┐  │         │ ┌────────────┐  │
+│  │    S3      │◄├─┐       │  │ ChanScopeDataMgr   │  │     ┌───┼►│   Query    │  │
+│  │  Storage   │ │ │       │  │ ┌────────────────┐ │  │     │   │ │ Processing │  │
+│  └────────────┘ │ │       │  │ │   Stratified   │ │  │     │   │ └─────┬──────┘  │
+└─────────────────┘ │       │  │ │    Sampling    │ │  │     │   │       │         │
+                    │       │  │ └────────┬───────┘ │  │     │   │ ┌─────▼──────┐  │
+┌─────────────────┐ │       │  │          │         │  │     │   │ │   Chunk    │  │
+│  Memory System  │ │       │  │ ┌────────▼───────┐ │  │     │   │ │ Processing │  │
+│  ┌────────────┐ │ │       │  │ │   Embedding    │ │  │     │   │ └─────┬──────┘  │
+│  │ Complete   │◄┼─┘       │  │ │   Generation   │ │  │     │   │       │         │
+│  │    Data    │ │         │  │ └────────────────┘ │  │     │   │ ┌─────▼──────┐  │
+│  └────────────┘ │         │  └────────────────────┘  │     │   │ │   Final    │  │
+│  ┌────────────┐ │         │           │              │     │   │ │ Summarizer │  │
+│  │ Stratified │◄├─────────┼───────────┘              │     │   │ └────────────┘  │
+│  │   Sample   │ │         │                          │     │   │                 │
+│  └────────────┘ │         │  ┌────────────────────┐  │     │   └─────────────────┘
+│  ┌────────────┐ │         │  │   KnowledgeAgent   │  │     │
+│  │ Embeddings │◄├─────────┼──┤  (Singleton LLM)   ├──┼─────┘
+│  │   (.npz)   │ │         │  └────────────────────┘  │
+│  └────────────┘ │         └──────────────────────────┘
 └─────────────────┘
+           ▲
+           │
+    ┌──────┴──────┐
+    │ Storage ABCs │
+    └─────────────┘
 ```
 
 ### Processing Pipeline
 
-1. **Data Ingestion**: Retrieves data from S3 starting from `DATA_RETENTION_DAYS` ago.
-2. **Stratification**: Samples the complete dataset using `sampler.py` to create a representative subset.
-3. **Embedding Generation**: Creates embeddings stored in `.npz` format with thread ID mappings.
-4. **Query Processing**: Leverages embeddings for semantic search and incorporates an enhanced natural language query processing module. This module uses LLMSQLGenerator to convert natural language queries into SQL queries while preserving the original query context and enforcing essential filters (particularly content filters). This approach mirrors biological quality control mechanisms, ensuring precise data retrieval.
+1. **Data Ingestion**: `ChanScopeDataManager` retrieves data from S3 starting from `DATA_RETENTION_DAYS` ago, using the appropriate storage implementation.
+2. **Stratification**: Samples the complete dataset using `sampler.py` to create a representative subset, with file-locks for concurrent access management.
+3. **Embedding Generation**: Creates embeddings via `KnowledgeAgent` singleton and stores them in environment-specific format (`.npz` files or Object Storage) with thread ID mappings.
+4. **Query Processing**: Performs vector similarity search using cosine distance and incorporates an enhanced natural language query processing module. Uses batch processing for efficiency and supports recursive refinement for improved results.
 
 ## Repository Structure
 
 ```
 ├── api/                  # FastAPI application and endpoints
-│   ├── app.py            # Main API application
+│   ├── app.py            # Main API application with lifespan management
 │   ├── routes.py         # API route definitions
 │   ├── models.py         # Data models and schemas
 │   ├── cache.py          # Caching mechanisms
 │   └── errors.py         # Error handling
 ├── config/               # Configuration files and settings
+│   ├── storage.py        # Storage abstraction interfaces & implementations
+│   ├── settings.py       # Configuration management
+│   ├── env_loader.py     # Environment detection
+│   └── chanscope_config.py # Chanscope-specific configuration
 ├── deployment/           # Docker and deployment configurations
-│   ├── docker-compose.yml       # Production deployment configuration
-│   ├── docker-compose.test.yml  # Testing deployment configuration
-│   ├── Dockerfile               # Container definition
-│   └── setup.sh                 # Setup script for container initialization
 ├── docs/                 # Documentation files
-│   ├── chanscope_implementation.md  # Implementation details
-│   ├── llm_sql_feature.md       # LLM-SQL query feature documentation
-│   ├── stratification_guide.md  # Stratification best practices
-│   └── example_queries.md       # Example NL query examples
 ├── knowledge_agents/     # Core business logic and data processing
 │   ├── data_ops.py       # Data operations and processing
 │   ├── embedding_ops.py  # Embedding generation and management
 │   ├── inference_ops.py  # Inference and query processing
-│   ├── model_ops.py      # Model management and configuration
+│   ├── model_ops.py      # Model management and LLM operations
 │   ├── llm_sql_generator.py # Natural language to SQL conversion
+│   ├── prompt.yaml       # LLM prompt templates
+│   ├── data_processing/  # Data processing subpackage
+│   │   ├── chanscope_manager.py # Central facade for data operations
+│   │   ├── cloud_handler.py # S3/GCS abstraction
+│   │   ├── sampler.py    # Stratified sampling implementation
+│   │   └── dialog_processor.py # Text processing utilities
 │   └── run.py            # Main execution logic
 ├── scripts/              # Utility scripts for testing and deployment
-│   ├── run_tests.sh      # Main test runner
-│   ├── validate_chanscope_approach.py # Chanscope approach validation
-│   ├── process_data.py   # Data processing utilities
-│   ├── scheduled_update.py # Scheduled data update script
-│   └── test_and_deploy.sh  # Combined test and deployment workflow
 ├── tests/                # Test suites and fixtures
-│   ├── test_data_ingestion.py     # Data ingestion tests
-│   ├── test_embedding_pipeline.py # Embedding generation tests
-│   ├── test_endpoints.py          # API endpoint tests
-│   └── test_chanscope_approach.py # Chanscope approach tests
 └── examples/             # Example usage and integrations
 ```
 
 ## Core Architecture
 
 - **Multi-Provider Architecture**
+  - Singleton `KnowledgeAgent` provides unified access to different LLM providers
   - OpenAI (Primary): GPT-4o, text-embedding-3-large
   - Grok (Optional): grok-3, grok-3-mini
   - Venice (Optional): dolphin-2.9.2-qwen2-72b, deepseek-r1-671b
+
+- **Storage Abstraction Layer**
+  - Abstract interfaces: `CompleteDataStorage`, `StratifiedSampleStorage`, `EmbeddingStorage`, `StateManager`
+  - `StorageFactory` selects appropriate implementation based on environment
+  - File-based implementations for Docker/local environments
+  - Replit implementations using PostgreSQL, Key-Value store, and Object Storage
+  - Thread-safe operations with file locks for concurrent access
 
 - **Intelligent Data Processing**
   - Automated hourly data updates with incremental processing
@@ -137,9 +143,12 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
     - When disabled: Uses existing data for faster processing
 
 - **LLM-Based SQL Generation**
-  - Natural language to SQL conversion for database queries
-  - Three-stage LLM architecture (enhancement, generation, validation)
-  - Template matching for common query patterns
+  - Hybrid approach combining template matching and LLM generation
+  - Three-stage LLM pipeline:
+    1. **Enhancer**: Refines natural language query into structured instructions
+    2. **Generator**: Converts enhanced instructions to SQL (uses Venice characters)
+    3. **Validator**: Ensures security and correctness of generated SQL
+  - Template matching for common query patterns with fallback to LLM
   - Parameter extraction with time-awareness
   - Full schema validation and security checks
   - Caching for improved performance
@@ -154,6 +163,15 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
   - Automatic cleanup of old results with history preservation
   - Background processing with `use_background` parameter
   - Custom task IDs for integration with external systems
+
+## Component Relationships
+
+- **ChanScopeDataManager**: Central facade that orchestrates all data operations through environment-specific storage interfaces
+- **KnowledgeAgent**: Singleton service providing unified access to LLM providers for embeddings, chunking, and summarization
+- **Storage ABCs**: Abstract interfaces allowing seamless switching between file-based and database storage
+- **Model and Embedding Operations**: Separate modules that handle model interactions and embedding management
+- **API Layer**: FastAPI application that initializes ChanScopeDataManager once and exposes its functionality through routes
+- **LLMSQLGenerator**: Specialized component that converts natural language to SQL using a hybrid template/LLM approach
 
 For greater technical details and examples, refer to the documentation in the `docs/` directory and the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
 

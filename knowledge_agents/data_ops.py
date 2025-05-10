@@ -18,6 +18,7 @@ from config.base_settings import get_base_settings
 from config.settings import Config
 from .data_processing.sampler import Sampler
 from config.env_loader import detect_environment
+from knowledge_agents.utils import validate_text
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -260,6 +261,32 @@ class DataProcessor:
         if missing:
             self._logger.error(f"Missing columns: {missing}. Available: {data.columns.tolist()}")
             raise ValueError(f"Missing columns: {missing}")
+            
+        # Validate text quality before stratification
+        if 'text_clean' in data.columns:
+            text_valid_rows = []
+            invalid_rows = 0
+            invalid_reasons = {}
+            
+            for idx, row in data.iterrows():
+                is_valid, reason = validate_text(row['text_clean'])
+                if is_valid:
+                    text_valid_rows.append(idx)
+                else:
+                    invalid_rows += 1
+                    if reason not in invalid_reasons:
+                        invalid_reasons[reason] = 0
+                    invalid_reasons[reason] += 1
+            
+            if invalid_rows > 0:
+                self._logger.info(f"Filtered out {invalid_rows} rows with invalid text before stratification")
+                for reason, count in invalid_reasons.items():
+                    self._logger.debug(f"  - {reason}: {count} rows")
+                
+                # Keep only rows with valid text
+                data = data.loc[text_valid_rows]
+                self._logger.info(f"Proceeding with stratification using {len(data)} valid records")
+                
         stratified = self.sampler.stratified_sample(data)
         self._logger.info(f"Stratification complete; result size: {len(stratified)}")
         return stratified

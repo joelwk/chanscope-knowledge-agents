@@ -514,6 +514,36 @@ async def save_embeddings_to_numpy(
         return file_path
     
     
+def validate_text(text: str) -> Tuple[bool, str]:
+    """Validate if text is suitable for processing and embedding.
+    
+    Args:
+        text: The text to validate
+
+    Returns:
+        Tuple[bool, str]: (is_valid, reason)
+    """
+    if text is None:
+        return False, "Text is None"
+
+    if not isinstance(text, str):
+        return False, f"Text is not a string (type: {type(text)})"
+
+    # Remove whitespace to check if there's actual content
+    text_clean = text.strip()
+
+    if not text_clean:
+        return False, "Text is empty or whitespace only"
+
+    if len(text_clean) < 10:
+        return False, f"Text is too short ({len(text_clean)} chars)"
+
+    # Check for excessive repetition which might confuse embedding models
+    if len(set(text_clean)) / len(text_clean) < 0.1:
+        return False, "Text has low character diversity (possible repetition)"
+
+    return True, "Valid"
+    
 def get_venice_character_slug(character_slug: Optional[str] = None) -> str:
     """Get the Venice character slug from environment or config.
     

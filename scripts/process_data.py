@@ -4,6 +4,7 @@ Data Processing Utility for Chanscope
 
 This script provides direct access to the Chanscope data processing pipeline,
 allowing manual triggering of data loading, stratification, and embedding generation.
+Includes text validation to ensure high-quality data throughout the pipeline.
 """
 
 import os
@@ -29,6 +30,7 @@ async def process_data(force_refresh: bool = False, skip_embeddings: bool = Fals
         skip_embeddings: Whether to skip embedding generation
     """
     print(f"Starting data processing (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})...")
+    print("Text validation will be applied at each stage to ensure high-quality data")
     
     try:
         # Create configuration
