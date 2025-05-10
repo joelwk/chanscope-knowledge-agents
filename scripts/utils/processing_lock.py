@@ -26,10 +26,62 @@ LOCK_EXPIRY_TIME = 600  # 10 minutes in seconds
 INIT_MARKER_VALID_TIME = 3600  # 1 hour in seconds
 
 # File-based lock constants
-FILE_LOCK_DIR = Path("data")
+# Get project root directory for proper path resolution in all environments
+def get_project_root():
+    """
+    Get the project root directory based on the current environment.
+    
+    This function determines the appropriate base directory for lock files
+    based on the detected environment (Replit, Docker, or local).
+    
+    Returns:
+        Path: The project root directory path
+    """
+    # Check for environment-specific paths first
+    if os.environ.get('REPLIT_ENV', '').lower() in ('replit', 'true', '1', 'yes') or os.environ.get('REPL_ID') is not None:
+        # Replit environment - use the workspace root or REPL_HOME
+        repl_home = os.environ.get("REPL_HOME", "/home/runner")
+        return Path(repl_home)
+    
+    elif os.environ.get('DOCKER_ENV', '').lower() in ('true', '1', 'yes'):
+        # Docker environment - use the app root
+        return Path("/app")
+    
+    else:
+        # Local environment - find the project root relative to this file
+        current_file = Path(__file__).resolve()
+        
+        # Go up two levels: utils/ -> scripts/ -> project_root/
+        project_root = current_file.parent.parent.parent
+        
+        # Validate the directory by checking for common project files
+        common_markers = ['.git', 'README.md', 'pyproject.toml', 'setup.py']
+        if any((project_root / marker).exists() for marker in common_markers):
+            return project_root
+        
+        # If no markers are found, use a data directory in the current working directory
+        # This ensures locks will work even if the project structure is non-standard
+        cwd = Path.cwd()
+        data_dir = cwd / "data"
+        data_dir.mkdir(exist_ok=True)
+        return cwd
+
+# Set the lock directory and ensure it exists
+FILE_LOCK_DIR = get_project_root()
+# Try to ensure the lock directory exists and is writable
+try:
+    FILE_LOCK_DIR.mkdir(exist_ok=True)
+except PermissionError:
+    # If we can't create the directory, fall back to current directory
+    logger.warning(f"Cannot create directory at {FILE_LOCK_DIR}, falling back to current directory")
+    FILE_LOCK_DIR = Path(".")
+
 FILE_LOCK_PATH = FILE_LOCK_DIR / ".process_lock"
 FILE_INIT_MARKER_PATH = FILE_LOCK_DIR / ".init_complete_marker"
 
+# Log the lock file locations
+logger.info(f"Lock file path: {FILE_LOCK_PATH}")
+logger.info(f"Init marker path: {FILE_INIT_MARKER_PATH}")
 
 class ProcessLockManager:
     """
@@ -74,8 +126,7 @@ class ProcessLockManager:
                 logger.error(f"Error initializing Replit Object Storage: {e}")
                 logger.info("Falling back to file-based locks")
         
-        # Ensure lock directory exists for file-based locks
-        FILE_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+        # Removed directory creation - don't automatically create directories
         
         # Log which lock method we're using
         if self.has_object_storage:
@@ -173,8 +224,7 @@ class ProcessLockManager:
             # Create lock file with advisory locking
             lock_fd = None
             try:
-                # Ensure the lock directory exists
-                FILE_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+                # Remove directory creation - parent directories should already exist
                 
                 # Create or open the lock file - use 'w+' to truncate and allow reading
                 lock_fd = open(FILE_LOCK_PATH, 'w+')

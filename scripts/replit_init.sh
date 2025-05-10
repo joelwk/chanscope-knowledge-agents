@@ -22,6 +22,10 @@ echo -e "${YELLOW}Starting Replit background initialization script...${NC}"
     mkdir -p "$WORKSPACE_ROOT/logs"
     mkdir -p "$WORKSPACE_ROOT/temp_files"
 
+    # Ensure scripts/utils directory exists
+    mkdir -p "$WORKSPACE_ROOT/scripts/utils"
+    touch "$WORKSPACE_ROOT/scripts/utils/__init__.py"
+
     # Ensure Poetry is installed
     if ! command -v poetry &> /dev/null; then
         echo -e "${YELLOW}Poetry not found, installing...${NC}"
@@ -49,13 +53,6 @@ echo -e "${YELLOW}Starting Replit background initialization script...${NC}"
         poetry add replit-object-storage
     else
         echo -e "${GREEN}replit-object-storage is already installed${NC}"
-    fi
-
-    # Create utils directory if it doesn't exist
-    if [ ! -d "$WORKSPACE_ROOT/utils" ]; then
-        echo -e "${YELLOW}Creating utils directory...${NC}"
-        mkdir -p "$WORKSPACE_ROOT/utils"
-        touch "$WORKSPACE_ROOT/utils/__init__.py"
     fi
 
     # Initialize PostgreSQL schema
