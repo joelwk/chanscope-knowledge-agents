@@ -17,6 +17,7 @@ load_dotenv()
 from knowledge_agents.data_ops import DataConfig, DataOperations
 from knowledge_agents.model_ops import ModelConfig, ModelProvider, ModelOperation
 from knowledge_agents.embedding_ops import KnowledgeDocument, get_relevant_content
+from knowledge_agents.inference_ops import prepare_embeddings
 from config.settings import Config
 
 # Configure logging
@@ -128,3 +129,32 @@ async def test_embedding_pipeline(test_data_config):
     except Exception as e:
         logger.error(f"Test failed: {str(e)}")
         raise 
+
+def test_prepare_embeddings_various_formats():
+    df = pd.DataFrame(
+        {
+            "embedding": [
+                "[0.1, 0.0, 0.0]",  # JSON string
+                [0.0, 0.2, 0.0],  # list
+                np.array([0.0, 0.0, 0.3]),  # numpy array
+                0.5,  # scalar
+            ],
+            "text_clean": ["a", "b", "c", "d"],
+        }
+    )
+    query_emb = np.array([0.1, 0.2, 0.3])
+
+    embeddings, indices, returned = prepare_embeddings(df, query_emb, adapt=False)
+    assert embeddings.shape == (4, 3)
+    assert indices == [0, 1, 2, 3]
+    assert np.allclose(returned, query_emb)
+
+
+def test_prepare_embeddings_dimension_adaptation():
+    df = pd.DataFrame({"embedding": [[0.1], [0.2, 0.3], [0.4, 0.5, 0.6, 0.7]]})
+    query_emb = np.array([0.9, 0.8, 0.7])
+
+    embeddings, indices, returned = prepare_embeddings(df, query_emb, adapt=True)
+    assert embeddings.shape == (1, 3)
+    assert indices == [2]
+    assert np.allclose(returned, query_emb)
