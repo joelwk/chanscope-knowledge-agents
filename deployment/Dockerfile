@@ -1,82 +1,30 @@
-FROM python:3.11-slim as builder
+# Use the official Python 3.11 slim image as a parent image
+FROM python:3.11-slim
 
+# Set the working directory in the container
 WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    ca-certificates \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Poetry
-RUN pip install --no-cache-dir poetry==1.7.1
-
-# Configure Poetry to create virtual environment in project directory
-ENV POETRY_VIRTUALENVS_IN_PROJECT=true \
-    POETRY_NO_INTERACTION=1
-
-# Copy dependency files
-COPY pyproject.toml poetry.lock ./
-
-# Install dependencies
-RUN poetry install --no-root
-
-# Runtime stage
-FROM python:3.11-slim as app
-
-# Copy Python packages from builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-COPY --from=builder /app/.venv /app/.venv
-
-WORKDIR /app
-
-# Install runtime dependencies
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        curl \
-        tini \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create home directory and data directories with proper permissions for nobody:nogroup user
-RUN mkdir -p /home/nobody && \
-    mkdir -p /app/data /app/data/stratified /app/data/shared /app/logs /app/temp_files \
-    && chown -R nobody:nogroup /app /home/nobody \
-    && chmod -R 777 /app/data \
-    && chmod -R 777 /app/data/stratified \
-    && chmod -R 777 /app/data/shared \
-    && chmod -R 777 /app/logs \
-    && chmod -R 777 /app/temp_files \
-    && chmod -R 777 /home/nobody
-
-# Copy setup script first and make it executable
-COPY --chown=nobody:nogroup deployment/setup.sh /app/deployment/
-RUN chmod +x /app/deployment/setup.sh
-
-# Copy application code
-COPY --chown=nobody:nogroup . .
 
 # Set environment variables
-ENV PYTHONPATH=/app \
-    PYTHONUNBUFFERED=1 \
-    DOCKER_ENV=true \
-    REPLIT_ENV=false \
-    HOME=/home/nobody \
-    TZ=UTC \
-    PATH="/app/.venv/bin:$PATH"
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
 
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the requirements file into the container
+COPY requirements.txt .
+
+# Install Python dependencies using pip
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application's code into the container
+COPY . .
+
+# Expose the port the app runs on
 EXPOSE 80
 
-# Run as non-root user
-USER nobody
-
-# Health check with extended start period to account for data loading
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
-    CMD curl -f http://localhost/api/v1/health || exit 1
-
-# Use tini as init system
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["bash", "/app/deployment/setup.sh"]
+# Define the command to run the application
+CMD ["python3", "-m", "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "80"]

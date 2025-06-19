@@ -7,9 +7,27 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${YELLOW}Starting Replit background initialization script...${NC}"
+echo -e "${YELLOW}Starting Replit initialization script...${NC}"
 
-# Start a background process to handle non-critical initialization tasks
+# ==============================================================================
+# FOREGROUND INITIALIZATION: Ensure environment and dependencies are ready.
+# ==============================================================================
+
+# Install dependencies synchronously before starting background tasks
+echo -e "${YELLOW}Installing/updating project dependencies with pip...${NC}"
+if [ -f "requirements.txt" ]; then
+    pip install -r requirements.txt
+    echo -e "${GREEN}Dependencies installed successfully.${NC}"
+else
+    echo -e "${RED}Error: requirements.txt not found!${NC}"
+    exit 1
+fi
+
+
+echo -e "${YELLOW}Starting background initialization tasks...${NC}"
+# ==============================================================================
+# BACKGROUND INITIALIZATION: Run non-blocking tasks.
+# ==============================================================================
 (
     # Ensure we're in the workspace root
     WORKSPACE_ROOT="$PWD"
@@ -26,39 +44,10 @@ echo -e "${YELLOW}Starting Replit background initialization script...${NC}"
     mkdir -p "$WORKSPACE_ROOT/scripts/utils"
     touch "$WORKSPACE_ROOT/scripts/utils/__init__.py"
 
-    # Ensure Poetry is installed
-    if ! command -v poetry &> /dev/null; then
-        echo -e "${YELLOW}Poetry not found, installing...${NC}"
-        curl -sSL https://install.python-poetry.org | python3 -
-        export PATH="$HOME/.local/bin:$PATH"
-    fi
-
-    # Update Poetry dependencies
-    echo -e "${YELLOW}Installing/updating dependencies with Poetry...${NC}"
-    poetry install
-
-    # Check for required modules and add them if missing
-    for package in psycopg2-binary boto3 replit; do
-        if ! poetry run python -c "import $package" &> /dev/null; then
-            echo -e "${YELLOW}Adding $package to Poetry dependencies...${NC}"
-            poetry add "$package"
-        else
-            echo -e "${GREEN}$package is already installed${NC}"
-        fi
-    done
-
-    # Add replit-object-storage if not already installed
-    if ! poetry run python -c "from replit.object_storage import Client" &> /dev/null; then
-        echo -e "${YELLOW}Adding replit-object-storage to Poetry dependencies...${NC}"
-        poetry add replit-object-storage
-    else
-        echo -e "${GREEN}replit-object-storage is already installed${NC}"
-    fi
-
     # Initialize PostgreSQL schema
     echo -e "${YELLOW}Initializing PostgreSQL schema...${NC}"
     if [ -n "$DATABASE_URL" ] || [ -n "$PGHOST" ]; then
-        poetry run python -c "
+        python3 -c "
 import asyncio
 from config.replit import PostgresDB
 
@@ -80,7 +69,7 @@ initialize_db()
 
     # Verify Replit Key-Value store
     echo -e "${YELLOW}Verifying Replit Key-Value store access...${NC}"
-    poetry run python -c "
+    python3 -c "
 try:
     from replit import db
     db['test_key'] = 'test_value'
@@ -94,7 +83,7 @@ except Exception as e:
     # Verify AWS credentials
     echo -e "${YELLOW}Verifying AWS credentials...${NC}"
     if [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ] && [ -n "$S3_BUCKET" ]; then
-        poetry run python -c "
+        python3 -c "
 import boto3
 import os
 
@@ -130,7 +119,7 @@ except Exception as e:
 
     # Check if initialization was recently completed using the ProcessLockManager
     echo -e "${YELLOW}Checking if data processing is needed...${NC}"
-    PROCESS_CHECK=$(poetry run python -c "
+    PROCESS_CHECK=$(python3 -c "
 import sys
 sys.path.insert(0, '.')
 try:
@@ -167,7 +156,7 @@ except Exception as e:
         echo -e "${YELLOW}Starting data processing in background...${NC}"
         
         # Use nohup to keep the process running even if the parent is terminated
-        nohup poetry run python scripts/process_data.py > "$WORKSPACE_ROOT/logs/data_processing.log" 2>&1 &
+        nohup python3 scripts/process_data.py > "$WORKSPACE_ROOT/logs/data_processing.log" 2>&1 &
         DATA_PROCESS_PID=$!
         echo -e "${GREEN}Data processing started in background with PID: $DATA_PROCESS_PID${NC}"
         echo -e "${GREEN}Processing logs available at: $WORKSPACE_ROOT/logs/data_processing.log${NC}"
@@ -192,7 +181,7 @@ except Exception as e:
         echo -e "${YELLOW}Starting data scheduler with interval: ${DATA_UPDATE_INTERVAL}s${NC}"
         
         # Create a background task that runs the scheduler
-        nohup poetry run python scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$WORKSPACE_ROOT/logs/scheduler.log" 2>&1 &
+        nohup python3 scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$WORKSPACE_ROOT/logs/scheduler.log" 2>&1 &
         
         # Save the PID
         SCHEDULER_PID=$!

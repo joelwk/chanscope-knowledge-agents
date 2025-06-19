@@ -7,140 +7,25 @@ services:
     build:
       context: ..
       dockerfile: deployment/Dockerfile
-    volumes:
-      # Configuration files
-      - type: bind
-        source: ../.env
-        target: /app/.env
-        read_only: true
-      # Application code
-      - type: bind
-        source: ../api
-        target: /app/api
-        read_only: true
-      - type: bind
-        source: ../config
-        target: /app/config
-        read_only: true
-      - type: bind
-        source: ../knowledge_agents
-        target: /app/knowledge_agents
-        read_only: true
-      - type: volume
-        source: app_data
-        target: /app/data
-        read_only: false
-      - type: bind
-        source: ../tests
-        target: /app/tests
-        read_only: true
-      # Persistent volumes
-      - type: volume
-        source: poetry_cache
-        target: /home/nobody/.cache/pypoetry
-      - type: volume
-        source: poetry_virtualenvs
-        target: /app/.venv
-      - type: volume
-        source: app_logs
-        target: /app/logs
-      - type: volume
-        source: app_temp
-        target: /app/temp_files
-      - type: bind
-        source: ../scripts
-        target: /app/scripts
-        read_only: false
-    user: "nobody:nogroup"
-    env_file:
-      - ../.env
-    environment:
-      # Docker environment
-      - DOCKER_ENV=true
-      - PYTHONPATH=/app
-      - PYTHONUNBUFFERED=1
-      - FASTAPI_ENV=production
-      - FASTAPI_DEBUG=true
-      - REPLIT_ENV=false
-      - HOME=/app
-      - POETRY_CACHE_DIR=/home/nobody/.cache/pypoetry
-      - POETRY_VIRTUALENVS_IN_PROJECT=true
-      
-      # Data management settings
-      - DATA_RETENTION_DAYS=14
-      - ENABLE_DATA_SCHEDULER=false
-      - DATA_UPDATE_INTERVAL=3600
-      - AUTO_CHECK_DATA=false
-      - FORCE_DATA_REFRESH=false
-      - LOG_LEVEL=debug
-      
-      # API configuration
-      - API_PORT=8080
-      - HOST=0.0.0.0
-      - API_WORKERS=1
-      
-      # Test execution control (disabled by default in production)
-      - RUN_TESTS_ON_STARTUP=false
-      - TEST_MODE=false
-      - USE_MOCK_DATA=false
-      - SKIP_DATA_UPDATE=true
-      
-      # System Configuration
-      - TZ=UTC
-      - PYTHONOPTIMIZE=2
-      - PYTHONASYNCIODEBUG=0
-      - PYTHONWARNINGS=ignore
     ports:
-      - "8080:8080"
-    networks:
-      knowledge-net:
-        aliases:
-          - knowledge-api
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 300s
-    restart: always
-    stop_grace_period: 30s
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
-    deploy:
-      resources:
-        limits:
-          memory: 8G
-          cpus: '4'
-        reservations:
-          memory: 2G
-          cpus: '1'
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "3"
-        tag: "{{.Name}}"
-        labels: "production"
-        env: "FASTAPI_ENV,DOCKER_ENV"
+      - "${API_PORT:-80}:80"
+    volumes:
+      - ..:/app
+    environment:
+      - ENVIRONMENT=docker
+      # Add other environment variables here or use an env_file
+    command: ["python3", "-m", "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "80"]
 
-networks:
-  knowledge-net:
-    driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.19.0.0/16
-          gateway: 172.19.0.1
-    labels:
-      environment: production
+  # Example of another service, e.g., a scheduler
+  # scheduler:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   volumes:
+  #     - .:/app
+  #   command: ["bash", "scripts/docker_scheduler.sh"]
 
 volumes:
-  poetry_cache:
-    driver: local
-  poetry_virtualenvs:
-    driver: local
   app_data:
     driver: local
   app_logs:

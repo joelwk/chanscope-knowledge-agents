@@ -17,4 +17,16 @@ dist
 logs/*
 !logs/.gitkeep
 data/*
-!data/.gitkeep 
+!data/.gitkeep
+
+# Exclude virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Exclude Poetry cache and lock files (force fresh resolution)
+poetry.lock
+.poetry/
+~/.cache/pypoetry/
+~/.cache/poetry/ 

@@ -68,7 +68,7 @@ The deployment directory contains several important files:
 To deploy the application in production mode without running tests:
 
 ```bash
-docker-compose -f deployment/docker-compose.yml build
+docker-compose -f deployment/docker-compose.yml build --no-cache
 docker-compose -f deployment/docker-compose.yml up -d
 ```
 
@@ -162,26 +162,26 @@ The following commands are available for managing data:
 
 ```bash
 # Initial data processing
-poetry run python scripts/scheduled_update.py refresh
+python3 scripts/scheduled_update.py refresh
 
 # Force refresh all data
-poetry run python scripts/scheduled_update.py refresh --force-refresh
+python3 scripts/scheduled_update.py refresh --force-refresh
 
 # Check current data status
-poetry run python scripts/scheduled_update.py status
+python3 scripts/scheduled_update.py status
 
 # Regenerate specific components
-poetry run python scripts/scheduled_update.py refresh --force-refresh --skip-embeddings
-poetry run python scripts/scheduled_update.py embeddings
+python3 scripts/scheduled_update.py refresh --force-refresh --skip-embeddings
+python3 scripts/scheduled_update.py embeddings
 
 # Skip embedding generation during processing
-poetry run python scripts/scheduled_update.py refresh --skip-embeddings
+python3 scripts/scheduled_update.py refresh --skip-embeddings
 
 # Continuous scheduled updates (refreshes data hourly)
-poetry run python scripts/scheduled_update.py refresh --continuous --interval=3600
+python3 scripts/scheduled_update.py refresh --continuous --interval=3600
 
 # Continuous updates with forced stratification regeneration
-poetry run python scripts/scheduled_update.py refresh --continuous --force-refresh --interval=3600
+python3 scripts/scheduled_update.py refresh --continuous --force-refresh --interval=3600
 ```
 
 ### Understanding Data Refresh Behavior
@@ -212,7 +212,7 @@ The data processing pipeline has three main stages:
 
 For environments with regular data updates, it's recommended to use the continuous mode with force refresh to ensure stratified samples stay current:
 ```bash
-poetry run python scripts/scheduled_update.py refresh --continuous --force-refresh --interval=3600
+python3 scripts/scheduled_update.py refresh --continuous --force-refresh --interval=3600
 ```
 
 ### Data Processing Environment Variables
