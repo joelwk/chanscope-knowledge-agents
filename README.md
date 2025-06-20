@@ -1,7 +1,15 @@
-# Chanscope Retrieval
+# Chanscope Retrieval: Multi-Provider LLM Microservice for Information Intelligence
+
+## 🚀 What's New in v2.0
+
+- **Natural Language to SQL Query Engine**: Ask questions in plain English, get structured data responses
+- **Multi-Provider LLM Orchestration**: Seamlessly switch between OpenAI, Grok (X.AI), and Venice.AI
+- **Venice AI Character Support**: Leverage specialized AI personas for domain-specific analysis
+- **Enhanced Temporal Analysis**: Improved forecasting with time-aware query processing
+- **Production-Ready API**: RESTful endpoints with background processing and task management
 
 ## Overview
-An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice) for comprehensive social data analysis to extract actionable insights and patterns. The system provides a robust API layer that can be integrated with autonomous AI agents and agentic systems. It employs intelligent sampling techniques and a multi-stage analysis pipeline to process large volumes of 4chan and X data, enabling temporal analysis, cross-source verification, and predictive analytics.
+An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice) for comprehensive social data analysis to extract actionable insights and patterns. The system provides a robust API layer that can be integrated with autonomous AI agents and agentic systems. It employs intelligent sampling techniques and a multi-stage analysis pipeline to process large volumes of 4chan and X data, enabling temporal analysis, cross-reference verification, and predictive analytics.
 
 ### Platform Integration
 - **Traditional Deployment**: Docker-based local or server deployment for controlled environments
@@ -98,6 +106,10 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
 
 ## Core Architecture
 
+### Multi-Provider LLM Architecture
+
+The system implements a sophisticated multi-provider architecture that allows seamless switching between different LLM providers based on task requirements:
+
 - **Multi-Provider Architecture**
   - Singleton `KnowledgeAgent` provides unified access to different LLM providers
   - OpenAI (Primary): GPT-4o, text-embedding-3-large
@@ -179,6 +191,164 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
 - **LLMSQLGenerator**: Specialized component that converts natural language to SQL using a hybrid template/LLM approach
 
 For greater technical details and examples, refer to the documentation in the `docs/` directory and the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
+
+## Research Applications
+
+### Information Asymmetry Analysis
+Chanscope provides unique capabilities for studying information asymmetry in digital ecosystems:
+
+- **Cross-Platform Signal Detection**: Identify information that appears on 4chan before mainstream platforms
+- **Sentiment Divergence Analysis**: Measure differences in sentiment between anonymous and public discourse
+- **Information Flow Mapping**: Track how narratives evolve from fringe to mainstream channels
+- **Credibility Assessment**: Evaluate source reliability through cross-reference validation
+
+### Predictive Analytics & Forecasting
+The system's temporal analysis capabilities enable advanced forecasting:
+
+- **Event Prediction**: Identify early signals of emerging trends or events
+- **Cascade Modeling**: Predict information spread patterns based on historical data
+- **Anomaly Detection**: Flag unusual activity patterns that may indicate coordinated behavior
+- **Confidence Intervals**: Provide statistical bounds on predictions with reliability metrics
+
+### Document Processing Pipeline
+The system implements a sophisticated document processing pipeline optimized for large-scale text analysis:
+
+1. **Ingestion**: Pulls data from S3 with configurable retention periods
+2. **Preprocessing**: Applies text cleaning, contraction mapping, and normalization
+3. **Stratification**: Creates representative samples using time-based and category-based weighting
+4. **Embedding Generation**: Produces vector representations using selected LLM provider
+5. **Query Processing**: Performs semantic search with batch optimization
+
+## Multi-Provider Usage Examples
+
+### Natural Language Query with Provider Selection
+```bash
+# Use Venice AI for creative analysis
+curl -X POST "http://localhost/api/v1/nl_query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What are the emerging conspiracy theories about AI from the past week?",
+    "limit": 50,
+    "format_for_llm": true
+  }'
+
+# Response includes structured data optimized for LLM consumption
+{
+  "status": "success",
+  "query": "What are the emerging conspiracy theories...",
+  "sql": "SELECT * FROM complete_data WHERE...",
+  "data": [...],
+  "metadata": {
+    "providers_used": {
+      "enhancer": "openai",
+      "generator": "venice",
+      "character_slug": "pisagor-ai"
+    }
+  }
+}
+```
+
+### Background Processing for Large Queries
+```bash
+# Submit a complex analysis task
+curl -X POST "http://localhost/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Analyze sentiment shifts regarding cryptocurrency regulation over the past month",
+    "use_background": true,
+    "task_id": "crypto_sentiment_analysis",
+    "force_refresh": true,
+    "model_config": {
+      "chunk_provider": "grok",
+      "summary_provider": "openai"
+    }
+  }'
+
+# Check task status
+curl -X GET "http://localhost/api/v1/batch_status/crypto_sentiment_analysis"
+```
+
+### Provider-Specific Capabilities
+```python
+# Python example showing provider selection
+from knowledge_agents.model_ops import KnowledgeAgent, ModelProvider
+
+async def analyze_with_providers():
+    agent = await KnowledgeAgent.create()
+    
+    # Use OpenAI for embeddings (best for semantic search)
+    embeddings = await agent.generate_embeddings(
+        texts=documents,
+        provider=ModelProvider.OPENAI
+    )
+    
+    # Use Grok for chunking (optimized for social media)
+    chunks = await agent.chunk_text(
+        text=long_document,
+        provider=ModelProvider.GROK
+    )
+    
+    # Use Venice for creative summarization
+    summary = await agent.summarize(
+        chunks=chunks,
+        provider=ModelProvider.VENICE,
+        character_slug="research-analyst"
+    )
+```
+
+## Technical Implementation Details
+
+### Provider Configuration
+The system uses a hierarchical configuration approach:
+
+```yaml
+# config/prompt.yaml - Provider-specific settings
+providers:
+  openai:
+    models:
+      embedding: text-embedding-3-large
+      completion: gpt-4o
+    api_base: https://api.openai.com/v1
+  
+  grok:
+    models:
+      completion: grok-3
+      chunking: grok-3-mini
+    api_base: https://api.x.ai/v1
+  
+  venice:
+    models:
+      completion: dolphin-2.9.2-qwen2-72b
+      chunking: deepseek-r1-671b
+    api_base: https://api.venice.ai/api/v1
+    character_slugs:
+      - pisagor-ai
+      - research-analyst
+      - data-scientist
+```
+
+### Singleton Pattern for Resource Management
+```python
+# The KnowledgeAgent implements a thread-safe singleton pattern
+class KnowledgeAgent:
+    _instance = None
+    _lock = asyncio.Lock()
+    
+    @classmethod
+    async def create(cls):
+        async with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+                await cls._instance._initialize()
+            return cls._instance
+```
+
+### Storage Abstraction Layer
+The system implements environment-aware storage backends:
+
+- **Replit**: PostgreSQL (complete data), Key-Value (samples), Object Storage (embeddings)
+- **Docker/Local**: File-based storage with CSV, NPZ, and JSON formats
+- **Process Locks**: Prevents duplicate processing across environments
 
 ## Analysis Capabilities
 
@@ -430,6 +600,17 @@ The project supports multiple AI model providers:
 ## Environment Variables
 For a complete and up-to-date list of environment variables, see [.env.template](.env.template)
 
+### Core API Configuration
+- `OPENAI_API_KEY`: Primary provider for embeddings and completions (Required)
+- `GROK_API_KEY`: X.AI provider for social media-optimized processing (Optional)
+- `VENICE_API_KEY`: Venice.AI provider for specialized analysis (Optional)
+- `VENICE_CHARACTER_SLUG`: AI character for domain-specific analysis (Default: pisagor-ai)
+
+### AWS Configuration
+- `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`: For S3 data access (Required)
+- `S3_BUCKET`: Bucket name for data storage (Default: chanscope-data)
+- `S3_BUCKET_PREFIX`: Path prefix within bucket (Default: data/)
+
 ### Data Processing Control Variables
 - `AUTO_CHECK_DATA`: Enable/disable automatic data checking on startup (defaults to true)
 - `CHECK_EXISTING_DATA`: Check if data already exists in database before processing (defaults to true)
@@ -437,6 +618,21 @@ For a complete and up-to-date list of environment variables, see [.env.template]
 - `SKIP_EMBEDDINGS`: Skip embedding generation during data processing (defaults to false)
 - `DATA_RETENTION_DAYS`: Number of days to retain data (defaults to 14)
 - `DATA_UPDATE_INTERVAL`: How often to update data in seconds (defaults to 86400, once per day)
+
+### Model Provider Configuration
+- `DEFAULT_EMBEDDING_PROVIDER`: Provider for embedding generation (Default: openai)
+- `DEFAULT_CHUNK_PROVIDER`: Provider for text chunking (Default: openai)
+- `DEFAULT_SUMMARY_PROVIDER`: Provider for summarization (Default: openai)
+- `OPENAI_MODEL`: OpenAI model for completions (Default: gpt-4o)
+- `GROK_MODEL`: Grok model selection (Default: grok-3)
+- `VENICE_MODEL`: Venice model selection (Default: dolphin-2.9.2-qwen2-72b)
+
+### Processing Configuration
+- `EMBEDDING_BATCH_SIZE`: Batch size for embedding generation (Default: 50)
+- `CHUNK_BATCH_SIZE`: Batch size for text chunking (Default: 5000)
+- `MAX_WORKERS`: Maximum concurrent workers (Default: 4)
+- `CACHE_TTL`: Cache time-to-live in seconds (Default: 3600)
+- `USE_BATCHING`: Enable batch processing optimization (Default: true)
 
 ## Test Data Generation
 
@@ -458,10 +654,16 @@ export FILTER_DATE=2024-04-01  # Include data from April 2024 onwards
 ```
 
 ## References
-- Data Gathering Lambda: [chanscope-lambda](https://github.com/joelwk/chanscope-lambda)
-- Original Chanscope R&D: [Chanscope](https://github.com/joelwk/chanscope)
-- R&D Sandbox Repository: [knowledge-agents](https://github.com/joelwk/knowledge-agents)
-- Inspiration for Prompt Engineering Approach: [Temporal-Aware Language Models for Temporal Knowledge Graph Question Answering](https://arxiv.org/pdf/2410.18959) - Used for designing temporal-aware prompts and multimodal forecasting capabilities
+- **Data Gathering Lambda**: [chanscope-lambda](https://github.com/joelwk/chanscope-lambda) - Serverless data collection pipeline
+- **Original Chanscope R&D**: [Chanscope](https://github.com/joelwk/chanscope) - Research foundation and methodology
+- **R&D Sandbox Repository**: [knowledge-agents](https://github.com/joelwk/knowledge-agents) - Experimental features and prototypes
+- **Multi-Provider LLM Frameworks**: 
+  - [OpenAI API](https://platform.openai.com/docs) - Primary embedding and completion provider
+  - [Grok API](https://docs.x.ai/) - Social media-optimized language models
+  - [Venice.AI](https://venice.ai/docs) - Specialized AI characters and personas
+- **Research Papers**:
+  - [Temporal-Aware Language Models for Temporal Knowledge Graph Question Answering](https://arxiv.org/pdf/2410.18959) - Temporal prompt engineering approach
+  - Information asymmetry analysis methodologies applied to digital ecosystems
 
 ### Data Processing Commands
 

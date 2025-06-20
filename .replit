@@ -1,6 +1,6 @@
 modules = ["python-3.11", "postgresql-16"]
 hidden = [".pythonlibs"]
-run = "echo 'Starting Uvicorn server...' && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & sleep 5 && bash scripts/replit_init.sh"
+run = "bash scripts/replit_init.sh && echo 'Starting Uvicorn server...' && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info"
 entrypoint = "api/app.py"
 
 # =============================================
@@ -8,6 +8,7 @@ entrypoint = "api/app.py"
 # =============================================
 [nix]
 channel = "stable-23_11"
+packages = ["arrow-cpp", "cargo", "glibcLocales", "libiconv", "libxcrypt", "libyaml", "openssl", "pgadmin4", "pkg-config", "rustc", "xsimd"]
 
 # =============================================
 # Environment Variables
@@ -38,7 +39,7 @@ USE_MOCK_EMBEDDINGS = "false"
 # Deployment Configuration
 # =============================================
 [deployment]
-run = "echo 'Starting Uvicorn server...' && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & sleep 5 && bash scripts/replit_init.sh"
+run = "bash scripts/replit_init.sh && echo 'Starting Uvicorn server...' && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info"
 deploymentTarget = "cloudrun"
 
 # =============================================

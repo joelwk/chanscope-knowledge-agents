@@ -9,6 +9,9 @@ NC='\033[0m' # No Color
 
 echo -e "${YELLOW}Starting Replit initialization script...${NC}"
 
+# Ensure local packages take precedence over system packages
+export PYTHONPATH="$PWD/.pythonlibs/lib/python3.11/site-packages:${PYTHONPATH:-}"
+
 # ==============================================================================
 # FOREGROUND INITIALIZATION: Ensure environment and dependencies are ready.
 # ==============================================================================
@@ -94,17 +97,17 @@ try:
         aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
         region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
     )
-    
+
     # Try listing objects to verify credentials
     bucket = os.environ.get('S3_BUCKET')
     prefix = os.environ.get('S3_BUCKET_PREFIX', 'data/')
     response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
-    
+
     if 'Contents' in response:
         print(f'AWS credentials verified successfully, found objects in {bucket}/{prefix}')
     else:
         print(f'AWS credentials verified but no objects found in {bucket}/{prefix}')
-        
+
 except Exception as e:
     print(f'Error verifying AWS credentials: {e}')
 "
@@ -124,11 +127,11 @@ import sys
 sys.path.insert(0, '.')
 try:
     from scripts.utils.processing_lock import ProcessLockManager
-    
+
     # Create lock manager and check status
     lock_manager = ProcessLockManager()
     needs_init, marker_data = lock_manager.check_initialization_status()
-    
+
     if not needs_init and marker_data:
         completion_time = marker_data.get('completion_time', 'unknown time')
         print(f'SKIP: Previous initialization completed successfully at {completion_time}')
@@ -138,7 +141,7 @@ try:
             print(f'RUN: Previous initialization failed with error: {error}')
         else:
             print('RUN: Initialization needed')
-            
+
 except ImportError as e:
     print(f'RUN: Could not import ProcessLockManager: {e}')
 except Exception as e:
@@ -154,7 +157,7 @@ except Exception as e:
     else
         echo -e "${YELLOW}${PROCESS_CHECK#RUN: }${NC}"
         echo -e "${YELLOW}Starting data processing in background...${NC}"
-        
+
         # Use nohup to keep the process running even if the parent is terminated
         nohup python3 scripts/process_data.py > "$WORKSPACE_ROOT/logs/data_processing.log" 2>&1 &
         DATA_PROCESS_PID=$!
@@ -168,25 +171,25 @@ except Exception as e:
 
     if [ "$ENABLE_DATA_SCHEDULER" = "true" ]; then
         echo -e "${YELLOW}Setting up the data scheduler...${NC}"
-        
+
         # Check if scheduler is already running
         SCHEDULER_PID_FILE="$WORKSPACE_ROOT/data/.scheduler_pid"
-        
+
         if [ -f "$SCHEDULER_PID_FILE" ]; then
             echo -e "${YELLOW}Cleaning up previous scheduler instance...${NC}"
             rm -f "$SCHEDULER_PID_FILE"
         fi
-        
+
         # Start the scheduler in background using nohup
         echo -e "${YELLOW}Starting data scheduler with interval: ${DATA_UPDATE_INTERVAL}s${NC}"
-        
+
         # Create a background task that runs the scheduler
         nohup python3 scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$WORKSPACE_ROOT/logs/scheduler.log" 2>&1 &
-        
+
         # Save the PID
         SCHEDULER_PID=$!
         echo $SCHEDULER_PID > "$SCHEDULER_PID_FILE"
-        
+
         echo -e "${GREEN}Data scheduler started with PID: $SCHEDULER_PID${NC}"
         echo -e "${GREEN}Scheduler will update data every ${DATA_UPDATE_INTERVAL} seconds${NC}"
         echo -e "${YELLOW}Scheduler logs available at: $WORKSPACE_ROOT/logs/scheduler.log${NC}"
