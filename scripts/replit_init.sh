@@ -51,6 +51,7 @@ echo -e "${YELLOW}Starting background initialization tasks...${NC}"
     echo -e "${YELLOW}Initializing PostgreSQL schema...${NC}"
     if [ -n "$DATABASE_URL" ] || [ -n "$PGHOST" ]; then
         python3 -c "
+        
 import asyncio
 from config.replit import PostgresDB
 
