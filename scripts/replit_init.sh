@@ -19,7 +19,7 @@ export PYTHONPATH="$PWD/.pythonlibs/lib/python3.11/site-packages:${PYTHONPATH:-}
 # Install dependencies synchronously before starting background tasks
 echo -e "${YELLOW}Installing/updating project dependencies with pip...${NC}"
 if [ -f "requirements.txt" ]; then
-    pip install -r requirements.txt
+    pip install --no-cache-dir --force-reinstall -r requirements.txt
     echo -e "${GREEN}Dependencies installed successfully.${NC}"
 else
     echo -e "${RED}Error: requirements.txt not found!${NC}"
@@ -51,7 +51,6 @@ echo -e "${YELLOW}Starting background initialization tasks...${NC}"
     echo -e "${YELLOW}Initializing PostgreSQL schema...${NC}"
     if [ -n "$DATABASE_URL" ] || [ -n "$PGHOST" ]; then
         python3 -c "
-        
 import asyncio
 from config.replit import PostgresDB
 
