@@ -39,7 +39,7 @@ chmod +x scripts/test_chanscope_implementation.sh
 ./scripts/test_chanscope_implementation.sh
 
 # On Windows
-poetry run python scripts/scheduled_update.py
+python scripts/scheduled_update.py
 ```
 
 2. Test via the API:

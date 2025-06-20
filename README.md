@@ -444,10 +444,10 @@ For testing purposes when real data is unavailable or outdated, you can generate
 
 ```bash
 # Generate 1000 rows of synthetic data with timestamps in the past 10 days
-poetry run python scripts/generate_test_data.py
+python scripts/generate_test_data.py
 
 # Generate 5000 rows with specific date range and regenerate stratified sample & embeddings
-poetry run python scripts/generate_test_data.py --num-rows 5000 --start-date 2025-03-01T00:00:00 --end-date 2025-03-30T23:59:59 --regenerate-stratified --regenerate-embeddings
+python scripts/generate_test_data.py --num-rows 5000 --start-date 2025-03-01T00:00:00 --end-date 2025-03-30T23:59:59 --regenerate-stratified --regenerate-embeddings
 ```
 
 You can also adjust the `FILTER_DATE` environment variable to include older test data:
@@ -468,20 +468,20 @@ export FILTER_DATE=2024-04-01  # Include data from April 2024 onwards
 Basic data processing:
 ```bash
 # Process all data stages
-poetry run python scripts/process_data.py
+python scripts/process_data.py
 
 # Check current data status (includes initialization status)
-poetry run python scripts/process_data.py --check
+python scripts/process_data.py --check
 
 # Force refresh all data
-poetry run python scripts/process_data.py --force-refresh
+python scripts/process_data.py --force-refresh
 
 # Regenerate specific components
-poetry run python scripts/process_data.py --regenerate --stratified-only  # Only regenerate stratified sample
-poetry run python scripts/process_data.py --regenerate --embeddings-only  # Only regenerate embeddings
+python scripts/process_data.py --regenerate --stratified-only  # Only regenerate stratified sample
+python scripts/process_data.py --regenerate --embeddings-only  # Only regenerate embeddings
 
 # Advanced options
-poetry run python scripts/process_data.py --ignore-lock  # Bypass process locks (use with caution)
+python scripts/process_data.py --ignore-lock  # Bypass process locks (use with caution)
 ```
 
 ### Process Lock Management
@@ -490,11 +490,11 @@ The system includes a robust process lock management mechanism to prevent duplic
 
 ```bash
 # Test process lock functionality
-poetry run python scripts/test_process_lock.py --all
+python scripts/test_process_lock.py --all
 
 # Test specific lock features
-poetry run python scripts/test_process_lock.py --test-contention  # Test lock contention between processes
-poetry run python scripts/test_process_lock.py --test-marker  # Test initialization markers
+python scripts/test_process_lock.py --test-contention  # Test lock contention between processes
+python scripts/test_process_lock.py --test-marker  # Test initialization markers
 ```
 
 In Replit environments, the lock manager uses Object Storage for persistence across restarts, while in Docker/local environments it uses file-based locks. This ensures that:

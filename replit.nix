@@ -8,17 +8,13 @@
     pkgs.arrow-cpp
     pkgs.glibcLocales
     pkgs.libxcrypt
-    pkgs.python310
-    pkgs.poetry
+    pkgs.python311
     pkgs.nodePackages.pyright
     pkgs.black
-    pkgs.python310Packages.pip
-    pkgs.python310Packages.poetry-core
-    pkgs.python310Packages.virtualenv
+    pkgs.python311Packages.pip
+    pkgs.python311Packages.virtualenv
   ];
   env = {
-    POETRY_VIRTUALENVS_IN_PROJECT = "true";
-    POETRY_VIRTUALENVS_CREATE = "true";
-    PYTHONPATH = "${pkgs.python310}/lib/python3.10/site-packages";
+    PYTHONPATH = "${pkgs.python311}/lib/python3.11/site-packages";
   };
 }

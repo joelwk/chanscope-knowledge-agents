@@ -60,7 +60,7 @@ For production environments, schedule regular forced refreshes to ensure your st
 
 ```bash
 # Refresh data and regenerate stratified sample daily
-poetry run python scripts/scheduled_update.py refresh --force-refresh --continuous --interval=86400
+python scripts/scheduled_update.py refresh --force-refresh --continuous --interval=86400
 ```
 
 ### 2. Two-Stage Refresh for Resource Constraints
@@ -69,10 +69,10 @@ In memory-constrained environments, use a two-stage approach:
 
 ```bash
 # First: Regenerate stratified sample only
-poetry run python scripts/scheduled_update.py refresh --force-refresh --skip-embeddings
+python scripts/scheduled_update.py refresh --force-refresh --skip-embeddings
 
 # Later (during off-peak hours): Generate embeddings
-poetry run python scripts/scheduled_update.py embeddings
+python scripts/scheduled_update.py embeddings
 ```
 
 ### 3. Monitoring Stratification Age
@@ -80,7 +80,7 @@ poetry run python scripts/scheduled_update.py embeddings
 Check the age of your stratified sample:
 
 ```bash
-poetry run python scripts/scheduled_update.py status
+python scripts/scheduled_update.py status
 ```
 
 Look for the timestamp in the stratified metadata file to determine when it was last regenerated. A warning sign is when the timestamp is significantly older than your most recent data.
@@ -92,8 +92,8 @@ For advanced use cases, consider implementing different refresh intervals:
 ```bash
 # Process new data hourly, regenerate stratified sample daily
 # Note: This requires a custom implementation using scheduled tasks
-0 * * * * poetry run python scripts/scheduled_update.py refresh
-0 0 * * * poetry run python scripts/scheduled_update.py refresh --force-refresh
+0 * * * * python scripts/scheduled_update.py refresh
+0 0 * * * python scripts/scheduled_update.py refresh --force-refresh
 ```
 
 ## Troubleshooting

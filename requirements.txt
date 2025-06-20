@@ -1,5 +1,5 @@
 # Chanscope Knowledge Agent Requirements
-# Python 3.10+ required
+# Python 3.11+ required
 
 # Core Web Frameworks
 fastapi>=0.115.0
