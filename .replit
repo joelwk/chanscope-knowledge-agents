@@ -1,16 +1,12 @@
-# The 'modules' key is deprecated. System dependencies are now managed in replit.nix.
-# modules = ["python-3.11", "postgresql-16"]
-hidden = [".pythonlibs", "replit.nix"]
-# The primary run command for the development environment.
-# It's recommended to run the `initialize` command from the Commands tab once, then use this Run command.
-run = "python3 -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info --reload"
+modules = ["python-3.11", "postgresql-16"]
+hidden = [".pythonlibs"]
+run = "echo 'Starting Uvicorn server...' && poetry run uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & sleep 5 && bash scripts/replit_init.sh"
 entrypoint = "api/app.py"
 
 # =============================================
 # Nix Configuration
 # =============================================
 [nix]
-# The Nix channel to use. All package definitions are now in the replit.nix file.
 channel = "stable-23_11"
 
 # =============================================
@@ -42,11 +38,7 @@ USE_MOCK_EMBEDDINGS = "false"
 # Deployment Configuration
 # =============================================
 [deployment]
-# The build command runs once before the application starts.
-build = "pip install -r requirements.txt"
-# The run command for deployment. It's a simple, foreground process
-# which is more robust for Replit's health checker.
-run = ["python3", "-m", "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "80", "--log-level", "info"]
+run = "echo 'Starting Uvicorn server...' && poetry run uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & sleep 5 && bash scripts/replit_init.sh"
 deploymentTarget = "cloudrun"
 
 # =============================================
@@ -94,11 +86,10 @@ guessImports = true
 language = "python3"
 
 # =============================================
-# Interpreter Configuration (DEPRECATED)
+# Interpreter Configuration
 # =============================================
-# This section is deprecated and no longer used by Replit.
-# [interpreter]
-# command = ["python3", "-u"]
+[interpreter]
+command = ["python3", "-u"]
 
 [workflows]
 
@@ -127,7 +118,7 @@ author = 38779469
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python3 scripts/check_replit_db.py"
+args = "poetry run python scripts/check_replit_db.py"
 
 [server]
 host = "0.0.0.0"
@@ -136,19 +127,19 @@ port = 80
 # Commands for Replit interface
 [commands.test]
 description = "Run tests in Replit environment"
-command = "bash scripts/run_tests.sh --env=replit"
+command = "poetry run bash scripts/test.sh replit"
 
 [commands.run-api]
 description = "Run the API server"
-command = "python3 -m uvicorn api.app:app --host 0.0.0.0 --port 80"
+command = "poetry run python -m uvicorn api.app:app --host 0.0.0.0 --port 80"
 
 [commands.update-data]
 description = "Run manual data update"
-command = "python3 scripts/scheduled_update.py refresh"
+command = "poetry run python scripts/scheduled_update.py refresh"
 
 [commands.check-db]
 description = "Check Replit database connectivity"
-command = "python3 scripts/check_replit_db.py"
+command = "poetry run python scripts/check_replit_db.py"
 
 [commands.initialize]
 description = "Initialize Replit environment"
@@ -156,32 +147,32 @@ command = "bash scripts/replit_init.sh"
 
 [commands.process-data]
 description = "Process data stratification and embeddings"
-command = "python3 scripts/process_data.py"
+command = "poetry run python scripts/process_data.py"
 
 [commands.check-data-status]
 description = "Check the status of data processing pipeline"
-command = "python3 scripts/process_data.py --check"
+command = "poetry run python scripts/process_data.py --check"
 
 [commands.force-data-refresh]
 description = "Force a complete data refresh including stratification and embeddings"
-command = "python3 scripts/process_data.py --force-refresh"
+command = "poetry run python scripts/process_data.py --force-refresh"
 
 [commands.test-stratification]
 description = "Test the stratification and embedding processes directly"
-command = "python3 scripts/test_stratification.py"
+command = "poetry run python scripts/test_stratification.py"
 
 [commands.test-stratification-only]
 description = "Test only the stratification process"
-command = "python3 scripts/test_stratification.py --stratification-only"
+command = "poetry run python scripts/test_stratification.py --stratification-only"
 
 [commands.test-embeddings-only]
 description = "Test only the embedding generation process"
-command = "python3 scripts/test_stratification.py --embeddings-only"
+command = "poetry run python scripts/test_stratification.py --embeddings-only"
 
 # Scheduler Commands
 [commands.scheduler-start]
 description = "Start the data scheduler"
-command = "python3 scripts/scheduled_update.py refresh --continuous --interval=3600"
+command = "poetry run python scripts/scheduled_update.py refresh --continuous --interval=3600"
 
 [commands.scheduler-status]
 description = "Check the status of the data scheduler"
