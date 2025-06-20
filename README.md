@@ -1,7 +1,5 @@
 # Chanscope Retrieval: Multi-Provider LLM Microservice for Information Intelligence
 
-## 🚀 What's New in v2.0
-
 - **Natural Language to SQL Query Engine**: Ask questions in plain English, get structured data responses
 - **Multi-Provider LLM Orchestration**: Seamlessly switch between OpenAI, Grok (X.AI), and Venice.AI
 - **Venice AI Character Support**: Leverage specialized AI personas for domain-specific analysis
