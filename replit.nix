@@ -21,6 +21,5 @@
   env = {
     # Put local wheels first, fall back to the Nix store last
     PYTHONPATH = ".pythonlibs/lib/python3.11/site-packages:${pkgs.python311}/lib/python3.11/site-packages";
-    
   };
 }
