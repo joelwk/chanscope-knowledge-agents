@@ -1,7 +1,7 @@
 # Chanscope Retrieval: Multi-Provider LLM Microservice for Information Intelligence
 
 - **Natural Language to SQL Query Engine**: Ask questions in plain English, get structured data responses
-- **Multi-Provider LLM Orchestration**: Seamlessly switch between OpenAI, Grok (X.AI), and Venice.AI
+- **Multi-Provider LLM Orchestration**: Seamlessly switch between OpenAI, Grok (X.AI), Venice.AI, and OpenRouter
 - **Venice AI Character Support**: Leverage specialized AI personas for domain-specific analysis
 - **Enhanced Temporal Analysis**: Improved forecasting with time-aware query processing
 - **Production-Ready API**: RESTful endpoints with background processing and task management
@@ -113,6 +113,7 @@ The system implements a sophisticated multi-provider architecture that allows se
   - OpenAI (Primary): GPT-4o, text-embedding-3-large
   - Grok (Optional): grok-3, grok-3-mini
   - Venice (Optional): dolphin-2.9.2-qwen2-72b, deepseek-r1-671b
+  - OpenRouter (Optional): proxy access to multiple models
 
 - **Storage Abstraction Layer**
   - Abstract interfaces: `CompleteDataStorage`, `StratifiedSampleStorage`, `EmbeddingStorage`, `StateManager`
@@ -323,6 +324,11 @@ providers:
       - pisagor-ai
       - research-analyst
       - data-scientist
+  openrouter:
+    models:
+      completion: gpt-3.5-turbo
+      chunking: gpt-3.5-turbo
+    api_base: https://openrouter.ai/api/v1
 ```
 
 ### Singleton Pattern for Resource Management
@@ -672,6 +678,7 @@ The project supports multiple AI model providers:
 - **OpenAI** (Required): Default provider for both completions and embeddings
 - **Grok (X.AI)** (Optional): Alternative provider for completions and chunking
 - **Venice.AI** (Optional): Additional model provider for completion and chunking
+- **OpenRouter** (Optional): Unified gateway supporting various models
 
 ## Documentation
 
@@ -689,6 +696,7 @@ For a complete and up-to-date list of environment variables, see [.env.template]
 - `OPENAI_API_KEY`: Primary provider for embeddings and completions (Required)
 - `GROK_API_KEY`: X.AI provider for social media-optimized processing (Optional)
 - `VENICE_API_KEY`: Venice.AI provider for specialized analysis (Optional)
+- `OPENROUTER_API_KEY`: OpenRouter gateway key (Optional)
 - `VENICE_CHARACTER_SLUG`: AI character for domain-specific analysis (Default: pisagor-ai)
 
 ### AWS Configuration
@@ -746,6 +754,7 @@ export FILTER_DATE=2024-04-01  # Include data from April 2024 onwards
   - [OpenAI API](https://platform.openai.com/docs) - Primary embedding and completion provider
   - [Grok API](https://docs.x.ai/) - Social media-optimized language models
   - [Venice.AI](https://venice.ai/docs) - Specialized AI characters and personas
+  - [OpenRouter](https://openrouter.ai/docs) - Aggregated model gateway
 - **Research Papers**:
   - [Temporal-Aware Language Models for Temporal Knowledge Graph Question Answering](https://arxiv.org/pdf/2410.18959) - Temporal prompt engineering approach
   - Information asymmetry analysis methodologies applied to digital ecosystems

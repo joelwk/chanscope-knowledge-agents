@@ -274,6 +274,33 @@ class Config:
         return model_settings.get('venice_character_slug')
 
     @classmethod
+    def get_openrouter_api_key(cls) -> Optional[str]:
+        """Get OpenRouter API key from settings."""
+        model_settings = cls.get_model_settings()
+        return model_settings.get('openrouter_api_key')
+
+    @classmethod
+    def get_openrouter_model(cls) -> Optional[str]:
+        """Get OpenRouter model from settings."""
+        model_settings = cls.get_model_settings()
+        return model_settings.get('openrouter_model')
+
+    @classmethod
+    def get_openrouter_chunk_model(cls) -> Optional[str]:
+        """Get OpenRouter chunk model with fallback."""
+        model_settings = cls.get_model_settings()
+        chunk_model = model_settings.get('openrouter_chunk_model')
+        if not chunk_model:
+            return cls.get_openrouter_model()
+        return chunk_model
+
+    @classmethod
+    def get_openrouter_embedding_model(cls) -> str:
+        """Get OpenRouter embedding model."""
+        model_settings = cls.get_model_settings()
+        return model_settings.get('openrouter_embedding_model', 'text-embedding-3-large')
+
+    @classmethod
     def get_default_embedding_provider(cls) -> str:
         """Get default embedding provider from settings."""
         model_settings = cls.get_model_settings()

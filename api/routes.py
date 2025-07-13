@@ -360,6 +360,12 @@ async def provider_health(
                 "provider": provider,
                 "latency_ms": round((time.time() - start_time) * 1000, 2)
             }
+        elif provider_enum == ModelProvider.OPENROUTER:
+            response = {
+                "status": "healthy",
+                "provider": provider,
+                "latency_ms": round((time.time() - start_time) * 1000, 2)
+            }
         else:
             raise ValidationError(
                 message=f"Unsupported provider: {provider}",

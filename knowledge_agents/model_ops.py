@@ -54,6 +54,7 @@ class ModelProvider(Enum):
     OPENAI = "openai"
     GROK = "grok"
     VENICE = "venice"
+    OPENROUTER = "openrouter"
 
     @classmethod
     def from_str(cls, value: str, **kwargs) -> 'ModelProvider':
@@ -86,7 +87,8 @@ class ModelProvider(Enum):
 _client_locks = {
     ModelProvider.OPENAI: asyncio.Lock(),
     ModelProvider.GROK: asyncio.Lock(),
-    ModelProvider.VENICE: asyncio.Lock()
+    ModelProvider.VENICE: asyncio.Lock(),
+    ModelProvider.OPENROUTER: asyncio.Lock()
 }
 
 class ModelOperation(str, Enum):
@@ -447,6 +449,11 @@ class KnowledgeAgent:
                     api_key=venice_key,
                     base_url=base_settings.get('venice_api_base'),
                 )
+            elif provider == ModelProvider.OPENROUTER:
+                return AsyncOpenAI(
+                    api_key=Config.get_openrouter_api_key(),
+                    base_url=base_settings.get('openrouter_api_base') or None,
+                )
             else:
                 raise ModelProviderError(f"Unsupported provider: {provider}")
         except Exception as e:
@@ -531,11 +538,27 @@ class KnowledgeAgent:
             except Exception as e:
                 logger.error(f"Failed to initialize Venice client: {str(e)}")
 
+        # Initialize OpenRouter client if configured
+        openrouter_key = Config.get_openrouter_api_key()
+        if openrouter_key:
+            try:
+                clients[ModelProvider.OPENROUTER.value] = AsyncOpenAI(
+                    api_key=openrouter_key,
+                    base_url=base_settings['model'].get('openrouter_api_base') or None,
+                    max_retries=5
+                )
+                logger.info("OpenRouter client initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize OpenRouter client: {str(e)}")
+
         if not clients:
-            raise ModelConfigurationError("No API providers configured. Please set at least one of the following in settings:\n"
-                           "- OPENAI_API_KEY (Required)\n"
-                           "- GROK_API_KEY (Optional)\n"
-                           "- VENICE_API_KEY (Optional)")
+            raise ModelConfigurationError(
+                "No API providers configured. Please set at least one of the following in settings:\n"
+                "- OPENAI_API_KEY (Required)\n"
+                "- GROK_API_KEY (Optional)\n"
+                "- VENICE_API_KEY (Optional)\n"
+                "- OPENROUTER_API_KEY (Optional)"
+            )
         return clients
 
     # Add helper method to safely get environment variables
@@ -560,6 +583,13 @@ class KnowledgeAgent:
                 if chunk_model:
                     return chunk_model
             return os.environ.get('VENICE_MODEL', 'deepseek-r1-671b')
+        elif provider_name.lower() == 'openrouter':
+            if operation_name and operation_name.lower() == 'chunk':
+                return os.environ.get('OPENROUTER_CHUNK_MODEL') or os.environ.get('OPENROUTER_MODEL', 'gpt-3.5-turbo')
+            elif operation_name and operation_name.lower() == 'embedding':
+                return os.environ.get('OPENROUTER_EMBEDDING_MODEL', 'text-embedding-3-large')
+            else:
+                return os.environ.get('OPENROUTER_MODEL', 'gpt-3.5-turbo')
         return None
 
     def _get_model_name(self, provider: ModelProvider, operation: ModelOperation) -> str:
@@ -596,6 +626,16 @@ class KnowledgeAgent:
                     except AttributeError as e:
                         logger.error(f"Error getting venice_chunk_model: {e}, falling back to general model")
                 return Config.get_venice_model()
+            elif provider == ModelProvider.OPENROUTER:
+                if operation == ModelOperation.EMBEDDING:
+                    return Config.get_openrouter_embedding_model()
+                elif operation == ModelOperation.CHUNK_GENERATION:
+                    try:
+                        return Config.get_openrouter_chunk_model()
+                    except AttributeError as e:
+                        logger.error(f"Error getting openrouter_chunk_model: {e}, falling back to general model")
+                        return Config.get_openrouter_model()
+                return Config.get_openrouter_model()
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
         except Exception as e:
@@ -620,6 +660,8 @@ class KnowledgeAgent:
                 return 'grok-2-1212'
             elif provider == ModelProvider.VENICE:
                 return 'deepseek-r1-671b'
+            elif provider == ModelProvider.OPENROUTER:
+                return 'gpt-3.5-turbo'
             raise ValueError(f"No model available for provider {provider}")
 
     def _prepare_model_params(self, provider: ModelProvider, base_params: Dict[str, Any]) -> Dict[str, Any]:
@@ -629,7 +671,7 @@ class KnowledgeAgent:
         we only include supported parameters for each provider.
         
         Args:
-            provider: The model provider (OpenAI, Grok, Venice)
+            provider: The model provider (OpenAI, Grok, Venice, OpenRouter)
             base_params: Base parameters including model and messages
             
         Returns:
@@ -657,6 +699,12 @@ class KnowledgeAgent:
             })
         elif provider == ModelProvider.VENICE:
             # Venice parameters
+            request_params.update({
+                "temperature": request_params.get("temperature", 0.3),
+                "presence_penalty": request_params.get("presence_penalty", 0.2),
+                "frequency_penalty": request_params.get("frequency_penalty", 0.2)
+            })
+        elif provider == ModelProvider.OPENROUTER:
             request_params.update({
                 "temperature": request_params.get("temperature", 0.3),
                 "presence_penalty": request_params.get("presence_penalty", 0.2),
