@@ -80,7 +80,7 @@ except Exception as e:
 
     # Verify services
     echo -e "${YELLOW}Verifying services...${NC}"
-    
+
     # Verify Replit Key-Value store
     python3 -c "
 try:
@@ -119,7 +119,7 @@ except Exception as e:
 
     # Data processing - only if explicitly requested
     echo -e "${YELLOW}Checking if data processing is needed...${NC}"
-    
+
     # Use a more lightweight check for data processing needs
     SHOULD_PROCESS_DATA=$(python3 -c "
 import sys
@@ -160,13 +160,13 @@ else:
     if [ "$ENABLE_DATA_SCHEDULER" = "true" ]; then
         DATA_UPDATE_INTERVAL="${DATA_UPDATE_INTERVAL:-3600}"
         echo -e "${YELLOW}Starting data scheduler with interval: ${DATA_UPDATE_INTERVAL}s${NC}"
-        
+
         # Clean up any existing scheduler
         SCHEDULER_PID_FILE="$PWD/data/.scheduler_pid"
         if [ -f "$SCHEDULER_PID_FILE" ]; then
             rm -f "$SCHEDULER_PID_FILE"
         fi
-        
+
         # Start scheduler
         nohup python3 scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$PWD/logs/scheduler.log" 2>&1 &
         SCHEDULER_PID=$!
@@ -177,7 +177,7 @@ else:
     # Mark completion
     echo "Background initialization completed at $(date)" > "$PWD/data/.replit_init_complete"
     echo -e "${GREEN}Background initialization completed successfully!${NC}"
-    
+
 ) > "$PWD/logs/replit_init_background.log" 2>&1 &
 
 BACKGROUND_PID=$!

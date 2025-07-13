@@ -81,14 +81,14 @@ try:
     # Just check if the app module exists and can be imported
     from api.app import app
     print('✓ FastAPI app can be imported')
-    
+
     # Check if it has the required structure
     if hasattr(app, 'include_router'):
         print('✓ FastAPI app structure is valid')
     else:
         print('❌ FastAPI app missing required structure')
         sys.exit(1)
-        
+
 except ImportError as e:
     print(f'❌ Cannot import FastAPI app: {e}')
     sys.exit(1)
@@ -138,7 +138,7 @@ sys.path.insert(0, '.')
 
 try:
     from api.app import app
-    
+
     # Check if the root endpoint is defined
     routes = [route.path for route in app.routes]
     if '/' in routes:
@@ -146,7 +146,7 @@ try:
     else:
         print('❌ Root health check endpoint not found')
         sys.exit(1)
-        
+
 except Exception as e:
     print(f'❌ Error checking health endpoint: {e}')
     sys.exit(1)
