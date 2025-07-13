@@ -19,16 +19,16 @@ DEPLOYMENT_ENV = "replit"
 API_PORT = "80"
 API_HOST = "0.0.0.0"
 LOG_LEVEL = "INFO"
-AUTO_CHECK_DATA = "false" # Don't auto-check data on startup
+AUTO_CHECK_DATA = "false"    # Don't auto-check data on startup
 FORCE_DATA_REFRESH = "false"
 SKIP_EMBEDDINGS = "false"
 PYTHONPATH = "${REPL_HOME}"
 PYTHONUNBUFFERED = "1"
 
 # Data Scheduler Configuration
-ENABLE_DATA_SCHEDULER = "true"  # Enable automatic data updates
-DATA_UPDATE_INTERVAL = "3600"   # Update interval in seconds (1 hour)
-DATA_RETENTION_DAYS = "14"      # Keep data for 14 days
+ENABLE_DATA_SCHEDULER = "true" # Enable automatic data updates
+DATA_UPDATE_INTERVAL = "3600"  # Update interval in seconds (1 hour)
+DATA_RETENTION_DAYS = "5"     # Keep data for 14 days
 
 # Testing Configuration
 TEST_MODE = "false"           # Default to false for deployment
@@ -37,7 +37,7 @@ USE_MOCK_EMBEDDINGS = "false"
 
 # Package caching safety (prevent deployment dependency issues)
 REPLIT_KEEP_PACKAGE_DEV_DEPENDENCIES = "1"
-REPLIT_DISABLE_PACKAGE_LAYER = "0"  # Keep caching enabled by default
+REPLIT_DISABLE_PACKAGE_LAYER = "0"         # Keep caching enabled by default
 
 # =============================================
 # Deployment Configuration
@@ -50,11 +50,11 @@ deploymentTarget = "cloudrun"
 # Health Check Configuration
 # =============================================
 [deployment.healthCheck]
-path = "/"  # Root path for fastest possible health check
+path = "/"               # Root path for fastest possible health check
 port = 80
-initialDelay = 10   # Reduced - server should start quickly now
-timeout = 5         # Standard timeout
-period = 10         # Check every 10 seconds
+initialDelay = 10        # Reduced - server should start quickly now
+timeout = 5              # Standard timeout
+period = 10              # Check every 10 seconds
 consecutiveSuccesses = 1
 consecutiveFailures = 3  # Less tolerant now that startup is fast
 
@@ -97,15 +97,7 @@ language = "python3"
 command = ["python3", "-u"]
 
 [workflows]
-
-[[workflows.workflow]]
-name = "deploy"
-mode = "sequential"
-author = 38779469
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash deployment/setup.sh"
+runButton = "Force a complete data refresh including stratification and embeddings"
 
 [[workflows.workflow]]
 name = "test"
@@ -124,6 +116,24 @@ author = 38779469
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python scripts/check_replit_db.py"
+
+[[workflows.workflow]]
+name = "Wipe all data"
+mode = "sequential"
+author = 38779469
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python scripts/wipe_all_data.py"
+
+[[workflows.workflow]]
+name = "Force a complete data refresh including stratification and embeddings"
+mode = "sequential"
+author = 38779469
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python scripts/process_data.py --force-refresh"
 
 [server]
 host = "0.0.0.0"
@@ -191,4 +201,4 @@ command = "tail -n 50 logs/scheduler.log"
 bucket = "rolling-data"
 
 [objectStorage]
-defaultBucketID = "replit-objstore-05cbbe20-4215-4b30-a9e9-5d2d386b4ae7"
+defaultBucketID = "replit-objstore-bbfe5aa0-5c0d-484a-9dce-803e7d5bb0f4
