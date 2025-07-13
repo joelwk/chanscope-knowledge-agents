@@ -1,6 +1,6 @@
 modules = ["python-3.11", "postgresql-16"]
 hidden = [".pythonlibs"]
-run = "bash scripts/replit_init.sh && echo 'Starting Uvicorn server...' && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info"
+run = "mkdir -p logs && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & SERVER_PID=$! && sleep 2 && bash scripts/replit_init.sh > logs/init.log 2>&1 & wait $SERVER_PID"
 entrypoint = "api/app.py"
 
 # =============================================
@@ -35,24 +35,28 @@ TEST_MODE = "false"           # Default to false for deployment
 USE_MOCK_DATA = "false"
 USE_MOCK_EMBEDDINGS = "false"
 
+# Package caching safety (prevent deployment dependency issues)
+REPLIT_KEEP_PACKAGE_DEV_DEPENDENCIES = "1"
+REPLIT_DISABLE_PACKAGE_LAYER = "0"  # Keep caching enabled by default
+
 # =============================================
 # Deployment Configuration
 # =============================================
 [deployment]
-run = "bash scripts/replit_init.sh && echo 'Starting Uvicorn server...' && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info"
+run = "mkdir -p logs && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & SERVER_PID=$! && sleep 2 && bash scripts/replit_init.sh > logs/init.log 2>&1 & wait $SERVER_PID"
 deploymentTarget = "cloudrun"
 
 # =============================================
 # Health Check Configuration
 # =============================================
 [deployment.healthCheck]
-path = "/"  # Changed from "/api/v1/health" to root path for simplest check
+path = "/"  # Root path for fastest possible health check
 port = 80
-initialDelay = 30  # Increased to give more time for full startup
-timeout = 10       # Increased to allow for potential slow responses in Replit
-period = 15        # Check every 15 seconds
+initialDelay = 10   # Reduced - server should start quickly now
+timeout = 5         # Standard timeout
+period = 10         # Check every 10 seconds
 consecutiveSuccesses = 1
-consecutiveFailures = 5  # More tolerant of occasional failures
+consecutiveFailures = 3  # Less tolerant now that startup is fast
 
 [[ports]]
 localPort = 80

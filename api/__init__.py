@@ -35,8 +35,9 @@ _initialization_error = None
 
 def load_environment() -> None:
     """Load environment variables from .env file."""
-    load_dotenv()
-    logger.info(f"Loaded environment: {get_environment()}")
+    # Environment variables are already loaded by config.env_loader module
+    # Don't call load_dotenv() here as it would load ALL sections causing conflicts
+    logger.info(f"Using environment: {get_environment()}")
 
 @lru_cache()
 def get_environment() -> str:

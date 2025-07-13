@@ -6,13 +6,24 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+import hashlib
+from functools import lru_cache
+from cachetools import TTLCache
 
 import numpy as np
 import pandas as pd
 import tiktoken
 from scipy import spatial
 
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    FAISS_AVAILABLE = False
+    logging.warning("FAISS not available. Install with: pip install faiss-cpu")
+
 from .model_ops import KnowledgeAgent, ModelOperation, ModelProvider
+from config.base_settings import get_base_settings
 
 # Initialize logging
 logger = logging.getLogger(__name__)
@@ -22,6 +33,39 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 logger.propagate = False
+
+# Global caches for query results and embeddings
+_query_cache: Optional[TTLCache] = None
+_embedding_cache: Optional[TTLCache] = None
+
+def _get_query_cache():
+    """Get or create the query cache."""
+    global _query_cache
+    if _query_cache is None:
+        base_settings = get_base_settings()
+        cache_size = base_settings.get('processing', {}).get('query_cache_size', 128)
+        cache_ttl = base_settings.get('processing', {}).get('result_cache_ttl', 3600)
+        _query_cache = TTLCache(maxsize=cache_size, ttl=cache_ttl)
+    return _query_cache
+
+def _get_embedding_cache():
+    """Get or create the embedding cache."""
+    global _embedding_cache
+    if _embedding_cache is None:
+        base_settings = get_base_settings()
+        cache_size = base_settings.get('processing', {}).get('embedding_cache_size', 512)
+        cache_ttl = base_settings.get('processing', {}).get('result_cache_ttl', 3600)
+        _embedding_cache = TTLCache(maxsize=cache_size, ttl=cache_ttl)
+    return _embedding_cache
+
+def _clear_caches():
+    """Clear all caches (called on data refresh)."""
+    global _query_cache, _embedding_cache
+    if _query_cache:
+        _query_cache.clear()
+    if _embedding_cache:
+        _embedding_cache.clear()
+    logger.info("Cleared query and embedding caches")
 
 
 def prepare_embeddings(
@@ -90,7 +134,13 @@ def prepare_embeddings(
     if not embeddings:
         raise ValueError("No valid embeddings found in DataFrame")
 
+    # Ensure query_embedding is converted to numpy array
     prepared_query = query_embedding
+    if query_embedding is not None:
+        if not isinstance(query_embedding, np.ndarray):
+            prepared_query = np.array(query_embedding, dtype=np.float32)
+        else:
+            prepared_query = query_embedding.astype(np.float32)
 
     if query_embedding is not None:
         embedding_dimensions = [len(e) if hasattr(e, "__len__") else 1 for e in embeddings]
@@ -194,10 +244,20 @@ async def strings_ranked_by_relatedness(
             provider=provider,
         )
 
-    # Original implementation for non-recursive approach
     try:
-        query_embedding_response = await agent.embedding_request(text=query, provider=provider)
-        query_embedding = query_embedding_response.embedding
+        # Check cache for query embeddings first
+        embedding_cache = _get_embedding_cache()
+        query_hash = hashlib.md5(f"{query}_{provider}".encode()).hexdigest()
+        
+        if query_hash in embedding_cache:
+            logger.debug(f"Cache hit for query embedding: {query[:50]}...")
+            query_embedding = embedding_cache[query_hash]
+        else:
+            # Generate new embedding and cache it
+            query_embedding_response = await agent.embedding_request(text=query, provider=provider)
+            query_embedding = query_embedding_response.embedding
+            embedding_cache[query_hash] = query_embedding
+            logger.debug(f"Cached new query embedding: {query[:50]}...")
 
         embeddings, valid_indices, query_embedding = prepare_embeddings(
             df=df,
@@ -205,12 +265,24 @@ async def strings_ranked_by_relatedness(
             adapt=True,
         )
 
-        similarities = 1 - spatial.distance.cdist([query_embedding], embeddings, metric="cosine")[0]
+        # Get configuration settings
+        base_settings = get_base_settings()
+        use_faiss = base_settings.get('model', {}).get('use_faiss', True)
         
-        # Get indices of top N similar items
-        # Ensure we don't take more than available
-        actual_top_n = min(top_n, len(similarities))
-        top_similarity_indices = np.argsort(similarities)[::-1][:actual_top_n]
+        # Use FAISS for similarity search if available and enabled
+        use_faiss_search = FAISS_AVAILABLE and use_faiss and len(embeddings) > 100
+        if use_faiss_search:
+            similarities, top_similarity_indices = _faiss_similarity_search(
+                embeddings, query_embedding, top_n
+            )
+        else:
+            # Fallback to scipy for small datasets or when FAISS is disabled
+            similarities = 1 - spatial.distance.cdist([query_embedding], embeddings, metric="cosine")[0]
+            
+            # Get indices of top N similar items
+            # Ensure we don't take more than available
+            actual_top_n = min(top_n, len(similarities))
+            top_similarity_indices = np.argsort(similarities)[::-1][:actual_top_n]
 
         # Map back to original dataframe indices
         top_df_indices = [valid_indices[i] for i in top_similarity_indices]
@@ -218,7 +290,13 @@ async def strings_ranked_by_relatedness(
         # Return relevant records with similarity scores
         results = []
         for i, idx in enumerate(top_df_indices):
-            sim_score = similarities[top_similarity_indices[i]]
+            # Different indexing logic for FAISS vs scipy
+            if use_faiss_search:
+                # FAISS: similarities array only contains top-N scores
+                sim_score = similarities[i]
+            else:
+                # Scipy: similarities array contains all scores
+                sim_score = similarities[top_similarity_indices[i]]
 
             # Get the text content - prioritize text_clean but fall back to content column
             # This ensures compatibility with both S3 data (text_clean) and PostgreSQL data (content)
@@ -252,6 +330,74 @@ async def strings_ranked_by_relatedness(
         logger.error(f"Error ranking strings by relatedness: {e}")
         traceback.print_exc()
         raise
+
+
+def _faiss_similarity_search(
+    embeddings: np.ndarray, 
+    query_embedding: np.ndarray, 
+    top_n: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Perform FAISS-optimized similarity search.
+    
+    Args:
+        embeddings: Array of document embeddings
+        query_embedding: Query embedding vector
+        top_n: Number of top results to return
+        
+    Returns:
+        Tuple of (similarities, indices)
+    """
+    try:
+        # Ensure embeddings are float32 and 2D
+        if embeddings.dtype != np.float32:
+            embeddings = embeddings.astype(np.float32)
+        if len(embeddings.shape) == 1:
+            embeddings = embeddings.reshape(1, -1)
+        if len(query_embedding.shape) == 1:
+            query_embedding = query_embedding.reshape(1, -1).astype(np.float32)
+            
+        # Get configuration for FAISS index type
+        base_settings = get_base_settings()
+        index_type = base_settings.get('model', {}).get('faiss_index_type', 'IndexFlatIP')
+        
+        # Create FAISS index
+        dim = embeddings.shape[1]
+        if index_type == 'IndexFlatIP':
+            # Inner product index (fastest for cosine similarity with normalized vectors)
+            index = faiss.IndexFlatIP(dim)
+        else:
+            # Default to flat L2 index
+            index = faiss.IndexFlatL2(dim)
+            
+        # Normalize embeddings for cosine similarity
+        faiss.normalize_L2(embeddings)
+        faiss.normalize_L2(query_embedding)
+        
+        # Add embeddings to index
+        index.add(embeddings)
+        
+        # Search for top_n most similar
+        actual_top_n = min(top_n, embeddings.shape[0])
+        scores, indices = index.search(query_embedding, actual_top_n)
+        
+        # Convert scores to similarities (for IndexFlatIP, scores are already similarities)
+        if index_type == 'IndexFlatIP':
+            similarities = scores[0]
+        else:
+            # Convert L2 distances to similarities
+            similarities = 1.0 / (1.0 + scores[0])
+            
+        return similarities, indices[0]
+        
+    except Exception as e:
+        logger.warning(f"FAISS search failed: {e}, falling back to scipy")
+        # Fallback to scipy - ensure query_embedding is numpy array
+        if not isinstance(query_embedding, np.ndarray):
+            query_embedding = np.array(query_embedding, dtype=np.float32)
+        similarities = 1 - spatial.distance.cdist([query_embedding.flatten()], embeddings, metric="cosine")[0]
+        top_indices = np.argsort(similarities)[::-1][:top_n]
+        return similarities, top_indices
 
 def is_valid_chunk(text: str) -> bool:
     """Check if a chunk has enough meaningful content."""
@@ -433,6 +579,26 @@ async def process_query(
     """
     try:
         start_time = time.time()
+        
+        # Check if caching is enabled and if we have a cached result
+        base_settings = get_base_settings()
+        cache_enabled = base_settings.get('processing', {}).get('cache_enabled', True)
+        
+        if cache_enabled:
+            query_cache = _get_query_cache()
+            # Create cache key from query, config, and data characteristics
+            data_hash = hashlib.md5(f"{len(library_df)}_{library_df.columns.tolist()}".encode()).hexdigest()[:8]
+            config_hash = hashlib.md5(f"{provider_map}_{use_batching}_{character_slug}".encode()).hexdigest()[:8]
+            cache_key = hashlib.md5(f"{query}_{data_hash}_{config_hash}".encode()).hexdigest()
+            
+            if cache_key in query_cache:
+                logger.info(f"Cache hit for query: {query[:50]}...")
+                cached_result = query_cache[cache_key]
+                # Add cache metadata
+                cached_result["metadata"]["from_cache"] = True
+                cached_result["metadata"]["cache_hit_time_ms"] = round((time.time() - start_time) * 1000, 2)
+                return cached_result
+        
         logger.info(f"Processing query: {query[:50]}... (batching: {use_batching})")
         
         # Set default providers if not specified
@@ -609,7 +775,7 @@ async def process_query(
         duration_ms = round((time.time() - start_time) * 1000, 2)
         logger.info(f"Query processed in {duration_ms}ms (batching: {use_batching})")
 
-        return {
+        result = {
             "chunks": processed_chunks,
             "summary": summary,
             "metadata": {
@@ -623,8 +789,16 @@ async def process_query(
                     "summary": summary_batch_size,
                 },
                 "batching_enabled": use_batching,
+                "from_cache": False,
             },
         }
+        
+        # Cache the result if caching is enabled
+        if cache_enabled:
+            query_cache[cache_key] = result.copy()  # Store a copy to avoid mutations
+            logger.debug(f"Cached result for query: {query[:50]}...")
+        
+        return result
         
     except Exception as e:
         logger.error(f"Error in process_query: {str(e)}")

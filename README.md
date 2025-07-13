@@ -393,52 +393,82 @@ The Chanscope Retrieval is designed to serve as a backend for AI agents and agen
 
 ## Environment Configuration
 
-The project uses an intelligent environment detection system that automatically configures settings based on the deployment context:
+The project uses an intelligent environment detection system that automatically configures settings based on the deployment context. **Recent fixes** have resolved environment detection conflicts that previously caused Docker containers to incorrectly detect as 'replit' environment.
 
-### Environment Detection
-- **Replit Detection**: Automatically detects Replit environment through multiple indicators
-- **Docker Detection**: Identifies Docker containers through environment markers
+### Environment Detection (Recently Enhanced)
+- **Docker Detection**: Detects through `/.dockerenv` file, `ENVIRONMENT=docker`, or `DOCKER_ENV=true`
+- **Replit Detection**: Detects through `REPL_ID`, `REPL_SLUG`, `REPL_OWNER`, or `/home/runner` directory
 - **Local Development**: Falls back to local configuration when neither is detected
 
 ### Environment-Specific Settings
-1. **Replit Environment**:
-   - Optimized path configuration for Replit filesystem
-   - Automatic directory structure creation
-   - Memory-optimized batch sizes and worker counts
-   - Default configuration for mock data and embeddings
-   - Process lock management using Object Storage to prevent duplicate processing
-   - Environment-aware initialization that handles development vs deployment differences
 
-2. **Docker Environment**:
-   - Container-specific path configuration
-   - Optimized worker counts for containerized deployment
-   - Enhanced batch processing settings
-   - Automatic volume management
-   - File-based process lock management
+#### 1. Docker Environment (File-Based Storage)
+- **Storage Backend**: CSV files, NPZ embeddings, JSON mappings
+- **Complete Data**: `/app/data/complete_data.csv`
+- **Stratified Samples**: `/app/data/stratified/stratified_sample.csv` 
+- **Embeddings**: `/app/data/stratified/embeddings.npz`
+- **Configuration**: Container-optimized settings with file-based process locks
+- **Environment Variables**: Automatically set in docker-compose.yml:
+  ```yaml
+  environment:
+    - ENVIRONMENT=docker
+    - DOCKER_ENV=true
+    - REPLIT_ENV=  # Explicitly unset to prevent conflicts
+  ```
 
-3. **Local Environment**:
-   - Flexible path configuration
-   - Development-friendly defaults
-   - Easy-to-modify settings
-   - File-based process lock management
+#### 2. Replit Environment (Database Storage)
+- **Storage Backend**: PostgreSQL, Key-Value store, Object Storage
+- **Complete Data**: PostgreSQL database tables
+- **Stratified Samples**: Replit Key-Value store
+- **Embeddings**: Replit Object Storage (compressed .npz format)
+- **Configuration**: Memory-optimized with persistent process locks
+- **Process Locks**: Object Storage for persistence across restarts
 
-### Configuration Sections
-The `.env` file supports section-based configuration:
-```ini
-[replit]
-# Replit-specific settings
-USE_MOCK_DATA=false
-EMBEDDING_BATCH_SIZE=10
-MAX_WORKERS=2
+#### 3. Local Environment (File-Based Storage)
+- **Storage Backend**: Same as Docker (CSV, NPZ, JSON)
+- **Configuration**: Development-friendly defaults
+- **Process Locks**: File-based locking mechanism
 
-[docker]
-# Docker-specific settings
-EMBEDDING_BATCH_SIZE=20
-MAX_WORKERS=4
+### Recent Environment Detection Fixes
 
-[local]
-# Local development settings
+**Issues Resolved**:
+- Docker containers incorrectly detecting as 'replit' environment
+- "States failed" PostgreSQL connection errors in Docker
+- Conflicting environment variable loading from pytest.ini
+- Hard-coded storage creation bypassing environment detection
+
+**Solutions Implemented**:
+- Removed `REPLIT_ENV=replit` from pytest.ini that was leaking into Docker
+- Added explicit environment variables to docker-compose.yml  
+- Fixed hard-coded `StorageFactory.create(config, 'replit')` calls
+- Enhanced `DataConfig` class with proper environment attribute
+- Improved environment detection priority logic
+
+### Configuration Verification
+
+To verify environment detection is working correctly:
+```bash
+# For Docker containers
+docker exec <container_id> python -c "
+from config.env_loader import detect_environment
+print('Environment detected:', detect_environment())
+"
+
+# Expected output: 'docker'
 ```
+
+## Recent Updates
+
+### Environment Detection Fixes (Latest)
+🔧 **Resolved Critical Issue**: Fixed Docker containers incorrectly detecting as 'replit' environment, which caused PostgreSQL connection errors and "states failed" messages.
+
+**What was fixed:**
+- Environment detection conflicts between Docker and Replit 
+- Hard-coded storage creation bypassing environment detection
+- Conflicting environment variables from pytest.ini
+- Missing environment attribute in DataConfig class
+
+**Result**: Docker deployments now correctly use file-based storage, eliminating database dependency errors and enabling successful data processing of 661K+ records from 161 S3 files.
 
 ## Quick Start
 
@@ -532,11 +562,61 @@ curl -X POST "http://localhost/api/v1/nl_query" \
 The project supports multiple deployment options:
 
 ### Docker Deployment
-For detailed Docker deployment instructions, see [deployment/README_DEPLOYMENT.md](deployment/README_DEPLOYMENT.md)
+
+The Docker deployment has been enhanced with robust environment detection and automatic storage configuration.
+
+**Recent Fixes**: Resolved environment detection conflicts that caused "states failed" PostgreSQL errors. The system now correctly detects Docker environment and uses file-based storage.
+
+#### Quick Start
+```bash
+# Build and start the application  
+docker-compose -f deployment/docker-compose.yml build --no-cache
+docker-compose -f deployment/docker-compose.yml up -d
+
+# Verify environment detection is working
+docker exec $(docker ps -q) python -c "
+from config.env_loader import detect_environment
+from knowledge_agents.data_ops import DataConfig
+config = DataConfig.from_config()
+print('Environment:', detect_environment())
+print('Storage type:', config.env)
+"
+```
+
+#### Environment Configuration
+The docker-compose.yml now explicitly sets environment variables:
+```yaml
+environment:
+  - ENVIRONMENT=docker
+  - DOCKER_ENV=true
+  - REPLIT_ENV=  # Explicitly unset to prevent conflicts
+```
+
+This ensures the system correctly detects Docker environment and uses:
+- **File-based storage** (CSV, NPZ, JSON files) 
+- **No PostgreSQL dependencies** (eliminates connection errors)
+- **Proper data processing pipeline** (161 files, 661K+ records)
+
+For detailed deployment instructions, see [deployment/README_DEPLOYMENT.md](deployment/README_DEPLOYMENT.md)
 
 ### Replit Deployment
-The project is configured to run seamlessly on Replit with optimized settings:
 
+The project is configured to run seamlessly on Replit with database-optimized settings that differ from Docker deployment.
+
+#### Environment Detection
+Replit deployment automatically detects through:
+- `REPL_ID`, `REPL_SLUG`, or `REPL_OWNER` environment variables
+- `/home/runner` directory presence  
+- `REPLIT_ENV=replit` (when explicitly set)
+
+#### Storage Configuration
+**Replit uses database storage** (unlike Docker's file-based approach):
+- **Complete Data**: PostgreSQL database tables
+- **Stratified Samples**: Replit Key-Value store  
+- **Embeddings**: Replit Object Storage (.npz format)
+- **Process Locks**: Object Storage for persistence across restarts
+
+#### Setup Instructions
 1. Fork the repository to your Replit account
 2. Set up environment variables in Replit Secrets:
    ```
@@ -546,13 +626,20 @@ The project is configured to run seamlessly on Replit with optimized settings:
    S3_BUCKET=your_bucket
    ```
 3. Click the Run button to start the application
-4. The system will automatically detect the Replit environment and:
+4. The system will automatically:
    - Install required dependencies including replit-object-storage
    - Initialize the PostgreSQL schema
    - Use Object Storage for process locks and initialization status
    - Prevent duplicate data processing during restarts
    - Run data processing in the background
    - Perform hourly data updates if enabled
+
+#### Verification
+```bash
+# Check environment detection in Replit console
+from config.env_loader import detect_environment
+print('Environment:', detect_environment())  # Should show: 'replit'
+```
 
 ## Testing Framework
 

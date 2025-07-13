@@ -48,10 +48,41 @@ def load_env_vars() -> None:
 
     env_path = get_env_path()
     if env_path.exists():
-        load_dotenv(env_path)
+        # Only load the base section (before any [section] headers) to avoid conflicts
+        _load_base_env_only(env_path)
         _env_loaded = True
         os.environ['ENVIRONMENT_LOADED'] = 'true'
-        logging.info("Environment variables loaded from .env file")
+        logging.info("Base environment variables loaded from .env file")
+
+def _load_base_env_only(env_path: Path) -> None:
+    """Load only the base environment variables (before any section headers)."""
+    try:
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                
+                # Stop at first section header
+                if line.startswith('[') and line.endswith(']'):
+                    break
+                    
+                # Skip comments and empty lines
+                if not line or line.startswith('#'):
+                    continue
+                    
+                # Process key=value pairs
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    
+                    # Only set if not already set (respect existing environment)
+                    if key not in os.environ:
+                        os.environ[key] = value
+                        
+    except Exception as e:
+        logging.warning(f"Error loading base environment variables: {e}")
+        # Fallback to load_dotenv if our custom parser fails
+        load_dotenv(env_path)
 
 def get_base_settings() -> Dict[str, Any]:
     """Get base settings from environment variables.
@@ -109,7 +140,10 @@ def get_base_settings() -> Dict[str, Any]:
             'grok_api_base': os.getenv('GROK_API_BASE', '').strip(),
             'venice_api_base': os.getenv('VENICE_API_BASE', '').strip(),
             'openai_chunk_model': os.getenv('OPENAI_CHUNK_MODEL', '').strip(),
-            'grok_chunk_model': os.getenv('GROK_CHUNK_MODEL', '').strip()
+            'grok_chunk_model': os.getenv('GROK_CHUNK_MODEL', '').strip(),
+            'use_faiss': os.getenv('USE_FAISS', 'true').lower().strip() in ('true', 'yes', '1'),
+            'faiss_index_type': os.getenv('FAISS_INDEX_TYPE', 'IndexFlatIP').strip(),
+            'faiss_nprobe': int(os.getenv('FAISS_NPROBE', '1').strip())
         },
         'aws': {
             'access_key_id': os.getenv('AWS_ACCESS_KEY_ID', '').strip(),
@@ -136,7 +170,11 @@ def get_base_settings() -> Dict[str, Any]:
             'cache_ttl': int(os.getenv('CACHE_TTL', '3600')),
             'batch_size': int(os.getenv('BATCH_SIZE', '64')),
             'use_mock_data': os.getenv('USE_MOCK_DATA', 'false').lower() == 'true',
-            'use_mock_embeddings': os.getenv('USE_MOCK_EMBEDDINGS', 'false').lower() == 'true'
+            'use_mock_embeddings': os.getenv('USE_MOCK_EMBEDDINGS', 'false').lower() == 'true',
+            'incremental_embeddings': os.getenv('INCREMENTAL_EMBEDDINGS', 'true').lower().strip() in ('true', 'yes', '1'),
+            'query_cache_size': int(os.getenv('QUERY_CACHE_SIZE', '128').strip()),
+            'embedding_cache_size': int(os.getenv('EMBEDDING_CACHE_SIZE', '512').strip()),
+            'result_cache_ttl': int(os.getenv('RESULT_CACHE_TTL', '3600').strip())
         },
         'sample': {
             'max_sample_size': 100000,

@@ -58,13 +58,55 @@ class ChanScopeConfig:
         self.embedding_batch_size = embedding_batch_size
         self.force_refresh = force_refresh
         
-        # Determine environment
-        self.env = env or detect_environment()
+        # Determine environment with robust Docker detection
+        self.env = env or self._robust_detect_environment()
     
     def _detect_environment(self) -> str:
         """Detect the execution environment. 
         DEPRECATED: Use config.env_loader.detect_environment() directly instead."""
         return detect_environment()
+    
+    def _robust_detect_environment(self) -> str:
+        """
+        Robust environment detection that prioritizes Docker filesystem markers.
+        This prevents issues with environment variable conflicts during startup.
+        """
+        import os
+        
+        # First, check for Docker filesystem marker (most reliable)
+        if os.path.exists('/.dockerenv'):
+            return 'docker'
+        
+        # Then check ENVIRONMENT variable set by docker-compose
+        if os.environ.get('ENVIRONMENT', '').lower() == 'docker':
+            return 'docker'
+            
+        # Check for Replit indicators
+        if os.environ.get('REPL_ID') or os.environ.get('REPLIT_ENV', '').lower() in ('replit', 'true'):
+            return 'replit'
+            
+        # Default to docker for local/unknown environments
+        return 'docker'
+    
+    @staticmethod
+    def _robust_detect_environment_static() -> str:
+        """Static version of robust environment detection for class methods."""
+        import os
+        
+        # First, check for Docker filesystem marker (most reliable)
+        if os.path.exists('/.dockerenv'):
+            return 'docker'
+        
+        # Then check ENVIRONMENT variable set by docker-compose
+        if os.environ.get('ENVIRONMENT', '').lower() == 'docker':
+            return 'docker'
+            
+        # Check for Replit indicators
+        if os.environ.get('REPL_ID') or os.environ.get('REPLIT_ENV', '').lower() in ('replit', 'true'):
+            return 'replit'
+            
+        # Default to docker for local/unknown environments
+        return 'docker'
     
     @classmethod
     def from_env(cls, env_override: Optional[str] = None) -> 'ChanScopeConfig':
@@ -77,7 +119,7 @@ class ChanScopeConfig:
         Returns:
             ChanScopeConfig: Configuration for the detected environment
         """
-        env = env_override or detect_environment()
+        env = env_override or ChanScopeConfig._robust_detect_environment_static()
         
         if env == 'replit':
             # Replit configuration

@@ -13,6 +13,9 @@ services:
       - ..:/app
     environment:
       - ENVIRONMENT=docker
+      - DOCKER_ENV=true
+      # Explicitly unset REPLIT_ENV to prevent conflicts
+      - REPLIT_ENV=
       # Add other environment variables here or use an env_file
     command: ["python3", "-m", "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "80"]
 

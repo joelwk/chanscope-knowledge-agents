@@ -7,71 +7,81 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${YELLOW}Starting Replit initialization script...${NC}"
+echo -e "${YELLOW}Starting lightweight Replit initialization script...${NC}"
 
 # Ensure local packages take precedence over system packages
 export PYTHONPATH="$PWD/.pythonlibs/lib/python3.11/site-packages:${PYTHONPATH:-}"
 
 # ==============================================================================
-# FOREGROUND INITIALIZATION: Ensure environment and dependencies are ready.
+# CRITICAL SECTION: Fast startup essentials only
 # ==============================================================================
 
-# Install dependencies synchronously before starting background tasks
-echo -e "${YELLOW}Installing/updating project dependencies with pip...${NC}"
-if [ -f "requirements.txt" ]; then
-    pip install -r requirements.txt
-    echo -e "${GREEN}Dependencies installed successfully.${NC}"
-else
-    echo -e "${RED}Error: requirements.txt not found!${NC}"
-    exit 1
-fi
+# Create essential directories immediately
+echo -e "${YELLOW}Creating essential directories...${NC}"
+mkdir -p "$PWD/logs"
+mkdir -p "$PWD/temp_files"
+mkdir -p "$PWD/data"
+mkdir -p "$PWD/data/stratified"
 
+# Ensure scripts/utils directory exists
+mkdir -p "$PWD/scripts/utils"
+touch "$PWD/scripts/utils/__init__.py"
 
+echo -e "${GREEN}Essential directories created successfully.${NC}"
+
+# Quick dependency check - don't install, just verify critical ones exist
+echo -e "${YELLOW}Checking critical dependencies...${NC}"
+python3 -c "
+try:
+    import fastapi, uvicorn, pandas, psycopg2
+    print('Critical dependencies available')
+except ImportError as e:
+    print(f'Warning: Missing dependency {e}')
+    print('Will attempt installation in background...')
+" || echo -e "${YELLOW}Some dependencies may need installation${NC}"
+
+# ==============================================================================
+# BACKGROUND INITIALIZATION: Run heavy tasks in background
+# ==============================================================================
 echo -e "${YELLOW}Starting background initialization tasks...${NC}"
-# ==============================================================================
-# BACKGROUND INITIALIZATION: Run non-blocking tasks.
-# ==============================================================================
+
+# Create a background initialization function
 (
-    # Ensure we're in the workspace root
-    WORKSPACE_ROOT="$PWD"
-    echo -e "${YELLOW}Workspace root: $WORKSPACE_ROOT${NC}"
+    # Wait a bit for the server to fully stabilize
+    echo -e "${YELLOW}Waiting 10 seconds for server stabilization...${NC}"
+    sleep 10
 
-    # Create necessary directories
-    echo -e "${YELLOW}Creating directories...${NC}"
-    mkdir -p "$WORKSPACE_ROOT/data"
-    mkdir -p "$WORKSPACE_ROOT/data/stratified"
-    mkdir -p "$WORKSPACE_ROOT/logs"
-    mkdir -p "$WORKSPACE_ROOT/temp_files"
-
-    # Ensure scripts/utils directory exists
-    mkdir -p "$WORKSPACE_ROOT/scripts/utils"
-    touch "$WORKSPACE_ROOT/scripts/utils/__init__.py"
+    # Now do the heavy lifting
+    echo -e "${YELLOW}Installing/updating project dependencies...${NC}"
+    if [ -f "requirements.txt" ]; then
+        pip install -r requirements.txt --quiet --no-warn-script-location
+        echo -e "${GREEN}Dependencies installed successfully.${NC}"
+    else
+        echo -e "${RED}Warning: requirements.txt not found!${NC}"
+    fi
 
     # Initialize PostgreSQL schema
     echo -e "${YELLOW}Initializing PostgreSQL schema...${NC}"
     if [ -n "$DATABASE_URL" ] || [ -n "$PGHOST" ]; then
         python3 -c "
-import asyncio
-from config.replit import PostgresDB
-
-def initialize_db():
-    try:
-        db = PostgresDB()
-        db.initialize_schema()
-        print('PostgreSQL schema initialized successfully')
-    except Exception as e:
-        print(f'Error initializing PostgreSQL schema: {e}')
-
-# Run the function
-initialize_db()
+import sys
+sys.path.insert(0, '.')
+try:
+    from config.replit import PostgresDB
+    db = PostgresDB()
+    db.initialize_schema()
+    print('PostgreSQL schema initialized successfully')
+except Exception as e:
+    print(f'Error initializing PostgreSQL schema: {e}')
 "
     else
         echo -e "${RED}No PostgreSQL database connection information found${NC}"
-        echo -e "${YELLOW}Please set up a PostgreSQL database in Replit and try again${NC}"
     fi
 
+    # Verify services
+    echo -e "${YELLOW}Verifying services...${NC}"
+    
     # Verify Replit Key-Value store
-    echo -e "${YELLOW}Verifying Replit Key-Value store access...${NC}"
     python3 -c "
 try:
     from replit import db
@@ -81,15 +91,13 @@ try:
     print('Replit Key-Value store is functioning correctly')
 except Exception as e:
     print(f'Error with Replit Key-Value store: {e}')
-"
+" || echo -e "${YELLOW}Replit KV store may not be available${NC}"
 
-    # Verify AWS credentials
-    echo -e "${YELLOW}Verifying AWS credentials...${NC}"
+    # Verify AWS credentials if present
     if [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ] && [ -n "$S3_BUCKET" ]; then
         python3 -c "
 import boto3
 import os
-
 try:
     s3 = boto3.client(
         's3',
@@ -97,116 +105,85 @@ try:
         aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
         region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
     )
-
-    # Try listing objects to verify credentials
     bucket = os.environ.get('S3_BUCKET')
     prefix = os.environ.get('S3_BUCKET_PREFIX', 'data/')
     response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
-
     if 'Contents' in response:
         print(f'AWS credentials verified successfully, found objects in {bucket}/{prefix}')
     else:
         print(f'AWS credentials verified but no objects found in {bucket}/{prefix}')
-
 except Exception as e:
     print(f'Error verifying AWS credentials: {e}')
-"
-    else
-        echo -e "${RED}AWS credentials not fully configured${NC}"
-        echo -e "${YELLOW}Please set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and S3_BUCKET in Secrets${NC}"
+" || echo -e "${YELLOW}AWS services may not be available${NC}"
     fi
 
-    # Give the server more time to finish its health checks before starting heavy data processing
-    echo -e "${YELLOW}Waiting for server to stabilize before starting data processing...${NC}"
-    sleep 30
-
-    # Check if initialization was recently completed using the ProcessLockManager
+    # Data processing - only if explicitly requested
     echo -e "${YELLOW}Checking if data processing is needed...${NC}"
-    PROCESS_CHECK=$(python3 -c "
+    
+    # Use a more lightweight check for data processing needs
+    SHOULD_PROCESS_DATA=$(python3 -c "
 import sys
+import os
 sys.path.insert(0, '.')
-try:
-    from scripts.utils.processing_lock import ProcessLockManager
 
-    # Create lock manager and check status
-    lock_manager = ProcessLockManager()
-    needs_init, marker_data = lock_manager.check_initialization_status()
+# Check if we should run data processing
+auto_process = os.environ.get('AUTO_PROCESS_DATA_ON_INIT', 'false').lower() in ('true', '1', 'yes')
+force_refresh = os.environ.get('FORCE_DATA_REFRESH', 'false').lower() in ('true', '1', 'yes')
 
-    if not needs_init and marker_data:
-        completion_time = marker_data.get('completion_time', 'unknown time')
-        print(f'SKIP: Previous initialization completed successfully at {completion_time}')
-    else:
-        if marker_data and marker_data.get('status') == 'error':
-            error = marker_data.get('error', 'unknown error')
-            print(f'RUN: Previous initialization failed with error: {error}')
+if force_refresh:
+    print('YES')
+elif auto_process:
+    try:
+        from scripts.utils.processing_lock import ProcessLockManager
+        lock_manager = ProcessLockManager()
+        needs_init, marker_data = lock_manager.check_initialization_status()
+        if needs_init:
+            print('YES')
         else:
-            print('RUN: Initialization needed')
-
-except ImportError as e:
-    print(f'RUN: Could not import ProcessLockManager: {e}')
-except Exception as e:
-    print(f'RUN: Error checking initialization status: {e}')
-    import traceback
-    traceback.print_exc()
+            print('NO')
+    except Exception as e:
+        print('NO')  # Default to no processing if check fails
+else:
+    print('NO')
 ")
 
-    # Check if we should skip or run data processing
-    if [[ $PROCESS_CHECK == SKIP* ]]; then
-        echo -e "${GREEN}${PROCESS_CHECK#SKIP: }${NC}"
-        echo -e "${GREEN}Skipping data processing${NC}"
-    else
-        echo -e "${YELLOW}${PROCESS_CHECK#RUN: }${NC}"
+    if [ "$SHOULD_PROCESS_DATA" = "YES" ]; then
         echo -e "${YELLOW}Starting data processing in background...${NC}"
-
-        # Use nohup to keep the process running even if the parent is terminated
-        nohup python3 scripts/process_data.py > "$WORKSPACE_ROOT/logs/data_processing.log" 2>&1 &
-        DATA_PROCESS_PID=$!
-        echo -e "${GREEN}Data processing started in background with PID: $DATA_PROCESS_PID${NC}"
-        echo -e "${GREEN}Processing logs available at: $WORKSPACE_ROOT/logs/data_processing.log${NC}"
+        nohup python3 scripts/process_data.py > "$PWD/logs/data_processing.log" 2>&1 &
+        echo -e "${GREEN}Data processing started in background${NC}"
+    else
+        echo -e "${GREEN}Skipping data processing (use AUTO_PROCESS_DATA_ON_INIT=true to enable)${NC}"
     fi
 
-    # Configure and start the data scheduler if enabled
-    ENABLE_DATA_SCHEDULER="${ENABLE_DATA_SCHEDULER:-true}"
-    DATA_UPDATE_INTERVAL="${DATA_UPDATE_INTERVAL:-3600}"
-
+    # Configure scheduler if enabled
+    ENABLE_DATA_SCHEDULER="${ENABLE_DATA_SCHEDULER:-false}"
     if [ "$ENABLE_DATA_SCHEDULER" = "true" ]; then
-        echo -e "${YELLOW}Setting up the data scheduler...${NC}"
-
-        # Check if scheduler is already running
-        SCHEDULER_PID_FILE="$WORKSPACE_ROOT/data/.scheduler_pid"
-
+        DATA_UPDATE_INTERVAL="${DATA_UPDATE_INTERVAL:-3600}"
+        echo -e "${YELLOW}Starting data scheduler with interval: ${DATA_UPDATE_INTERVAL}s${NC}"
+        
+        # Clean up any existing scheduler
+        SCHEDULER_PID_FILE="$PWD/data/.scheduler_pid"
         if [ -f "$SCHEDULER_PID_FILE" ]; then
-            echo -e "${YELLOW}Cleaning up previous scheduler instance...${NC}"
             rm -f "$SCHEDULER_PID_FILE"
         fi
-
-        # Start the scheduler in background using nohup
-        echo -e "${YELLOW}Starting data scheduler with interval: ${DATA_UPDATE_INTERVAL}s${NC}"
-
-        # Create a background task that runs the scheduler
-        nohup python3 scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$WORKSPACE_ROOT/logs/scheduler.log" 2>&1 &
-
-        # Save the PID
+        
+        # Start scheduler
+        nohup python3 scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$PWD/logs/scheduler.log" 2>&1 &
         SCHEDULER_PID=$!
         echo $SCHEDULER_PID > "$SCHEDULER_PID_FILE"
-
         echo -e "${GREEN}Data scheduler started with PID: $SCHEDULER_PID${NC}"
-        echo -e "${GREEN}Scheduler will update data every ${DATA_UPDATE_INTERVAL} seconds${NC}"
-        echo -e "${YELLOW}Scheduler logs available at: $WORKSPACE_ROOT/logs/scheduler.log${NC}"
-    else
-        echo -e "${YELLOW}Data scheduler is disabled. Set ENABLE_DATA_SCHEDULER=true to enable automatic updates.${NC}"
     fi
 
-    # Create initialization marker
-    echo -e "${YELLOW}Creating initialization markers...${NC}"
-    echo "Initialized at $(date)" > "$WORKSPACE_ROOT/data/.replit_init_complete"
+    # Mark completion
+    echo "Background initialization completed at $(date)" > "$PWD/data/.replit_init_complete"
+    echo -e "${GREEN}Background initialization completed successfully!${NC}"
+    
+) > "$PWD/logs/replit_init_background.log" 2>&1 &
 
-    echo -e "${GREEN}Replit background initialization completed successfully!${NC}"
-) > ./logs/replit_init.log 2>&1 &
+BACKGROUND_PID=$!
+echo -e "${GREEN}Background initialization started with PID: $BACKGROUND_PID${NC}"
+echo -e "${GREEN}Logs available at: $PWD/logs/replit_init_background.log${NC}"
 
-# Report that the background initialization has started
-echo "Background initialization process started. API server should already be running."
-echo "Initialization logs available at: ./logs/replit_init.log"
-
-# Exit cleanly with success code - this enables the server which should already be running
+# Quick exit - server should already be running by now
+echo -e "${GREEN}Lightweight initialization completed. Server is ready!${NC}"
 exit 0 

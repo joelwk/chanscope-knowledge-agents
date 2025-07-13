@@ -620,7 +620,7 @@ async def base_query(
                     logger.info("Using Replit-specific storage for data readiness check")
                     # Initialize storage implementations for Replit
                     from config.storage import StorageFactory
-                    storage = StorageFactory.create(config, 'replit')
+                    storage = StorageFactory.create(config, env_type)
 
                     # Check if data is ready using appropriate storage implementations
                     complete_data_storage = storage['complete_data']
@@ -668,7 +668,9 @@ async def base_query(
                     try:
                         # Use the StorageFactory instead of direct attribute access on data_ops
                         from config.storage import StorageFactory
-                        storage = StorageFactory.create(data_ops.config, 'replit')
+                        from config.env_loader import detect_environment
+                        env_type = detect_environment()
+                        storage = StorageFactory.create(data_ops.config, env_type)
                         embedding_storage = storage['embeddings']
 
                         embeddings, thread_map = await embedding_storage.get_embeddings()
@@ -870,7 +872,7 @@ async def _process_single_query(
             logger.info("Using Replit-specific storage for data readiness check")
             # Initialize storage implementations for Replit
             from config.storage import StorageFactory
-            storage = StorageFactory.create(data_ops.config, 'replit')
+            storage = StorageFactory.create(data_ops.config, env_type)
 
             # Check if data preparation is needed
             complete_data_storage = storage['complete_data']
@@ -1313,7 +1315,7 @@ async def process_recent_query(
         if env_type.lower() == 'replit':
             # Check if stratified sample exists in Replit storage
             from config.storage import StorageFactory
-            storage = StorageFactory.create(data_ops.config, 'replit')
+            storage = StorageFactory.create(data_ops.config, env_type)
             stratified_storage = storage['stratified_sample']
 
             stratified_exists = await stratified_storage.sample_exists()
@@ -1929,7 +1931,7 @@ async def _prepare_data_if_needed(
         logger.info("Using Replit-specific storage for data readiness check")
         # Initialize storage implementations for Replit
         from config.storage import StorageFactory
-        storage = StorageFactory.create(data_ops.config, 'replit')
+        storage = StorageFactory.create(data_ops.config, env_type)
 
         # Check if data is ready using appropriate storage implementations
         complete_data_storage = storage['complete_data']

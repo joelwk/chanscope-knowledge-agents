@@ -33,8 +33,8 @@ from .routes import router as api_router
 setup_logging()
 logger = logging.getLogger("api")
 
-# Initialize environment variables
-load_environment()
+# Environment variables are already loaded by config.env_loader during module import
+# No need to call load_environment() again
 
 # Lifespan context manager for proper startup/shutdown handling
 @asynccontextmanager

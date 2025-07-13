@@ -47,6 +47,36 @@ cp .env.template .env.test
 
 4. Edit the `.env.test` file with appropriate test values.
 
+## Environment Detection and Configuration
+
+The system now includes robust environment detection that automatically configures storage and processing based on the deployment context:
+
+### 1. Docker Environment Configuration
+
+**Automatic Detection**: The system detects Docker environments through:
+- Presence of `/.dockerenv` file
+- `ENVIRONMENT=docker` environment variable
+- `DOCKER_ENV=true` environment variable
+
+**Storage Backend**: File-based storage (CSV, NPZ, JSON files)
+- Complete data: `/app/data/complete_data.csv`
+- Stratified samples: `/app/data/stratified/stratified_sample.csv`
+- Embeddings: `/app/data/stratified/embeddings.npz`
+- Thread ID mapping: `/app/data/stratified/thread_id_map.json`
+
+### 2. Replit Environment Configuration
+
+**Automatic Detection**: The system detects Replit environments through:
+- Presence of `REPL_ID`, `REPL_SLUG`, or `REPL_OWNER` environment variables
+- `/home/runner` directory existence
+- `REPLIT_ENV=replit` environment variable
+
+**Storage Backend**: Database and cloud storage
+- Complete data: PostgreSQL database
+- Stratified samples: Replit Key-Value store
+- Embeddings: Replit Object Storage (compressed .npz format)
+- Process locks: Object Storage for persistence across restarts
+
 ## Docker Configuration Files
 
 The deployment directory contains several important files:
@@ -98,6 +128,11 @@ docker-compose -f deployment/docker-compose.yml up -d
 
 Key environment variables used in the Docker setup:
 
+### Environment Detection Variables (Set Automatically in docker-compose.yml)
+- `ENVIRONMENT=docker`: Primary environment identifier
+- `DOCKER_ENV=true`: Explicit Docker environment flag
+- `REPLIT_ENV=`: Explicitly unset to prevent conflicts
+
 ### Production Variables
 - `OPENAI_API_KEY`: Required for OpenAI API access
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`: Required for S3 access
@@ -115,6 +150,18 @@ Key environment variables used in the Docker setup:
 - `FORCE_REFRESH`: Force data refresh before tests (default: false)
 - `AUTO_CHECK_DATA`: Automatically check data before tests (default: true)
 - `ABORT_ON_TEST_FAILURE`: Abort deployment on test failure (default: false)
+
+### Recent Environment Detection Fixes
+The docker-compose.yml file now explicitly sets environment variables to ensure proper detection:
+```yaml
+environment:
+  - ENVIRONMENT=docker
+  - DOCKER_ENV=true
+  # Explicitly unset REPLIT_ENV to prevent conflicts
+  - REPLIT_ENV=
+```
+
+This prevents environment detection conflicts that previously caused the system to incorrectly detect 'replit' environment in Docker containers.
 
 ## Data Management
 
@@ -267,6 +314,73 @@ The Knowledge Agent includes a robust task management system that:
 5. **Preserves Task History**: Maintains a record of completed tasks even after results are removed from memory
 
 This system ensures that users can track the status of their queries even if they were submitted hours ago, while preventing memory issues from accumulating task results.
+
+## Troubleshooting
+
+### 1. Container Startup Issues
+
+If the container fails to start:
+1. Check logs: `docker-compose logs`
+2. Verify environment variables
+3. Check volume permissions
+4. Validate network configuration
+
+### 2. Environment Detection Issues (Recently Fixed)
+
+**Problem**: Container logs show "states failed" with PostgreSQL connection errors, or environment detected as 'replit' instead of 'docker'.
+
+**Root Cause**: The system was incorrectly detecting environment as 'replit' instead of 'docker', causing it to attempt PostgreSQL database storage instead of file-based storage.
+
+**Solution**: The system now includes robust environment detection fixes:
+- Explicit environment variables in docker-compose.yml
+- Removed conflicting REPLIT_ENV settings from pytest.ini
+- Fixed hard-coded storage creation calls
+- Enhanced DataConfig to properly pass environment information
+
+**Verification**: Check environment detection is working correctly:
+```bash
+docker exec <container_id> python -c "
+from config.env_loader import detect_environment
+from config.storage import StorageFactory
+from knowledge_agents.data_ops import DataConfig
+
+config = DataConfig.from_config()
+print('Environment:', detect_environment())
+print('DataConfig env:', config.env)
+storage = StorageFactory.create(config, config.env)
+print('Storage type:', type(storage['complete_data']).__name__)
+"
+```
+
+Expected output:
+- Environment: docker
+- DataConfig env: docker  
+- Storage type: FileCompleteDataStorage
+
+### 3. Test Failures
+
+If tests fail during startup:
+1. Check test logs in `test_results/`
+2. Verify AWS credentials
+3. Check for network connectivity issues
+4. Validate data access permissions
+
+### 4. Performance Issues
+
+If the application performs poorly:
+1. Check resource allocation in docker-compose.yml
+2. Monitor CPU and memory usage
+3. Verify data volume performance
+4. Adjust worker count and resource limits
+
+### 5. Data Loading Delays
+
+If health checks fail during initial startup:
+1. Verify S3 connectivity and credentials
+2. Check logs for data loading progress
+3. Consider increasing health check `start_period` and `retries`
+4. Ensure the application responds with appropriate status during initialization
+5. Monitor data processing logs to track progress
 
 ## Monitoring and Maintenance
 

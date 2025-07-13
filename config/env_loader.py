@@ -20,12 +20,20 @@ def detect_environment() -> str:
         str: 'replit' if running in Replit, 'docker' if running in Docker, 
              or 'docker' as default/fallback (considering local as equivalent to Docker)
     """
-    # Check Replit environment first
-    if os.environ.get('REPLIT_ENV', '').lower() in ('replit', 'true') or os.environ.get('REPL_ID'):
+    # Check Replit environment first - must have REPL_ID or explicit REPLIT_ENV=replit
+    replit_env = os.environ.get('REPLIT_ENV', '').lower()
+    has_repl_id = os.environ.get('REPL_ID') is not None
+    
+    if (replit_env in ('replit', 'true')) or has_repl_id:
         return 'replit'
     
-    # Check Docker environment
-    elif os.path.exists('/.dockerenv') or os.environ.get('DOCKER_ENV', '').lower() == 'true':
+    # Check Docker environment - prioritize file system detection over environment vars
+    # This ensures Docker containers are always detected correctly regardless of .env file content
+    if os.path.exists('/.dockerenv'):
+        return 'docker'
+    elif os.environ.get('DOCKER_ENV', '').lower() == 'true':
+        return 'docker'
+    elif os.environ.get('ENVIRONMENT', '').lower() == 'docker':
         return 'docker'
     
     # Default to Docker (treating local as Docker-equivalent)
@@ -49,8 +57,8 @@ def load_environment():
         logger.error(f"Could not find .env file at {env_path}")
         raise FileNotFoundError(f"Could not find .env file at {env_path}")
     
-    # First load the base environment variables (before any section)
-    load_dotenv(dotenv_path=env_path)
+    # Base environment variables are already loaded by base_settings.py
+    # Don't load_dotenv here as it would load ALL sections including conflicting variables
     
     # Detect environment before loading section
     is_replit = is_replit_environment()
