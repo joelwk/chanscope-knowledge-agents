@@ -1,6 +1,6 @@
 modules = ["python-3.11", "postgresql-16"]
 hidden = [".pythonlibs"]
-run = "bash scripts/replit_init.sh && echo 'Starting Uvicorn server...' && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info"
+run = "mkdir -p logs && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & SERVER_PID=$! && sleep 2 && bash scripts/replit_init.sh > logs/init.log 2>&1 & wait $SERVER_PID"
 entrypoint = "api/app.py"
 
 # =============================================
@@ -19,40 +19,44 @@ DEPLOYMENT_ENV = "replit"
 API_PORT = "80"
 API_HOST = "0.0.0.0"
 LOG_LEVEL = "INFO"
-AUTO_CHECK_DATA = "false" # Don't auto-check data on startup
+AUTO_CHECK_DATA = "false"    # Don't auto-check data on startup
 FORCE_DATA_REFRESH = "false"
 SKIP_EMBEDDINGS = "false"
 PYTHONPATH = "${REPL_HOME}"
 PYTHONUNBUFFERED = "1"
 
 # Data Scheduler Configuration
-ENABLE_DATA_SCHEDULER = "true"  # Enable automatic data updates
-DATA_UPDATE_INTERVAL = "3600"   # Update interval in seconds (1 hour)
-DATA_RETENTION_DAYS = "14"      # Keep data for 14 days
+ENABLE_DATA_SCHEDULER = "true" # Enable automatic data updates
+DATA_UPDATE_INTERVAL = "3600"  # Update interval in seconds (1 hour)
+DATA_RETENTION_DAYS = "5"     # Keep data for 14 days
 
 # Testing Configuration
 TEST_MODE = "false"           # Default to false for deployment
 USE_MOCK_DATA = "false"
 USE_MOCK_EMBEDDINGS = "false"
 
+# Package caching safety (prevent deployment dependency issues)
+REPLIT_KEEP_PACKAGE_DEV_DEPENDENCIES = "1"
+REPLIT_DISABLE_PACKAGE_LAYER = "0"         # Keep caching enabled by default
+
 # =============================================
 # Deployment Configuration
 # =============================================
 [deployment]
-run = "bash scripts/replit_init.sh && echo 'Starting Uvicorn server...' && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info"
+run = "mkdir -p logs && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & SERVER_PID=$! && sleep 2 && bash scripts/replit_init.sh > logs/init.log 2>&1 & wait $SERVER_PID"
 deploymentTarget = "cloudrun"
 
 # =============================================
 # Health Check Configuration
 # =============================================
 [deployment.healthCheck]
-path = "/"  # Changed from "/api/v1/health" to root path for simplest check
+path = "/"               # Root path for fastest possible health check
 port = 80
-initialDelay = 30  # Increased to give more time for full startup
-timeout = 10       # Increased to allow for potential slow responses in Replit
-period = 15        # Check every 15 seconds
+initialDelay = 10        # Reduced - server should start quickly now
+timeout = 5              # Standard timeout
+period = 10              # Check every 10 seconds
 consecutiveSuccesses = 1
-consecutiveFailures = 5  # More tolerant of occasional failures
+consecutiveFailures = 3  # Less tolerant now that startup is fast
 
 [[ports]]
 localPort = 80
@@ -93,15 +97,7 @@ language = "python3"
 command = ["python3", "-u"]
 
 [workflows]
-
-[[workflows.workflow]]
-name = "deploy"
-mode = "sequential"
-author = 38779469
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash deployment/setup.sh"
+runButton = "Force a complete data refresh including stratification and embeddings"
 
 [[workflows.workflow]]
 name = "test"
@@ -120,6 +116,24 @@ author = 38779469
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python scripts/check_replit_db.py"
+
+[[workflows.workflow]]
+name = "Wipe all data"
+mode = "sequential"
+author = 38779469
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python scripts/wipe_all_data.py"
+
+[[workflows.workflow]]
+name = "Force a complete data refresh including stratification and embeddings"
+mode = "sequential"
+author = 38779469
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python scripts/process_data.py --force-refresh"
 
 [server]
 host = "0.0.0.0"
@@ -187,4 +201,4 @@ command = "tail -n 50 logs/scheduler.log"
 bucket = "rolling-data"
 
 [objectStorage]
-defaultBucketID = "replit-objstore-05cbbe20-4215-4b30-a9e9-5d2d386b4ae7"
+defaultBucketID = "replit-objstore-bbfe5aa0-5c0d-484a-9dce-803e7d5bb0f4"
