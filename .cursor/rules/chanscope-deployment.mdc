@@ -158,15 +158,11 @@ When working with `docker-compose.test.yml`, ensure:
 
 - **Entry Point**: Configure in `replit.nix` or `.replit`:
   ```
-  run = "poetry run uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}"
+  run = "python -m uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}"
   ```
 
 - **Poetry Setup**:
   ```
-  [tool.poetry]
-  name = "chanscope"
-  version = "0.1.0"
-  description = "Chanscope application for semantic search and inference"
   ```
 
 - **Dependencies**:
@@ -194,7 +190,7 @@ When working with `docker-compose.test.yml`, ensure:
 ### 5. Testing on Replit
 
 - **Test Execution**:
-  - Create a dedicated test entry point: `poetry run pytest`
+  - Create a dedicated test entry point: `python -m pytest`
   - Use environment variable `TEST_MODE=true` for test runs
   - Implement test fixtures that clean up after themselves
 
@@ -298,7 +294,7 @@ git clone https://github.com/your-org/chanscope.git
 # 3. Install dependencies with Poetry
 
 # Start the application
-poetry run uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}
+python -m uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}
 ```
 
 ### 3. Testing Before Deployment
@@ -515,8 +511,8 @@ services:
         target: /app/data
       # Persistent volumes
       - type: volume
-        source: poetry_cache
-        target: /app/.cache/pypoetry
+        source: pip_cache
+        target: /app/.cache/pip
       - type: volume
         source: app_logs
         target: /app/logs
@@ -584,7 +580,7 @@ services:
 
 ```toml
 # .replit
-run = "poetry run uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}"
+run = "python -m uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}"
 language = "python3"
 
 [env]
@@ -609,7 +605,7 @@ guessImports = true
 language = "python3"
 
 [deployment]
-run = ["sh", "-c", "poetry run uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}"]
+run = ["sh", "-c", "python -m uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8080}"]
 deploymentTarget = "cloudrun"
 ```
 

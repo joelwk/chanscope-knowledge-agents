@@ -959,9 +959,10 @@ class KnowledgeAgent:
                 raise ChunkGenerationError(f"Failed to generate chunks: {str(e)}") from e
 
     def _optimize_batch_size(self, contents: List[str], default_batch_size: int) -> int:
-        """Dynamically optimize batch size based on content length.
+        """Dynamically optimize batch size based on content length and token count.
         
         For very long content items, reduce batch size to avoid rate limits and token limits.
+        Uses tiktoken for accurate token counting when available.
         
         Args:
             contents: List of content strings to process
@@ -973,18 +974,51 @@ class KnowledgeAgent:
         if not contents:
             return default_batch_size
             
-        # Calculate average content length
-        avg_length = sum(len(content) for content in contents) / len(contents)
-        
-        # Adjust batch size based on content length
-        if avg_length > 10000:  # Very long content
-            return max(1, min(3, default_batch_size))
-        elif avg_length > 5000:  # Moderately long content
-            return max(1, min(5, default_batch_size))
-        elif avg_length > 2000:  # Average content
-            return max(1, min(10, default_batch_size))
-        else:  # Short content
-            return default_batch_size
+        try:
+            # Use tiktoken for accurate token counting
+            encoding = tiktoken.get_encoding("cl100k_base")
+            
+            # Calculate token statistics
+            token_counts = [len(encoding.encode(content)) for content in contents]
+            avg_tokens = sum(token_counts) / len(token_counts)
+            max_tokens = max(token_counts)
+            
+            logger.debug(f"Token analysis: avg={avg_tokens:.1f}, max={max_tokens}, count={len(contents)}")
+            
+            # Adjust batch size based on token count (more accurate than character count)
+            if avg_tokens > 8000:  # Very long content (near model limits)
+                optimized_size = max(1, min(2, default_batch_size))
+            elif avg_tokens > 4000:  # Long content
+                optimized_size = max(1, min(3, default_batch_size))
+            elif avg_tokens > 2000:  # Medium content
+                optimized_size = max(1, min(5, default_batch_size))
+            elif avg_tokens > 1000:  # Average content
+                optimized_size = max(1, min(8, default_batch_size))
+            else:  # Short content
+                optimized_size = default_batch_size
+                
+            # Additional check for very large batches with many items
+            if len(contents) > 50 and avg_tokens > 500:
+                optimized_size = max(1, min(optimized_size, 5))
+                
+            logger.debug(f"Batch size optimization: {default_batch_size} -> {optimized_size} (avg_tokens={avg_tokens:.1f})")
+            return optimized_size
+            
+        except Exception as e:
+            logger.warning(f"Error in token-based batch optimization: {e}, falling back to character-based")
+            
+            # Fallback to character-based optimization
+            avg_length = sum(len(content) for content in contents) / len(contents)
+            
+            # Adjust batch size based on content length
+            if avg_length > 10000:  # Very long content
+                return max(1, min(3, default_batch_size))
+            elif avg_length > 5000:  # Moderately long content
+                return max(1, min(5, default_batch_size))
+            elif avg_length > 2000:  # Average content
+                return max(1, min(10, default_batch_size))
+            else:  # Short content
+                return default_batch_size
             
     async def generate_chunks_batch(
         self,

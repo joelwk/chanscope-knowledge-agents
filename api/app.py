@@ -33,8 +33,8 @@ from .routes import router as api_router
 setup_logging()
 logger = logging.getLogger("api")
 
-# Initialize environment variables
-load_environment()
+# Environment variables are already loaded by config.env_loader during module import
+# No need to call load_environment() again
 
 # Lifespan context manager for proper startup/shutdown handling
 @asynccontextmanager
@@ -44,6 +44,14 @@ async def lifespan(app: FastAPI):
     This ensures we can respond to health checks immediately while still
     preparing our data in the background.
     """
+    # Clean logs on startup
+    try:
+        from knowledge_agents.utils import clean_logs
+        await clean_logs()
+        logger.info("Logs cleaned on startup")
+    except Exception as e:
+        logger.warning(f"Failed to clean logs on startup: {e}")
+    
     # Set a flag to indicate the API is ready for basic health checks
     app.state.ready_for_health_checks = True
     logger.info("API ready for health checks")

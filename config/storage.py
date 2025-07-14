@@ -1125,6 +1125,7 @@ class ReplitStateManager(StateManager):
     
     def __init__(self, config):
         self.config = config
+        from config.replit import KeyValueStore
         self.kv_store = KeyValueStore()
     
     async def update_state(self, state: Dict[str, Any]) -> None:

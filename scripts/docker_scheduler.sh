@@ -48,8 +48,17 @@ start_scheduler() {
     
     echo -e "${YELLOW}Starting data scheduler with update interval: ${interval} seconds${NC}"
     
+    # Ensure we are in the correct directory
+    cd "${APP_ROOT}"
+    
+    # Install dependencies if requirements.txt exists
+    if [ -f "requirements.txt" ]; then
+        echo "Installing dependencies from requirements.txt..."
+        pip install --no-cache-dir -r requirements.txt
+    fi
+    
     # Create the scheduler background process
-    cd "${APP_ROOT}" && python scripts/scheduled_update.py refresh --continuous --interval=$interval > "${SCHEDULER_LOG}" 2>&1 &
+    python3 scripts/scheduled_update.py refresh --continuous --interval=$interval > "${SCHEDULER_LOG}" 2>&1 &
     
     SCHEDULER_PID=$!
     echo ${SCHEDULER_PID} > "${PID_FILE}"
@@ -138,7 +147,15 @@ cleanup() {
 # Function to run a single update manually
 run_update() {
     echo -e "${YELLOW}Running manual data update...${NC}"
-    cd "${APP_ROOT}" && python scripts/scheduled_update.py refresh
+    cd "${APP_ROOT}"
+    
+    # Install dependencies if requirements.txt exists
+    if [ -f "requirements.txt" ]; then
+        echo "Installing dependencies from requirements.txt..."
+        pip install --no-cache-dir -r requirements.txt
+    fi
+    
+    python3 scripts/scheduled_update.py refresh
     return $?
 }
 
@@ -205,10 +222,17 @@ case "$1" in
         show_help
         ;;
     *)
-        echo -e "${RED}Unknown command: $1${NC}"
-        show_help
-        exit 1
+        # If no command is given, just run the scheduler directly
+        # This supports the simplified Docker usage
+        echo "Starting Docker scheduler script..."
+        cd /app
+        if [ -f "requirements.txt" ]; then
+            echo "Installing dependencies from requirements.txt..."
+            pip install --no-cache-dir -r requirements.txt
+        fi
+        echo "Starting the scheduled update process..."
+        python3 scripts/scheduled_update.py "$@"
         ;;
 esac
 
-exit $? 
+exit $?

@@ -1,6 +1,6 @@
 modules = ["python-3.11", "postgresql-16"]
 hidden = [".pythonlibs"]
-run = "echo 'Starting Uvicorn server...' && poetry run uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & sleep 5 && bash scripts/replit_init.sh"
+run = "mkdir -p logs && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & SERVER_PID=$! && sleep 2 && bash scripts/replit_init.sh > logs/init.log 2>&1 & wait $SERVER_PID"
 entrypoint = "api/app.py"
 
 # =============================================
@@ -8,6 +8,7 @@ entrypoint = "api/app.py"
 # =============================================
 [nix]
 channel = "stable-23_11"
+packages = ["arrow-cpp", "cargo", "glibcLocales", "libiconv", "libxcrypt", "libyaml", "openssl", "pgadmin4", "pkg-config", "rustc", "xsimd"]
 
 # =============================================
 # Environment Variables
@@ -18,40 +19,44 @@ DEPLOYMENT_ENV = "replit"
 API_PORT = "80"
 API_HOST = "0.0.0.0"
 LOG_LEVEL = "INFO"
-AUTO_CHECK_DATA = "false" # Don't auto-check data on startup
+AUTO_CHECK_DATA = "false"    # Don't auto-check data on startup
 FORCE_DATA_REFRESH = "false"
 SKIP_EMBEDDINGS = "false"
 PYTHONPATH = "${REPL_HOME}"
 PYTHONUNBUFFERED = "1"
 
 # Data Scheduler Configuration
-ENABLE_DATA_SCHEDULER = "true"  # Enable automatic data updates
-DATA_UPDATE_INTERVAL = "3600"   # Update interval in seconds (1 hour)
-DATA_RETENTION_DAYS = "14"      # Keep data for 14 days
+ENABLE_DATA_SCHEDULER = "true" # Enable automatic data updates
+DATA_UPDATE_INTERVAL = "3600"  # Update interval in seconds (1 hour)
+DATA_RETENTION_DAYS = "5"     # Keep data for 14 days
 
 # Testing Configuration
 TEST_MODE = "false"           # Default to false for deployment
 USE_MOCK_DATA = "false"
 USE_MOCK_EMBEDDINGS = "false"
 
+# Package caching safety (prevent deployment dependency issues)
+REPLIT_KEEP_PACKAGE_DEV_DEPENDENCIES = "1"
+REPLIT_DISABLE_PACKAGE_LAYER = "0"         # Keep caching enabled by default
+
 # =============================================
 # Deployment Configuration
 # =============================================
 [deployment]
-run = "echo 'Starting Uvicorn server...' && poetry run uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & sleep 5 && bash scripts/replit_init.sh"
+run = "mkdir -p logs && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & SERVER_PID=$! && sleep 2 && bash scripts/replit_init.sh > logs/init.log 2>&1 & wait $SERVER_PID"
 deploymentTarget = "cloudrun"
 
 # =============================================
 # Health Check Configuration
 # =============================================
 [deployment.healthCheck]
-path = "/"  # Changed from "/api/v1/health" to root path for simplest check
+path = "/"               # Root path for fastest possible health check
 port = 80
-initialDelay = 30  # Increased to give more time for full startup
-timeout = 10       # Increased to allow for potential slow responses in Replit
-period = 15        # Check every 15 seconds
+initialDelay = 10        # Reduced - server should start quickly now
+timeout = 5              # Standard timeout
+period = 10              # Check every 10 seconds
 consecutiveSuccesses = 1
-consecutiveFailures = 5  # More tolerant of occasional failures
+consecutiveFailures = 3  # Less tolerant now that startup is fast
 
 [[ports]]
 localPort = 80
@@ -92,15 +97,7 @@ language = "python3"
 command = ["python3", "-u"]
 
 [workflows]
-
-[[workflows.workflow]]
-name = "deploy"
-mode = "sequential"
-author = 38779469
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash deployment/setup.sh"
+runButton = "Force a complete data refresh including stratification and embeddings"
 
 [[workflows.workflow]]
 name = "test"
@@ -118,7 +115,25 @@ author = 38779469
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "poetry run python scripts/check_replit_db.py"
+args = "python scripts/check_replit_db.py"
+
+[[workflows.workflow]]
+name = "Wipe all data"
+mode = "sequential"
+author = 38779469
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python scripts/wipe_all_data.py"
+
+[[workflows.workflow]]
+name = "Force a complete data refresh including stratification and embeddings"
+mode = "sequential"
+author = 38779469
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python scripts/process_data.py --force-refresh"
 
 [server]
 host = "0.0.0.0"
@@ -127,19 +142,19 @@ port = 80
 # Commands for Replit interface
 [commands.test]
 description = "Run tests in Replit environment"
-command = "poetry run bash scripts/test.sh replit"
+command = "bash scripts/test.sh replit"
 
 [commands.run-api]
 description = "Run the API server"
-command = "poetry run python -m uvicorn api.app:app --host 0.0.0.0 --port 80"
+command = "python -m uvicorn api.app:app --host 0.0.0.0 --port 80"
 
 [commands.update-data]
 description = "Run manual data update"
-command = "poetry run python scripts/scheduled_update.py refresh"
+command = "python scripts/scheduled_update.py refresh"
 
 [commands.check-db]
 description = "Check Replit database connectivity"
-command = "poetry run python scripts/check_replit_db.py"
+command = "python scripts/check_replit_db.py"
 
 [commands.initialize]
 description = "Initialize Replit environment"
@@ -147,32 +162,32 @@ command = "bash scripts/replit_init.sh"
 
 [commands.process-data]
 description = "Process data stratification and embeddings"
-command = "poetry run python scripts/process_data.py"
+command = "python scripts/process_data.py"
 
 [commands.check-data-status]
 description = "Check the status of data processing pipeline"
-command = "poetry run python scripts/process_data.py --check"
+command = "python scripts/process_data.py --check"
 
 [commands.force-data-refresh]
 description = "Force a complete data refresh including stratification and embeddings"
-command = "poetry run python scripts/process_data.py --force-refresh"
+command = "python scripts/process_data.py --force-refresh"
 
 [commands.test-stratification]
 description = "Test the stratification and embedding processes directly"
-command = "poetry run python scripts/test_stratification.py"
+command = "python scripts/test_stratification.py"
 
 [commands.test-stratification-only]
 description = "Test only the stratification process"
-command = "poetry run python scripts/test_stratification.py --stratification-only"
+command = "python scripts/test_stratification.py --stratification-only"
 
 [commands.test-embeddings-only]
 description = "Test only the embedding generation process"
-command = "poetry run python scripts/test_stratification.py --embeddings-only"
+command = "python scripts/test_stratification.py --embeddings-only"
 
 # Scheduler Commands
 [commands.scheduler-start]
 description = "Start the data scheduler"
-command = "poetry run python scripts/scheduled_update.py refresh --continuous --interval=3600"
+command = "python scripts/scheduled_update.py refresh --continuous --interval=3600"
 
 [commands.scheduler-status]
 description = "Check the status of the data scheduler"

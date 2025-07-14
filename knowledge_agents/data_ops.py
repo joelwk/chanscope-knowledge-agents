@@ -18,6 +18,7 @@ from config.base_settings import get_base_settings
 from config.settings import Config
 from .data_processing.sampler import Sampler
 from config.env_loader import detect_environment
+from knowledge_agents.utils import validate_text
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -47,9 +48,10 @@ class DataConfig:
     filter_date: Optional[str] = None
     sample_size: int = 1000
     time_column: str = 'posted_date_time'
-    strata_column: str = 'thread_id'
+    strata_column: Optional[str] = None
     board_id: Optional[str] = None
     force_refresh: bool = False
+    env: Optional[str] = None
 
     def __post_init__(self):
         chunk_settings = Config.get_chunk_settings()
@@ -110,6 +112,9 @@ class DataConfig:
         root_data_path = paths.get('root_data_path', 'data')
         stratified_path = paths.get('stratified', os.path.join(root_data_path, 'stratified'))
         temp_path = paths.get('temp', 'temp_files')
+        
+        # Get current environment
+        env = detect_environment()
 
         return cls(
             root_data_path=root_data_path,
@@ -119,7 +124,8 @@ class DataConfig:
             sample_size=sample_size,
             time_column=time_column,
             strata_column=strata_column,
-            force_refresh=force_refresh
+            force_refresh=force_refresh,
+            env=env
         )
 
 
@@ -260,6 +266,32 @@ class DataProcessor:
         if missing:
             self._logger.error(f"Missing columns: {missing}. Available: {data.columns.tolist()}")
             raise ValueError(f"Missing columns: {missing}")
+            
+        # Validate text quality before stratification
+        if 'text_clean' in data.columns:
+            text_valid_rows = []
+            invalid_rows = 0
+            invalid_reasons = {}
+            
+            for idx, row in data.iterrows():
+                is_valid, reason = validate_text(row['text_clean'])
+                if is_valid:
+                    text_valid_rows.append(idx)
+                else:
+                    invalid_rows += 1
+                    if reason not in invalid_reasons:
+                        invalid_reasons[reason] = 0
+                    invalid_reasons[reason] += 1
+            
+            if invalid_rows > 0:
+                self._logger.info(f"Filtered out {invalid_rows} rows with invalid text before stratification")
+                for reason, count in invalid_reasons.items():
+                    self._logger.debug(f"  - {reason}: {count} rows")
+                
+                # Keep only rows with valid text
+                data = data.loc[text_valid_rows]
+                self._logger.info(f"Proceeding with stratification using {len(data)} valid records")
+                
         stratified = self.sampler.stratified_sample(data)
         self._logger.info(f"Stratification complete; result size: {len(stratified)}")
         return stratified
@@ -387,8 +419,8 @@ class DataOperations:
                 last_update = datetime.fromisoformat(update_info.get('timestamp', '2000-01-01T00:00:00'))
                 # Ensure last_update has timezone info if it doesn't already
                 if last_update.tzinfo is None:
-                    last_update = last_update.replace(tzinfo=timezone.utc)
-                return (datetime.now(timezone.utc) - last_update).total_seconds() < 3600  # 1 hour
+                    last_update = last_update.replace(tzinfo=pytz.UTC)
+                return (datetime.now(pytz.UTC) - last_update).total_seconds() < 3600  # 1 hour
         except Exception as e:
             logger.warning(f"Failed to check update recency: {e}")
             return False
@@ -451,23 +483,122 @@ class DataOperations:
     ) -> None:
         """Update embeddings for the stratified dataset."""
         try:
+            # Import inference_ops to clear caches when embeddings are updated
+            from knowledge_agents.inference_ops import _clear_caches
+            
             # Initialize Object Storage
             from config.storage import ReplitObjectEmbeddingStorage
             embedding_storage = ReplitObjectEmbeddingStorage(self.config)
             
             logger.info(f"Starting embedding update (force_refresh={force_refresh})")
             
+            # Check incremental embeddings setting
+            base_settings = get_base_settings()
+            incremental_embeddings = base_settings.get('processing', {}).get('incremental_embeddings', True)
+            
             # Check if we need to update embeddings
-            if not force_refresh:
-                logger.info("Checking if embeddings already exist")
+            if not force_refresh and incremental_embeddings:
+                logger.info("Checking for incremental embedding updates")
+                embeddings_exist = await embedding_storage.embeddings_exist()
+                if embeddings_exist:
+                    # Load existing embeddings and thread map
+                    existing_embeddings, existing_thread_map = await embedding_storage.get_embeddings()
+                    if existing_embeddings is not None and existing_thread_map is not None:
+                        # Load current stratified data
+                        stratified_data = await self._load_stratified_data()
+                        if stratified_data is None or len(stratified_data) == 0:
+                            logger.error("No stratified data available for embedding generation")
+                            return
+                        
+                        # Check for new articles
+                        existing_thread_ids = set(existing_thread_map.keys())
+                        current_thread_ids = set(stratified_data['thread_id'].astype(str).tolist())
+                        new_thread_ids = current_thread_ids - existing_thread_ids
+                        
+                        if not new_thread_ids:
+                            logger.info("No new articles found, embeddings are up to date")
+                            return
+                        
+                        logger.info(f"Found {len(new_thread_ids)} new articles for incremental embedding update")
+                        
+                        # Filter new articles
+                        new_articles_data = stratified_data[stratified_data['thread_id'].astype(str).isin(new_thread_ids)]
+                        
+                        # Generate embeddings for new articles only
+                        new_content = new_articles_data['text_clean'].tolist()
+                        new_thread_ids_list = new_articles_data['thread_id'].astype(str).tolist()
+                        
+                        # Process in batches
+                        batch_size = 100
+                        new_embeddings = []
+                        
+                        from knowledge_agents.embedding_ops import generate_embeddings
+                        
+                        for i in range(0, len(new_content), batch_size):
+                            batch_content = new_content[i:i+batch_size]
+                            batch_thread_ids = new_thread_ids_list[i:i+batch_size]
+                            
+                            batch_num = i//batch_size + 1
+                            total_batches = (len(new_content) + batch_size - 1) // batch_size
+                            logger.info(f"Processing incremental embedding batch {batch_num}/{total_batches}")
+                            
+                            # Update progress if callback provided
+                            if progress_callback:
+                                progress_percent = int((i / len(new_content)) * 100)
+                                if asyncio.iscoroutinefunction(progress_callback):
+                                    await progress_callback(progress_percent, 100)
+                                else:
+                                    progress_callback(progress_percent, 100)
+                            
+                            try:
+                                batch_embeddings = await generate_embeddings(batch_content)
+                                if batch_embeddings:
+                                    new_embeddings.extend(batch_embeddings)
+                                    logger.info(f"Generated {len(batch_embeddings)} new embeddings")
+                            except Exception as e:
+                                logger.error(f"Error generating embeddings for batch {batch_num}: {e}")
+                                continue
+                        
+                        if new_embeddings:
+                            # Combine existing and new embeddings
+                            combined_embeddings = np.vstack([existing_embeddings, np.array(new_embeddings, dtype=np.float32)])
+                            
+                            # Update thread ID map
+                            updated_thread_map = existing_thread_map.copy()
+                            base_index = len(existing_embeddings)
+                            for i, thread_id in enumerate(new_thread_ids_list[:len(new_embeddings)]):
+                                updated_thread_map[thread_id] = base_index + i
+                            
+                            # Store updated embeddings
+                            success = await embedding_storage.store_embeddings(combined_embeddings, updated_thread_map)
+                            
+                            if success:
+                                logger.info(f"Successfully updated embeddings with {len(new_embeddings)} new entries (total: {len(combined_embeddings)})")
+                                # Clear caches after embedding update
+                                _clear_caches()
+                                return
+                            else:
+                                logger.error("Failed to store incremental embedding updates, falling back to full refresh")
+                                force_refresh = True
+                        else:
+                            logger.warning("No new embeddings generated, falling back to full refresh")
+                            force_refresh = True
+                    else:
+                        logger.info("Could not load existing embeddings, performing full refresh")
+                        force_refresh = True
+                else:
+                    logger.info("No existing embeddings found, performing full generation")
+            elif force_refresh:
+                logger.info("Force refresh enabled, will regenerate all embeddings")
+            else:
+                logger.info("Incremental embeddings disabled, checking if full generation is needed")
                 embeddings_exist = await embedding_storage.embeddings_exist()
                 if embeddings_exist:
                     logger.info("Embeddings already exist and force_refresh is False, skipping update")
                     return
-                else:
-                    logger.info("Embeddings do not exist or force_refresh is True, proceeding with update")
-            else:
-                logger.info("Force refresh is enabled, will regenerate embeddings regardless of current state")
+            
+            # Full embedding generation (original logic)
+            logger.info("Performing full embedding generation")
             
             # Load stratified data
             logger.info("Loading stratified data for embedding generation")
@@ -566,6 +697,9 @@ class DataOperations:
             if success:
                 logger.info(f"Successfully generated and stored {len(all_embeddings)} embeddings in Object Storage")
                 
+                # Clear caches after embedding update
+                _clear_caches()
+                
                 # Verify embeddings were stored correctly
                 logger.info("Verifying embeddings were stored correctly")
                 try:
@@ -586,113 +720,110 @@ class DataOperations:
     async def ensure_data_ready(
         self,
         force_refresh: bool = False,
-        skip_embeddings: bool = False
+        skip_embeddings: bool = False,
+        max_workers: Optional[int] = None
     ) -> bool:
-        """
-        Ensures all necessary data is ready for inference.
+        """Ensure all required data is ready for processing.
         
         Args:
-            force_refresh: If True, forces a refresh of all data regardless of current state
-            skip_embeddings: If True, skips embedding generation step
+            force_refresh: Whether to force refresh of all data
+            skip_embeddings: Whether to skip embedding generation
+            max_workers: Maximum number of workers for parallel processing
             
         Returns:
             bool: True if data is ready, False otherwise
         """
-        logger.info(f"Ensuring data is ready (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})")
-        
         try:
-            # Initialize storage implementations
-            from config.storage import StorageFactory
-            storage = StorageFactory.create(self.config)
+            # Import inference_ops to clear caches when data is refreshed
+            from knowledge_agents.inference_ops import _clear_caches
             
-            complete_data_storage = storage['complete_data']
-            stratified_storage = storage['stratified_sample']
-            embedding_storage = storage['embeddings']
+            logger.info(f"Ensuring data is ready (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})")
             
-            # Check if we need to update the database
-            if force_refresh or await self.needs_complete_update():
-                logger.info("Preparing complete dataset...")
+            # Check environment type to determine appropriate data preparation methods
+            from config.env_loader import detect_environment
+            env_type = detect_environment()
+            
+            if env_type.lower() == 'replit':
+                logger.info("Using Replit-specific data preparation")
+                # Use Replit-specific storage implementations
+                from config.storage import StorageFactory
+                storage = StorageFactory.create(self.config, env_type)
                 
-                try:
-                    # Download and process data
-                    start_time = time.time()
-                    success = await complete_data_storage.prepare_data()
-                    
-                    if success:
-                        logger.info(f"Complete dataset prepared in {time.time() - start_time:.2f}s")
-                    else:
-                        logger.error("Failed to prepare complete dataset")
-                        return False
-                except Exception as e:
-                    logger.error(f"Error preparing complete dataset: {str(e)}")
-                    logger.error(traceback.format_exc())
-                    return False
-            
-            # Check if we need to update the stratified sample
-            if force_refresh or await self.needs_stratification():
-                logger.info("Creating stratified sample...")
+                # Check if complete data exists in PostgreSQL
+                complete_data_storage = storage['complete_data']
+                row_count = await complete_data_storage.get_row_count()
+                logger.info(f"PostgreSQL database has {row_count} rows")
                 
-                try:
-                    # Get complete data for stratification
-                    complete_data = await complete_data_storage.get_data()
-                    if complete_data.empty:
-                        logger.error("No complete data available for stratification")
+                # If no data or force refresh, fetch from S3
+                if row_count == 0 or force_refresh:
+                    logger.info("Fetching data from S3 and storing in PostgreSQL")
+                    success = await self._fetch_and_store_s3_data()
+                    if not success:
+                        logger.error("Failed to fetch and store S3 data")
                         return False
                     
-                    # Create stratified sample
-                    start_time = time.time()
-                    stratified_data = await self.processor.stratify_data(complete_data)
-                    
-                    if not stratified_data.empty:
-                        # Store stratified sample
-                        success = await stratified_storage.store_sample(stratified_data)
-                        if success:
-                            logger.info(f"Stratified sample created and stored in {time.time() - start_time:.2f}s")
-                        else:
-                            logger.error("Failed to store stratified sample")
-                            return False
-                    else:
+                    # Clear caches after data refresh
+                    _clear_caches()
+                
+                # Check if stratified sample exists
+                stratified_storage = storage['stratified_sample']
+                stratified_exists = await stratified_storage.sample_exists()
+                
+                if not stratified_exists or force_refresh:
+                    logger.info("Creating stratified sample")
+                    success = await self._create_stratified_sample()
+                    if not success:
                         logger.error("Failed to create stratified sample")
                         return False
-                except Exception as e:
-                    logger.error(f"Error creating stratified sample: {str(e)}")
-                    logger.error(traceback.format_exc())
-                    return False
-            
-            # Check if we need to update embeddings
-            if not skip_embeddings and (force_refresh or await self._needs_embeddings_update()):
-                logger.info("Generating embeddings...")
+                    
+                    # Clear caches after stratification
+                    _clear_caches()
                 
-                try:
-                    # Load stratified data for embedding generation
-                    stratified_data = await stratified_storage.get_sample()
-                    if stratified_data is None or stratified_data.empty:
-                        logger.error("No stratified data available for embedding generation")
+                # Generate embeddings if not skipping
+                if not skip_embeddings:
+                    await self._update_embeddings(force_refresh=force_refresh, max_workers=max_workers)
+                
+            else:
+                # Use standard file-based approach for Docker/local environment
+                logger.info("Using file-based data preparation")
+                
+                # Check if complete data exists
+                complete_data_path = self.config.root_data_path / 'complete_data.csv'
+                if not complete_data_path.exists() or force_refresh:
+                    logger.info("Fetching and processing S3 data")
+                    success = await self._fetch_and_store_s3_data()
+                    if not success:
+                        logger.error("Failed to fetch and store S3 data")
                         return False
                     
-                    # Generate embeddings
-                    start_time = time.time()
-                    await self._update_embeddings(force_refresh=force_refresh)
-                    
-                    # Verify embeddings were generated
-                    embeddings_exist = await embedding_storage.embeddings_exist()
-                    if embeddings_exist:
-                        logger.info(f"Embeddings generated in {time.time() - start_time:.2f}s")
-                    else:
-                        logger.error("Failed to generate embeddings")
-                        if not skip_embeddings:
-                            return False
-                except Exception as e:
-                    logger.error(f"Error generating embeddings: {str(e)}")
-                    logger.error(traceback.format_exc())
-                    if not skip_embeddings:
+                    # Clear caches after data refresh
+                    _clear_caches()
+                
+                # Check if stratified sample exists
+                stratified_path = self.config.stratified_data_path / 'stratified_sample.csv'
+                if not stratified_path.exists() or force_refresh:
+                    logger.info("Creating stratified sample")
+                    success = await self._create_stratified_sample()
+                    if not success:
+                        logger.error("Failed to create stratified sample")
                         return False
+                    
+                    # Clear caches after stratification
+                    _clear_caches()
+                
+                # Generate embeddings if not skipping
+                if not skip_embeddings:
+                    embeddings_path = self.config.stratified_data_path / 'embeddings.npz'
+                    thread_map_path = self.config.stratified_data_path / 'thread_id_map.json'
+                    
+                    if not embeddings_path.exists() or not thread_map_path.exists() or force_refresh:
+                        await self._update_embeddings(force_refresh=force_refresh, max_workers=max_workers)
             
-            # Data is ready
+            logger.info("Data preparation completed successfully")
             return True
             
         except Exception as e:
-            logger.error(f"Unexpected error in ensure_data_ready: {str(e)}")
+            logger.error(f"Error ensuring data ready: {e}")
             logger.error(traceback.format_exc())
             return False
 
@@ -971,7 +1102,7 @@ class DataOperations:
         if env_type.lower() == 'replit':
             # For Replit, use storage implementation
             from config.storage import StorageFactory
-            storage = StorageFactory.create(self.config, 'replit')
+            storage = StorageFactory.create(self.config, env_type)
             complete_data_storage = storage['complete_data']
             
             try:
@@ -1113,7 +1244,7 @@ class DataOperations:
         if env_type.lower() == 'replit':
             # For Replit, use storage implementation
             from config.storage import StorageFactory
-            storage = StorageFactory.create(self.config, 'replit')
+            storage = StorageFactory.create(self.config, env_type)
             stratified_storage = storage['stratified_sample']
             
             try:
@@ -1179,7 +1310,7 @@ class DataOperations:
                 logger.info("Using Replit storage to check data readiness")
                 # Initialize storage implementations for Replit
                 from config.storage import StorageFactory
-                storage = StorageFactory.create(self.config, 'replit')
+                storage = StorageFactory.create(self.config, env_type)
                 
                 complete_data_storage = storage['complete_data']
                 stratified_storage = storage['stratified_sample']

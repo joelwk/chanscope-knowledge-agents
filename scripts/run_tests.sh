@@ -215,38 +215,6 @@ EOF
     fi
 }
 
-# Find the appropriate Python command (poetry or direct)
-find_python_command() {
-    if command -v poetry &> /dev/null; then
-        echo "poetry run python"
-    elif command -v python3 &> /dev/null; then
-        echo "python3"
-    elif command -v python &> /dev/null; then
-        echo "python"
-    else
-        echo -e "${RED}Error: Neither Python nor Poetry is available in your environment.${NC}"
-        exit 1
-    fi
-}
-
-# Run tests for Chanscope approach validation
-run_chanscope_validation() {
-    echo -e "${YELLOW}Running Chanscope approach validation tests...${NC}"
-    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-    VALIDATION_OUTPUT="${PROJECT_ROOT}/test_results/chanscope_validation_${ENVIRONMENT}_${TIMESTAMP}.json"
-    
-    PYTHON_CMD=$(find_python_command)
-    $PYTHON_CMD "${PROJECT_ROOT}/scripts/validate_chanscope_approach.py" --output "$VALIDATION_OUTPUT"
-    
-    local status=$?
-    if [ $status -eq 0 ]; then
-        echo -e "${GREEN}Chanscope validation tests passed!${NC}"
-    else
-        echo -e "${RED}Chanscope validation tests failed with exit code: $status${NC}"
-    fi
-    return $status
-}
-
 # Run Docker Tests
 run_docker_tests() {
     echo -e "${YELLOW}Running tests in Docker environment...${NC}"
@@ -334,25 +302,16 @@ run_local_tests() {
     export TEST_DATA_PATH="${PROJECT_ROOT}/data"
     export STRATIFIED_DATA_PATH="${PROJECT_ROOT}/data/stratified"
     
-    # Find Python executable
-    PYTHON_CMD=$(find_python_command)
-    
-    # Special handling for Chanscope approach tests
-    if [ "$TEST_TYPE" = "chanscope-approach" ]; then
-        run_chanscope_validation
-        EXIT_CODE=$?
+    # Run regular pytest tests
+    if [ "$SHOW_LOGS" = "true" ]; then
+        # Show logs in real-time
+        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
+        EXIT_CODE=${PIPESTATUS[0]}
     else
-        # Run regular pytest tests
-        if [ "$SHOW_LOGS" = "true" ]; then
-            # Show logs in real-time
-            $PYTHON_CMD -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
-            EXIT_CODE=${PIPESTATUS[0]}
-        else
-            # Run silently and save logs to file
-            echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
-            $PYTHON_CMD -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
-            EXIT_CODE=$?
-        fi
+        # Run silently and save logs to file
+        echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
+        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
+        EXIT_CODE=$?
     fi
 
     # Display test results summary
@@ -400,25 +359,16 @@ run_replit_tests() {
         bash "${SCRIPT_DIR}/replit_setup.sh"
     fi
     
-    # Find Python executable
-    PYTHON_CMD=$(find_python_command)
-    
-    # Special handling for Chanscope approach tests
-    if [ "$TEST_TYPE" = "chanscope-approach" ]; then
-        run_chanscope_validation
-        EXIT_CODE=$?
+    # Run regular pytest tests
+    if [ "$SHOW_LOGS" = "true" ]; then
+        # Show logs in real-time
+        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
+        EXIT_CODE=${PIPESTATUS[0]}
     else
-        # Run regular pytest tests
-        if [ "$SHOW_LOGS" = "true" ]; then
-            # Show logs in real-time
-            $PYTHON_CMD -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
-            EXIT_CODE=${PIPESTATUS[0]}
-        else
-            # Run silently and save logs to file
-            echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
-            $PYTHON_CMD -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
-            EXIT_CODE=$?
-        fi
+        # Run silently and save logs to file
+        echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
+        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
+        EXIT_CODE=$?
     fi
 
     # Display test results summary

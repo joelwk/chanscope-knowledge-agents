@@ -43,7 +43,7 @@ start_scheduler() {
 echo "Starting data scheduler with update interval: ${interval} seconds"
 while true; do
     echo "[$(date)] Running scheduled data update..." >> "${SCHEDULER_LOG}" 2>&1
-    cd "${APP_ROOT}" && poetry run python scripts/scheduled_update.py refresh >> "${SCHEDULER_LOG}" 2>&1
+    cd "${APP_ROOT}" && python3 scripts/scheduled_update.py refresh >> "${SCHEDULER_LOG}" 2>&1
     echo "[$(date)] Scheduled update completed, sleeping for ${interval} seconds" >> "${SCHEDULER_LOG}" 2>&1
     sleep ${interval}
 done
@@ -146,7 +146,7 @@ cleanup() {
 # Function to run a single update manually
 run_update() {
     echo "Running manual data update..."
-    cd "${APP_ROOT}" && poetry run python scripts/scheduled_update.py refresh
+    cd "${APP_ROOT}" && python3 scripts/scheduled_update.py refresh
     return $?
 }
 

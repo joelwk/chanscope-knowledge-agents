@@ -1,7 +1,13 @@
-# Chanscope Retrieval
+# Chanscope Retrieval: Multi-Provider LLM Microservice for Information Intelligence
+
+- **Natural Language to SQL Query Engine**: Ask questions in plain English, get structured data responses
+- **Multi-Provider LLM Orchestration**: Seamlessly switch between OpenAI, Grok (X.AI), and Venice.AI
+- **Venice AI Character Support**: Leverage specialized AI personas for domain-specific analysis
+- **Enhanced Temporal Analysis**: Improved forecasting with time-aware query processing
+- **Production-Ready API**: RESTful endpoints with background processing and task management
 
 ## Overview
-An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice) for comprehensive social data analysis to extract actionable insights and patterns. The system provides a robust API layer that can be integrated with autonomous AI agents and agentic systems. It employs intelligent sampling techniques and a multi-stage analysis pipeline to process large volumes of 4chan and X data, enabling temporal analysis, cross-source verification, and predictive analytics.
+An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice) for comprehensive social data analysis to extract actionable insights and patterns. The system provides a robust API layer that can be integrated with autonomous AI agents and agentic systems. It employs intelligent sampling techniques and a multi-stage analysis pipeline to process large volumes of 4chan and X data, enabling temporal analysis, cross-reference verification, and predictive analytics.
 
 ### Platform Integration
 - **Traditional Deployment**: Docker-based local or server deployment for controlled environments
@@ -25,85 +31,95 @@ An advanced query system leveraging multiple AI providers (OpenAI, Grok, Venice)
 Chanscope's architecture follows a biologically-inspired pattern with distinct yet interconnected processing stages:
 
 ```
-┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
-│   Data Sources  │         │  Processing Core  │         │  Query System   │
-│  ┌────────────┐ │         │  ┌────────────┐  │         │ ┌────────────┐  │
-│  │    S3      │◄├─┐       │  │ Stratified │  │     ┌───┼►│   Query    │  │
-│  │  Storage   │ │ │       │  │  Sampling  │  │     │   │ │ Processing │  │
-│  └────────────┘ │ │       │  └─────┬──────┘  │     │   │ └─────┬──────┘  │
-└─────────────────┘ │       │        │         │     │   │       │         │
-                    │       │  ┌─────▼──────┐  │     │   │ ┌─────▼──────┐  │
-┌─────────────────┐ │       │  │ Embedding  │  │     │   │ │   Chunk    │  │
-│  Memory System  │ │       │  │ Generation │  │     │   │ │ Processing │  │
-│  ┌────────────┐ │ │       │  └─────┬──────┘  │     │   │ └─────┬──────┘  │
-│  │ Complete   │◄┼─┘       │        │         │     │   │       │         │
-│  │    Data    │ │         │        │         │     │   │ ┌─────▼──────┐  │
-│  └────────────┘ │         │        │         │     │   │ │   Final    │  │
-│  ┌────────────┐ │         │        │         │     │   │ │ Summarizer │  │
-│  │ Stratified │◄├─────────┼────────┘         │     │   │ └────────────┘  │
-│  │   Sample   │ │         │                  │     │   │                 │
-│  └────────────┘ │         │                  │     │   └─────────────────┘
-│  ┌────────────┐ │         │                  │     │
-│  │ Embeddings │◄├─────────┼──────────────────┼─────┘
-│  │   (.npz)   │ │         │                  │
-│  └────────────┘ │         └──────────────────┘
+┌─────────────────┐         ┌──────────────────────────┐         ┌─────────────────┐
+│   Data Sources  │         │    Processing Core       │         │  Query System   │
+│  ┌────────────┐ │         │  ┌────────────────────┐  │         │ ┌────────────┐  │
+│  │    S3      │◄├─┐       │  │ ChanScopeDataMgr   │  │     ┌───┼►│   Query    │  │
+│  │  Storage   │ │ │       │  │ ┌────────────────┐ │  │     │   │ │ Processing │  │
+│  └────────────┘ │ │       │  │ │   Stratified   │ │  │     │   │ └─────┬──────┘  │
+└─────────────────┘ │       │  │ │    Sampling    │ │  │     │   │       │         │
+                    │       │  │ └────────┬───────┘ │  │     │   │ ┌─────▼──────┐  │
+┌─────────────────┐ │       │  │          │         │  │     │   │ │   Chunk    │  │
+│  Memory System  │ │       │  │ ┌────────▼───────┐ │  │     │   │ │ Processing │  │
+│  ┌────────────┐ │ │       │  │ │   Embedding    │ │  │     │   │ └─────┬──────┘  │
+│  │ Complete   │◄┼─┘       │  │ │   Generation   │ │  │     │   │       │         │
+│  │    Data    │ │         │  │ └────────────────┘ │  │     │   │ ┌─────▼──────┐  │
+│  └────────────┘ │         │  └────────────────────┘  │     │   │ │   Final    │  │
+│  ┌────────────┐ │         │           │              │     │   │ │ Summarizer │  │
+│  │ Stratified │◄├─────────┼───────────┘              │     │   │ └────────────┘  │
+│  │   Sample   │ │         │                          │     │   │                 │
+│  └────────────┘ │         │  ┌────────────────────┐  │     │   └─────────────────┘
+│  ┌────────────┐ │         │  │   KnowledgeAgent   │  │     │
+│  │ Embeddings │◄├─────────┼──┤  (Singleton LLM)   ├──┼─────┘
+│  │   (.npz)   │ │         │  └────────────────────┘  │
+│  └────────────┘ │         └──────────────────────────┘
 └─────────────────┘
+           ▲
+           │
+    ┌──────┴──────┐
+    │ Storage ABCs │
+    └─────────────┘
 ```
 
 ### Processing Pipeline
 
-1. **Data Ingestion**: Retrieves data from S3 starting from `DATA_RETENTION_DAYS` ago.
-2. **Stratification**: Samples the complete dataset using `sampler.py` to create a representative subset.
-3. **Embedding Generation**: Creates embeddings stored in `.npz` format with thread ID mappings.
-4. **Query Processing**: Leverages embeddings for semantic search and incorporates an enhanced natural language query processing module. This module uses LLMSQLGenerator to convert natural language queries into SQL queries while preserving the original query context and enforcing essential filters (particularly content filters). This approach mirrors biological quality control mechanisms, ensuring precise data retrieval.
+1. **Data Ingestion**: `ChanScopeDataManager` retrieves data from S3 starting from `DATA_RETENTION_DAYS` ago, using the appropriate storage implementation.
+2. **Stratification**: Samples the complete dataset using `sampler.py` to create a representative subset, with file-locks for concurrent access management.
+3. **Embedding Generation**: Creates embeddings via `KnowledgeAgent` singleton and stores them in environment-specific format (`.npz` files or Object Storage) with thread ID mappings.
+4. **Query Processing**: Performs vector similarity search using cosine distance and incorporates an enhanced natural language query processing module. Uses batch processing for efficiency and supports recursive refinement for improved results.
 
 ## Repository Structure
 
 ```
 ├── api/                  # FastAPI application and endpoints
-│   ├── app.py            # Main API application
+│   ├── app.py            # Main API application with lifespan management
 │   ├── routes.py         # API route definitions
 │   ├── models.py         # Data models and schemas
 │   ├── cache.py          # Caching mechanisms
 │   └── errors.py         # Error handling
 ├── config/               # Configuration files and settings
+│   ├── storage.py        # Storage abstraction interfaces & implementations
+│   ├── settings.py       # Configuration management
+│   ├── env_loader.py     # Environment detection
+│   └── chanscope_config.py # Chanscope-specific configuration
 ├── deployment/           # Docker and deployment configurations
-│   ├── docker-compose.yml       # Production deployment configuration
-│   ├── docker-compose.test.yml  # Testing deployment configuration
-│   ├── Dockerfile               # Container definition
-│   └── setup.sh                 # Setup script for container initialization
 ├── docs/                 # Documentation files
-│   ├── chanscope_implementation.md  # Implementation details
-│   ├── llm_sql_feature.md       # LLM-SQL query feature documentation
-│   ├── stratification_guide.md  # Stratification best practices
-│   └── example_queries.md       # Example NL query examples
 ├── knowledge_agents/     # Core business logic and data processing
 │   ├── data_ops.py       # Data operations and processing
 │   ├── embedding_ops.py  # Embedding generation and management
 │   ├── inference_ops.py  # Inference and query processing
-│   ├── model_ops.py      # Model management and configuration
+│   ├── model_ops.py      # Model management and LLM operations
 │   ├── llm_sql_generator.py # Natural language to SQL conversion
+│   ├── prompt.yaml       # LLM prompt templates
+│   ├── data_processing/  # Data processing subpackage
+│   │   ├── chanscope_manager.py # Central facade for data operations
+│   │   ├── cloud_handler.py # S3/GCS abstraction
+│   │   ├── sampler.py    # Stratified sampling implementation
+│   │   └── dialog_processor.py # Text processing utilities
 │   └── run.py            # Main execution logic
 ├── scripts/              # Utility scripts for testing and deployment
-│   ├── run_tests.sh      # Main test runner
-│   ├── validate_chanscope_approach.py # Chanscope approach validation
-│   ├── process_data.py   # Data processing utilities
-│   ├── scheduled_update.py # Scheduled data update script
-│   └── test_and_deploy.sh  # Combined test and deployment workflow
 ├── tests/                # Test suites and fixtures
-│   ├── test_data_ingestion.py     # Data ingestion tests
-│   ├── test_embedding_pipeline.py # Embedding generation tests
-│   ├── test_endpoints.py          # API endpoint tests
-│   └── test_chanscope_approach.py # Chanscope approach tests
 └── examples/             # Example usage and integrations
 ```
 
 ## Core Architecture
 
+### Multi-Provider LLM Architecture
+
+The system implements a sophisticated multi-provider architecture that allows seamless switching between different LLM providers based on task requirements:
+
 - **Multi-Provider Architecture**
+  - Singleton `KnowledgeAgent` provides unified access to different LLM providers
   - OpenAI (Primary): GPT-4o, text-embedding-3-large
   - Grok (Optional): grok-3, grok-3-mini
   - Venice (Optional): dolphin-2.9.2-qwen2-72b, deepseek-r1-671b
+
+- **Storage Abstraction Layer**
+  - Abstract interfaces: `CompleteDataStorage`, `StratifiedSampleStorage`, `EmbeddingStorage`, `StateManager`
+  - `StorageFactory` selects appropriate implementation based on environment
+  - File-based implementations for Docker/local environments
+  - Replit implementations using PostgreSQL, Key-Value store, and Object Storage
+  - Thread-safe operations with file locks for concurrent access
 
 - **Intelligent Data Processing**
   - Automated hourly data updates with incremental processing
@@ -112,6 +128,10 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
   - Efficient large dataset handling with reservoir sampling
   - Automated data chunking and embedding generation
   - Configurable data retention with `DATA_RETENTION_DAYS` environment variable
+  - Robust process locking to prevent duplicate processing:
+    - Uses Replit Object Storage for persistent locks in Replit environments
+    - Uses file-based locks in Docker/local environments
+    - Tracks initialization status to avoid redundant processing
   - Three-stage data processing pipeline:
     1. Complete data ingestion and storage
     2. Stratified sample generation
@@ -120,6 +140,7 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
     - `--regenerate --stratified-only`: Regenerate only stratified sample
     - `--regenerate --embeddings-only`: Regenerate only embeddings
     - `--force-refresh`: Force refresh all data stages
+    - `--ignore-lock`: Bypass process locks (use with caution)
   - Environment-specific storage backends:
     - Replit: PostgreSQL for complete data, Key-Value store for stratified samples, Object Storage for embeddings
     - Docker: File-based storage with CSV, NPZ, and JSON formats
@@ -137,9 +158,12 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
     - When disabled: Uses existing data for faster processing
 
 - **LLM-Based SQL Generation**
-  - Natural language to SQL conversion for database queries
-  - Three-stage LLM architecture (enhancement, generation, validation)
-  - Template matching for common query patterns
+  - Hybrid approach combining template matching and LLM generation
+  - Three-stage LLM pipeline:
+    1. **Enhancer**: Refines natural language query into structured instructions
+    2. **Generator**: Converts enhanced instructions to SQL (uses Venice characters)
+    3. **Validator**: Ensures security and correctness of generated SQL
+  - Template matching for common query patterns with fallback to LLM
   - Parameter extraction with time-awareness
   - Full schema validation and security checks
   - Caching for improved performance
@@ -155,7 +179,174 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
   - Background processing with `use_background` parameter
   - Custom task IDs for integration with external systems
 
+## Component Relationships
+
+- **ChanScopeDataManager**: Central facade that orchestrates all data operations through environment-specific storage interfaces
+- **KnowledgeAgent**: Singleton service providing unified access to LLM providers for embeddings, chunking, and summarization
+- **Storage ABCs**: Abstract interfaces allowing seamless switching between file-based and database storage
+- **Model and Embedding Operations**: Separate modules that handle model interactions and embedding management
+- **API Layer**: FastAPI application that initializes ChanScopeDataManager once and exposes its functionality through routes
+- **LLMSQLGenerator**: Specialized component that converts natural language to SQL using a hybrid template/LLM approach
+
 For greater technical details and examples, refer to the documentation in the `docs/` directory and the [knowledge-agents](https://github.com/joelwk/knowledge-agents) repository.
+
+## Research Applications
+
+### Information Asymmetry Analysis
+Chanscope provides unique capabilities for studying information asymmetry in digital ecosystems:
+
+- **Cross-Platform Signal Detection**: Identify information that appears on 4chan before mainstream platforms
+- **Sentiment Divergence Analysis**: Measure differences in sentiment between anonymous and public discourse
+- **Information Flow Mapping**: Track how narratives evolve from fringe to mainstream channels
+- **Credibility Assessment**: Evaluate source reliability through cross-reference validation
+
+### Predictive Analytics & Forecasting
+The system's temporal analysis capabilities enable advanced forecasting:
+
+- **Event Prediction**: Identify early signals of emerging trends or events
+- **Cascade Modeling**: Predict information spread patterns based on historical data
+- **Anomaly Detection**: Flag unusual activity patterns that may indicate coordinated behavior
+- **Confidence Intervals**: Provide statistical bounds on predictions with reliability metrics
+
+### Document Processing Pipeline
+The system implements a sophisticated document processing pipeline optimized for large-scale text analysis:
+
+1. **Ingestion**: Pulls data from S3 with configurable retention periods
+2. **Preprocessing**: Applies text cleaning, contraction mapping, and normalization
+3. **Stratification**: Creates representative samples using time-based and category-based weighting
+4. **Embedding Generation**: Produces vector representations using selected LLM provider
+5. **Query Processing**: Performs semantic search with batch optimization
+
+## Multi-Provider Usage Examples
+
+### Natural Language Query with Provider Selection
+```bash
+# Use Venice AI for creative analysis
+curl -X POST "http://localhost/api/v1/nl_query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What are the emerging conspiracy theories about AI from the past week?",
+    "limit": 50,
+    "format_for_llm": true
+  }'
+
+# Response includes structured data optimized for LLM consumption
+{
+  "status": "success",
+  "query": "What are the emerging conspiracy theories...",
+  "sql": "SELECT * FROM complete_data WHERE...",
+  "data": [...],
+  "metadata": {
+    "providers_used": {
+      "enhancer": "openai",
+      "generator": "venice",
+      "character_slug": "pisagor-ai"
+    }
+  }
+}
+```
+
+### Background Processing for Large Queries
+```bash
+# Submit a complex analysis task
+curl -X POST "http://localhost/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Analyze sentiment shifts regarding cryptocurrency regulation over the past month",
+    "use_background": true,
+    "task_id": "crypto_sentiment_analysis",
+    "force_refresh": true,
+    "model_config": {
+      "chunk_provider": "grok",
+      "summary_provider": "openai"
+    }
+  }'
+
+# Check task status
+curl -X GET "http://localhost/api/v1/batch_status/crypto_sentiment_analysis"
+```
+
+### Provider-Specific Capabilities
+```python
+# Python example showing provider selection
+from knowledge_agents.model_ops import KnowledgeAgent, ModelProvider
+
+async def analyze_with_providers():
+    agent = await KnowledgeAgent.create()
+    
+    # Use OpenAI for embeddings (best for semantic search)
+    embeddings = await agent.generate_embeddings(
+        texts=documents,
+        provider=ModelProvider.OPENAI
+    )
+    
+    # Use Grok for chunking (optimized for social media)
+    chunks = await agent.chunk_text(
+        text=long_document,
+        provider=ModelProvider.GROK
+    )
+    
+    # Use Venice for creative summarization
+    summary = await agent.summarize(
+        chunks=chunks,
+        provider=ModelProvider.VENICE,
+        character_slug="research-analyst"
+    )
+```
+
+## Technical Implementation Details
+
+### Provider Configuration
+The system uses a hierarchical configuration approach:
+
+```yaml
+# config/prompt.yaml - Provider-specific settings
+providers:
+  openai:
+    models:
+      embedding: text-embedding-3-large
+      completion: gpt-4o
+    api_base: https://api.openai.com/v1
+  
+  grok:
+    models:
+      completion: grok-3
+      chunking: grok-3-mini
+    api_base: https://api.x.ai/v1
+  
+  venice:
+    models:
+      completion: dolphin-2.9.2-qwen2-72b
+      chunking: deepseek-r1-671b
+    api_base: https://api.venice.ai/api/v1
+    character_slugs:
+      - pisagor-ai
+      - research-analyst
+      - data-scientist
+```
+
+### Singleton Pattern for Resource Management
+```python
+# The KnowledgeAgent implements a thread-safe singleton pattern
+class KnowledgeAgent:
+    _instance = None
+    _lock = asyncio.Lock()
+    
+    @classmethod
+    async def create(cls):
+        async with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+                await cls._instance._initialize()
+            return cls._instance
+```
+
+### Storage Abstraction Layer
+The system implements environment-aware storage backends:
+
+- **Replit**: PostgreSQL (complete data), Key-Value (samples), Object Storage (embeddings)
+- **Docker/Local**: File-based storage with CSV, NPZ, and JSON formats
+- **Process Locks**: Prevents duplicate processing across environments
 
 ## Analysis Capabilities
 
@@ -202,48 +393,82 @@ The Chanscope Retrieval is designed to serve as a backend for AI agents and agen
 
 ## Environment Configuration
 
-The project uses an intelligent environment detection system that automatically configures settings based on the deployment context:
+The project uses an intelligent environment detection system that automatically configures settings based on the deployment context. **Recent fixes** have resolved environment detection conflicts that previously caused Docker containers to incorrectly detect as 'replit' environment.
 
-### Environment Detection
-- **Replit Detection**: Automatically detects Replit environment through multiple indicators
-- **Docker Detection**: Identifies Docker containers through environment markers
+### Environment Detection (Recently Enhanced)
+- **Docker Detection**: Detects through `/.dockerenv` file, `ENVIRONMENT=docker`, or `DOCKER_ENV=true`
+- **Replit Detection**: Detects through `REPL_ID`, `REPL_SLUG`, `REPL_OWNER`, or `/home/runner` directory
 - **Local Development**: Falls back to local configuration when neither is detected
 
 ### Environment-Specific Settings
-1. **Replit Environment**:
-   - Optimized path configuration for Replit filesystem
-   - Automatic directory structure creation
-   - Memory-optimized batch sizes and worker counts
-   - Default configuration for mock data and embeddings
 
-2. **Docker Environment**:
-   - Container-specific path configuration
-   - Optimized worker counts for containerized deployment
-   - Enhanced batch processing settings
-   - Automatic volume management
+#### 1. Docker Environment (File-Based Storage)
+- **Storage Backend**: CSV files, NPZ embeddings, JSON mappings
+- **Complete Data**: `/app/data/complete_data.csv`
+- **Stratified Samples**: `/app/data/stratified/stratified_sample.csv` 
+- **Embeddings**: `/app/data/stratified/embeddings.npz`
+- **Configuration**: Container-optimized settings with file-based process locks
+- **Environment Variables**: Automatically set in docker-compose.yml:
+  ```yaml
+  environment:
+    - ENVIRONMENT=docker
+    - DOCKER_ENV=true
+    - REPLIT_ENV=  # Explicitly unset to prevent conflicts
+  ```
 
-3. **Local Environment**:
-   - Flexible path configuration
-   - Development-friendly defaults
-   - Easy-to-modify settings
+#### 2. Replit Environment (Database Storage)
+- **Storage Backend**: PostgreSQL, Key-Value store, Object Storage
+- **Complete Data**: PostgreSQL database tables
+- **Stratified Samples**: Replit Key-Value store
+- **Embeddings**: Replit Object Storage (compressed .npz format)
+- **Configuration**: Memory-optimized with persistent process locks
+- **Process Locks**: Object Storage for persistence across restarts
 
-### Configuration Sections
-The `.env` file supports section-based configuration:
-```ini
-[replit]
-# Replit-specific settings
-USE_MOCK_DATA=false
-EMBEDDING_BATCH_SIZE=10
-MAX_WORKERS=2
+#### 3. Local Environment (File-Based Storage)
+- **Storage Backend**: Same as Docker (CSV, NPZ, JSON)
+- **Configuration**: Development-friendly defaults
+- **Process Locks**: File-based locking mechanism
 
-[docker]
-# Docker-specific settings
-EMBEDDING_BATCH_SIZE=20
-MAX_WORKERS=4
+### Recent Environment Detection Fixes
 
-[local]
-# Local development settings
+**Issues Resolved**:
+- Docker containers incorrectly detecting as 'replit' environment
+- "States failed" PostgreSQL connection errors in Docker
+- Conflicting environment variable loading from pytest.ini
+- Hard-coded storage creation bypassing environment detection
+
+**Solutions Implemented**:
+- Removed `REPLIT_ENV=replit` from pytest.ini that was leaking into Docker
+- Added explicit environment variables to docker-compose.yml  
+- Fixed hard-coded `StorageFactory.create(config, 'replit')` calls
+- Enhanced `DataConfig` class with proper environment attribute
+- Improved environment detection priority logic
+
+### Configuration Verification
+
+To verify environment detection is working correctly:
+```bash
+# For Docker containers
+docker exec <container_id> python -c "
+from config.env_loader import detect_environment
+print('Environment detected:', detect_environment())
+"
+
+# Expected output: 'docker'
 ```
+
+## Recent Updates
+
+### Environment Detection Fixes (Latest)
+🔧 **Resolved Critical Issue**: Fixed Docker containers incorrectly detecting as 'replit' environment, which caused PostgreSQL connection errors and "states failed" messages.
+
+**What was fixed:**
+- Environment detection conflicts between Docker and Replit 
+- Hard-coded storage creation bypassing environment detection
+- Conflicting environment variables from pytest.ini
+- Missing environment attribute in DataConfig class
+
+**Result**: Docker deployments now correctly use file-based storage, eliminating database dependency errors and enabling successful data processing of 661K+ records from 161 S3 files.
 
 ## Quick Start
 
@@ -268,6 +493,7 @@ The system automatically detects and configures based on your environment:
 OPENAI_API_KEY=your_key
 AWS_ACCESS_KEY_ID=your_key
 AWS_SECRET_ACCESS_KEY=your_key
+S3_BUCKET=your_bucket
 ```
 
 #### Docker Deployment
@@ -336,14 +562,84 @@ curl -X POST "http://localhost/api/v1/nl_query" \
 The project supports multiple deployment options:
 
 ### Docker Deployment
-For detailed Docker deployment instructions, see [deployment/README_DEPLOYMENT.md](deployment/README_DEPLOYMENT.md)
+
+The Docker deployment has been enhanced with robust environment detection and automatic storage configuration.
+
+**Recent Fixes**: Resolved environment detection conflicts that caused "states failed" PostgreSQL errors. The system now correctly detects Docker environment and uses file-based storage.
+
+#### Quick Start
+```bash
+# Build and start the application  
+docker-compose -f deployment/docker-compose.yml build --no-cache
+docker-compose -f deployment/docker-compose.yml up -d
+
+# Verify environment detection is working
+docker exec $(docker ps -q) python -c "
+from config.env_loader import detect_environment
+from knowledge_agents.data_ops import DataConfig
+config = DataConfig.from_config()
+print('Environment:', detect_environment())
+print('Storage type:', config.env)
+"
+```
+
+#### Environment Configuration
+The docker-compose.yml now explicitly sets environment variables:
+```yaml
+environment:
+  - ENVIRONMENT=docker
+  - DOCKER_ENV=true
+  - REPLIT_ENV=  # Explicitly unset to prevent conflicts
+```
+
+This ensures the system correctly detects Docker environment and uses:
+- **File-based storage** (CSV, NPZ, JSON files) 
+- **No PostgreSQL dependencies** (eliminates connection errors)
+- **Proper data processing pipeline** (161 files, 661K+ records)
+
+For detailed deployment instructions, see [deployment/README_DEPLOYMENT.md](deployment/README_DEPLOYMENT.md)
 
 ### Replit Deployment
-The project is configured to run seamlessly on Replit with optimized settings:
 
+The project is configured to run seamlessly on Replit with database-optimized settings that differ from Docker deployment.
+
+#### Environment Detection
+Replit deployment automatically detects through:
+- `REPL_ID`, `REPL_SLUG`, or `REPL_OWNER` environment variables
+- `/home/runner` directory presence  
+- `REPLIT_ENV=replit` (when explicitly set)
+
+#### Storage Configuration
+**Replit uses database storage** (unlike Docker's file-based approach):
+- **Complete Data**: PostgreSQL database tables
+- **Stratified Samples**: Replit Key-Value store  
+- **Embeddings**: Replit Object Storage (.npz format)
+- **Process Locks**: Object Storage for persistence across restarts
+
+#### Setup Instructions
 1. Fork the repository to your Replit account
-2. Set up environment variables in Replit Secrets
-3. Click the Run button or use the appropriate startup script for Replit
+2. Set up environment variables in Replit Secrets:
+   ```
+   OPENAI_API_KEY=your_key
+   AWS_ACCESS_KEY_ID=your_key
+   AWS_SECRET_ACCESS_KEY=your_key
+   S3_BUCKET=your_bucket
+   ```
+3. Click the Run button to start the application
+4. The system will automatically:
+   - Install required dependencies including replit-object-storage
+   - Initialize the PostgreSQL schema
+   - Use Object Storage for process locks and initialization status
+   - Prevent duplicate data processing during restarts
+   - Run data processing in the background
+   - Perform hourly data updates if enabled
+
+#### Verification
+```bash
+# Check environment detection in Replit console
+from config.env_loader import detect_environment
+print('Environment:', detect_environment())  # Should show: 'replit'
+```
 
 ## Testing Framework
 
@@ -389,6 +685,17 @@ The project supports multiple AI model providers:
 ## Environment Variables
 For a complete and up-to-date list of environment variables, see [.env.template](.env.template)
 
+### Core API Configuration
+- `OPENAI_API_KEY`: Primary provider for embeddings and completions (Required)
+- `GROK_API_KEY`: X.AI provider for social media-optimized processing (Optional)
+- `VENICE_API_KEY`: Venice.AI provider for specialized analysis (Optional)
+- `VENICE_CHARACTER_SLUG`: AI character for domain-specific analysis (Default: pisagor-ai)
+
+### AWS Configuration
+- `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`: For S3 data access (Required)
+- `S3_BUCKET`: Bucket name for data storage (Default: chanscope-data)
+- `S3_BUCKET_PREFIX`: Path prefix within bucket (Default: data/)
+
 ### Data Processing Control Variables
 - `AUTO_CHECK_DATA`: Enable/disable automatic data checking on startup (defaults to true)
 - `CHECK_EXISTING_DATA`: Check if data already exists in database before processing (defaults to true)
@@ -397,16 +704,31 @@ For a complete and up-to-date list of environment variables, see [.env.template]
 - `DATA_RETENTION_DAYS`: Number of days to retain data (defaults to 14)
 - `DATA_UPDATE_INTERVAL`: How often to update data in seconds (defaults to 86400, once per day)
 
+### Model Provider Configuration
+- `DEFAULT_EMBEDDING_PROVIDER`: Provider for embedding generation (Default: openai)
+- `DEFAULT_CHUNK_PROVIDER`: Provider for text chunking (Default: openai)
+- `DEFAULT_SUMMARY_PROVIDER`: Provider for summarization (Default: openai)
+- `OPENAI_MODEL`: OpenAI model for completions (Default: gpt-4o)
+- `GROK_MODEL`: Grok model selection (Default: grok-3)
+- `VENICE_MODEL`: Venice model selection (Default: dolphin-2.9.2-qwen2-72b)
+
+### Processing Configuration
+- `EMBEDDING_BATCH_SIZE`: Batch size for embedding generation (Default: 50)
+- `CHUNK_BATCH_SIZE`: Batch size for text chunking (Default: 5000)
+- `MAX_WORKERS`: Maximum concurrent workers (Default: 4)
+- `CACHE_TTL`: Cache time-to-live in seconds (Default: 3600)
+- `USE_BATCHING`: Enable batch processing optimization (Default: true)
+
 ## Test Data Generation
 
 For testing purposes when real data is unavailable or outdated, you can generate synthetic test data:
 
 ```bash
 # Generate 1000 rows of synthetic data with timestamps in the past 10 days
-poetry run python scripts/generate_test_data.py
+python scripts/generate_test_data.py
 
 # Generate 5000 rows with specific date range and regenerate stratified sample & embeddings
-poetry run python scripts/generate_test_data.py --num-rows 5000 --start-date 2025-03-01T00:00:00 --end-date 2025-03-30T23:59:59 --regenerate-stratified --regenerate-embeddings
+python scripts/generate_test_data.py --num-rows 5000 --start-date 2025-03-01T00:00:00 --end-date 2025-03-30T23:59:59 --regenerate-stratified --regenerate-embeddings
 ```
 
 You can also adjust the `FILTER_DATE` environment variable to include older test data:
@@ -417,25 +739,53 @@ export FILTER_DATE=2024-04-01  # Include data from April 2024 onwards
 ```
 
 ## References
-- Data Gathering Lambda: [chanscope-lambda](https://github.com/joelwk/chanscope-lambda)
-- Original Chanscope R&D: [Chanscope](https://github.com/joelwk/chanscope)
-- R&D Sandbox Repository: [knowledge-agents](https://github.com/joelwk/knowledge-agents)
-- Inspiration for Prompt Engineering Approach: [Temporal-Aware Language Models for Temporal Knowledge Graph Question Answering](https://arxiv.org/pdf/2410.18959) - Used for designing temporal-aware prompts and multimodal forecasting capabilities
+- **Data Gathering Lambda**: [chanscope-lambda](https://github.com/joelwk/chanscope-lambda) - Serverless data collection pipeline
+- **Original Chanscope R&D**: [Chanscope](https://github.com/joelwk/chanscope) - Research foundation and methodology
+- **R&D Sandbox Repository**: [knowledge-agents](https://github.com/joelwk/knowledge-agents) - Experimental features and prototypes
+- **Multi-Provider LLM Frameworks**: 
+  - [OpenAI API](https://platform.openai.com/docs) - Primary embedding and completion provider
+  - [Grok API](https://docs.x.ai/) - Social media-optimized language models
+  - [Venice.AI](https://venice.ai/docs) - Specialized AI characters and personas
+- **Research Papers**:
+  - [Temporal-Aware Language Models for Temporal Knowledge Graph Question Answering](https://arxiv.org/pdf/2410.18959) - Temporal prompt engineering approach
+  - Information asymmetry analysis methodologies applied to digital ecosystems
 
 ### Data Processing Commands
 
 Basic data processing:
 ```bash
 # Process all data stages
-poetry run python scripts/process_data.py
+python scripts/process_data.py
 
-# Check current data status
-poetry run python scripts/process_data.py --check
+# Check current data status (includes initialization status)
+python scripts/process_data.py --check
 
 # Force refresh all data
-poetry run python scripts/process_data.py --force-refresh
+python scripts/process_data.py --force-refresh
 
 # Regenerate specific components
-poetry run python scripts/process_data.py --regenerate --stratified-only  # Only regenerate stratified sample
-poetry run python scripts/process_data.py --regenerate --embeddings-only  # Only regenerate embeddings
+python scripts/process_data.py --regenerate --stratified-only  # Only regenerate stratified sample
+python scripts/process_data.py --regenerate --embeddings-only  # Only regenerate embeddings
+
+# Advanced options
+python scripts/process_data.py --ignore-lock  # Bypass process locks (use with caution)
 ```
+
+### Process Lock Management
+
+The system includes a robust process lock management mechanism to prevent duplicate data processing:
+
+```bash
+# Test process lock functionality
+python scripts/test_process_lock.py --all
+
+# Test specific lock features
+python scripts/test_process_lock.py --test-contention  # Test lock contention between processes
+python scripts/test_process_lock.py --test-marker  # Test initialization markers
+```
+
+In Replit environments, the lock manager uses Object Storage for persistence across restarts, while in Docker/local environments it uses file-based locks. This ensures that:
+
+1. Development mode in Replit won't start redundant data processing on restarts
+2. Deployment mode in Replit will have proper process initialization through FastAPI lifecycle
+3. Docker and local environments have appropriate lock management for their contexts

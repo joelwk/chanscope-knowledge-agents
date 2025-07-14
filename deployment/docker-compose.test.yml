@@ -3,127 +3,15 @@
 # Removed version: '3.8' to avoid warnings
 
 services:
-  chanscope-test:
+  test-runner:
     build:
       context: ..
       dockerfile: deployment/Dockerfile
-    volumes:
-      # Configuration files
-      - type: bind
-        source: ../.env.test
-        target: /app/.env
-        read_only: true
-      # Application code with read-only bindings
-      - type: bind
-        source: ../api
-        target: /app/api
-        read_only: true
-      - type: bind
-        source: ../config
-        target: /app/config
-        read_only: true
-      - type: bind
-        source: ../knowledge_agents
-        target: /app/knowledge_agents
-        read_only: true
-      # Test files with read-write for scripts and results
-      - type: bind
-        source: ../scripts
-        target: /app/scripts
-      - type: bind
-        source: ../tests
-        target: /app/tests
-        read_only: true
-      - type: bind
-        source: ../test_results
-        target: /app/test_results
-      - type: bind
-        source: ../deployment
-        target: /app/deployment
-        read_only: true
-      # Isolated test volumes
-      - type: volume
-        source: test_poetry_cache
-        target: /home/nobody/.cache/pypoetry
-      - type: volume
-        source: test_data
-        target: /app/data
-      - type: volume
-        source: test_data_stratified
-        target: /app/data/stratified
-      - type: volume
-        source: test_data_shared
-        target: /app/data/shared
-      - type: volume
-        source: test_logs
-        target: /app/logs
-      - type: volume
-        source: test_temp
-        target: /app/temp_files
-    user: "nobody:nogroup"
-    env_file:
-      - ../.env.test
     environment:
-      # Test environment settings
-      - DOCKER_ENV=true
-      - IS_DOCKER=true
-      - REPLIT_ENV=false
-      - REPL_ID=
-      - REPL_SLUG=
-      - PYTHONPATH=/app
-      - PYTHONUNBUFFERED=1
       - TEST_MODE=true
-      - SKIP_DOCKER_TESTS=true
-      
-      # Data management settings for testing
-      - DATA_RETENTION_DAYS=7
-      - ENABLE_DATA_SCHEDULER=true
-      - DATA_UPDATE_INTERVAL=1800
-      
-      # Test execution control
-      # These settings ensure tests run automatically during startup
-      - RUN_TESTS_ON_STARTUP=true
-      - TEST_TYPE=all
-      - AUTO_CHECK_DATA=true
-      
-      # Advanced test configuration
-      - ABORT_ON_TEST_FAILURE=true  # In test mode, we want to abort if tests fail
-      - TEST_RESULTS_DIR=/app/test_results
-      
-      # Debug settings for testing
-      - PYTHONOPTIMIZE=1
-      - PYTHONASYNCIODEBUG=1
-      - LOG_LEVEL=debug
-    # Override the default command to run tests
-    # This can use either setup.sh (which will run tests and then start the app)
-    # or directly run the test script (which will exit after tests complete)
-    entrypoint: ["/usr/bin/tini", "--"]
-    command: ["bash", "/app/scripts/run_tests.sh", "--all"]
-    # Alternative command to use setup.sh which will run tests and then start the app:
-    # command: ["bash", "/app/deployment/setup.sh"]
-    
-    # Don't expose ports for testing
-    ports: []
-    # Don't restart for testing
-    restart: "no"
-    networks:
-      test-net:
-        aliases:
-          - knowledge-test
-    # Set appropriate resource limits for testing
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-          cpus: '2'
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "3"
-        tag: "{{.Name}}-test"
-        labels: "testing"
-        env: "TEST_MODE,DOCKER_ENV"
+    volumes:
+      - ..:/app
+    command: ["python3", "-m", "pytest"]
 
 networks:
   test-net:
@@ -132,10 +20,6 @@ networks:
       environment: testing
 
 volumes:
-  test_poetry_cache:
-    driver: local
-    labels:
-      environment: testing
   test_data:
     driver: local
     labels:

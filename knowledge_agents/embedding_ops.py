@@ -27,6 +27,7 @@ from config.settings import Config
 from config.base_settings import get_base_settings
 from config.logging_config import get_logger
 from config.env_loader import is_replit_environment
+from knowledge_agents.utils import validate_text
 
 # Configure logger
 logger = get_logger(__name__)
@@ -37,18 +38,20 @@ DEFAULT_EMBEDDING_DIM = 3072  # OpenAI's text-embedding-3-large dimension
 # Import ModelProvider, ModelConfig, and KnowledgeAgent using a try/except to break circular imports
 try:
     from enum import Enum
-    
+
     # Define a local copy of ModelProvider enum to avoid circular imports
     class ModelProvider(str, Enum):
         """Supported model providers."""
+
         OPENAI = "openai"
         GROK = "grok"
         VENICE = "venice"
-        
+
     # Now import the real classes, but handle potential circular imports gracefully
     try:
         from knowledge_agents.model_ops import ModelProvider as ExternalModelProvider
         from knowledge_agents.model_ops import ModelConfig, KnowledgeAgent
+
         # If successful, use the external ModelProvider
         ModelProvider = ExternalModelProvider
     except ImportError:
@@ -56,6 +59,7 @@ try:
         logger.warning("Using local ModelProvider enum due to import issues")
 except Exception as e:
     logger.error(f"Error setting up ModelProvider: {e}")
+
     # Define a minimal ModelProvider if everything else fails
     class ModelProvider:
         OPENAI = "openai"
@@ -66,23 +70,18 @@ except Exception as e:
 class KnowledgeDocument:
     """Document with metadata and text content."""
 
-    def __init__(
-        self, 
-        thread_id: str = "", 
-        posted_date_time: str = "", 
-        text_clean: str = ""
-    ):
+    def __init__(self, thread_id: str = "", posted_date_time: str = "", text_clean: str = ""):
         self.thread_id = thread_id
         self.posted_date_time = posted_date_time
         self.text_clean = text_clean
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'KnowledgeDocument':
+    def from_dict(cls, data: Dict[str, Any]) -> "KnowledgeDocument":
         """Create a document from a dictionary."""
         return cls(
             thread_id=str(data.get("thread_id", "")),
             posted_date_time=str(data.get("posted_date_time", "")),
-            text_clean=str(data.get("text_clean", ""))
+            text_clean=str(data.get("text_clean", "")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -90,7 +89,7 @@ class KnowledgeDocument:
         return {
             "thread_id": self.thread_id,
             "posted_date_time": self.posted_date_time,
-            "text_clean": self.text_clean
+            "text_clean": self.text_clean,
         }
 
 # Use thread-safe singleton pattern for KnowledgeAgent
@@ -119,26 +118,32 @@ def load_data_from_csvs(directory: str) -> List[KnowledgeDocument]:
         return article_list
     for file_path in tqdm(csv_files, desc="Loading stratified dataset"):
         try:
-            df = pd.read_csv(file_path, encoding='utf-8')
+            df = pd.read_csv(file_path, encoding="utf-8")
             required_columns = {"thread_id", "posted_date_time", "text_clean"}
             if not required_columns.issubset(df.columns):
                 logger.error(f"Missing required columns in {file_path}")
                 continue
 
             # Convert embeddings from JSON if they exist
-            if 'embedding' in df.columns:
+            if "embedding" in df.columns:
                 try:
-                    df['embedding'] = df['embedding'].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
+                    df["embedding"] = df["embedding"].apply(
+                        lambda x: json.loads(x) if isinstance(x, str) else x
+                    )
                 except Exception as e:
                     logger.error(f"Error parsing embeddings: {e}")
                     # Remove invalid embeddings
-                    df = df.drop(columns=['embedding'])
+                    df = df.drop(columns=["embedding"])
             articles = [
-                KnowledgeDocument.from_dict({
-                    "thread_id": str(row["thread_id"]),
-                    "posted_date_time": str(row["posted_date_time"]),
-                    "text_clean": str(row["text_clean"])}) 
-                for _, row in df.iterrows()]
+                KnowledgeDocument.from_dict(
+                    {
+                        "thread_id": str(row["thread_id"]),
+                        "posted_date_time": str(row["posted_date_time"]),
+                        "text_clean": str(row["text_clean"]),
+                    }
+                )
+                for _, row in df.iterrows()
+            ]
             article_list.extend(articles)
             logger.info(f"Loaded {len(articles)} articles from stratified dataset")
         except Exception as e:
@@ -150,7 +155,7 @@ async def save_embeddings(
     embeddings_array: np.ndarray,
     embeddings_path: Path,
     thread_id_map: Dict[str, int],
-    temp_suffix: str = '.tmp'
+    temp_suffix: str = ".tmp",
 ) -> bool:
     """Save embeddings to disk atomically to prevent data corruption.
 
@@ -175,7 +180,7 @@ async def save_embeddings(
         logger.error("Cannot save embeddings without thread ID map")
         return False
 
-    temp_path = embeddings_path.with_suffix(f'{embeddings_path.suffix}{temp_suffix}')
+    temp_path = embeddings_path.with_suffix(f"{embeddings_path.suffix}{temp_suffix}")
     parent_dir = embeddings_path.parent
 
     try:
@@ -188,17 +193,17 @@ async def save_embeddings(
             temp_path,
             embeddings=embeddings_array,
             metadata={
-                'shape': embeddings_array.shape,
-                'dimensions': embeddings_array.shape[1],
-                'count': embeddings_array.shape[0],
-                'created': datetime.now(pytz.UTC).isoformat(),
-                'thread_count': len(thread_id_map)
-            }
+                "shape": embeddings_array.shape,
+                "dimensions": embeddings_array.shape[1],
+                "count": embeddings_array.shape[0],
+                "created": datetime.now(pytz.UTC).isoformat(),
+                "thread_count": len(thread_id_map),
+            },
         )
 
         # Force flush to disk
         try:
-            os.fsync(open(temp_path, 'rb').fileno())
+            os.fsync(open(temp_path, "rb").fileno())
         except Exception as e:
             logger.warning(f"Failed to fsync temporary file: {e}")
 
@@ -211,7 +216,7 @@ async def save_embeddings(
         logger.info(f"Renaming temporary file to {embeddings_path}")
         if embeddings_path.exists():
             # Create backup of existing file if it exists
-            backup_path = embeddings_path.with_suffix(f'{embeddings_path.suffix}.bak')
+            backup_path = embeddings_path.with_suffix(f"{embeddings_path.suffix}.bak")
             try:
                 shutil.copy2(embeddings_path, backup_path)
                 logger.info(f"Created backup at {backup_path}")
@@ -242,7 +247,9 @@ async def save_embeddings(
 
         return False
 
-async def load_embeddings(embeddings_path: Union[str, Path]) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
+async def load_embeddings(
+    embeddings_path: Union[str, Path],
+) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
     """Load embeddings from Object Storage with robust error handling.
 
     Args:
@@ -272,7 +279,7 @@ async def load_embeddings(embeddings_path: Union[str, Path]) -> Tuple[Optional[n
         metadata = {
             "shape": embeddings_array.shape,
             "dtype": str(embeddings_array.dtype),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }
 
         return embeddings_array, metadata
@@ -324,14 +331,15 @@ async def load_thread_id_map(file_path: Union[str, Path]) -> Optional[Dict[str, 
         return None
 
 async def get_relevant_content(
-    library: str = '.',
+    library: str = ".",
     batch_size: int = 100,
     provider: Optional[ModelProvider] = None,
     force_refresh: bool = False,
     progress_callback: Optional[Callable[[int, int], Union[None, Awaitable[None]]]] = None,
     stratified_path: Optional[Path] = None,
     embeddings_path: Optional[Path] = None,
-    thread_id_map_path: Optional[Path] = None) -> None:
+    thread_id_map_path: Optional[Path] = None,
+) -> None:
     """Generate embeddings for articles in the stratified dataset.
 
     This function uses a file-based locking mechanism to prevent multiple workers
@@ -353,16 +361,16 @@ async def get_relevant_content(
         data_dir.mkdir(parents=True, exist_ok=True)
 
         # Use consistent path structure that matches DataProcessor
-        stratified_dir = data_dir / 'stratified'
+        stratified_dir = data_dir / "stratified"
         stratified_dir.mkdir(parents=True, exist_ok=True)
 
         # Use provided paths if available, otherwise use default paths
         if stratified_path is None:
-            stratified_path = stratified_dir / 'stratified_sample.csv'
+            stratified_path = stratified_dir / "stratified_sample.csv"
         if embeddings_path is None:
-            embeddings_path = stratified_dir / 'embeddings.npz'
+            embeddings_path = stratified_dir / "embeddings.npz"
         if thread_id_map_path is None:
-            thread_id_map_path = stratified_dir / 'thread_id_map.json'
+            thread_id_map_path = stratified_dir / "thread_id_map.json"
 
         # Ensure parent directories exist
         stratified_path.parent.mkdir(parents=True, exist_ok=True)
@@ -374,39 +382,50 @@ async def get_relevant_content(
         logger.info(f"Using embeddings_path: {embeddings_path}")
         logger.info(f"Using thread_id_map_path: {thread_id_map_path}")
 
-        lock_file = embeddings_path.with_suffix('.lock')
+        lock_file = embeddings_path.with_suffix(".lock")
 
         # Get a unique worker ID based on PID, timestamp, and random component
         pid = os.getpid()
         timestamp = int(time.time())
         random_component = random.randint(1000, 9999)
-        worker_id = f'worker-{pid}-{timestamp}-{random_component}'
+        worker_id = f"worker-{pid}-{timestamp}-{random_component}"
 
         # Initialize initialization marker files
-        completion_marker = data_dir / '.initialization_complete'
-        state_file = data_dir / '.initialization_state'
-        in_progress_marker = data_dir / '.initialization_in_progress'
-        worker_marker = data_dir / f'.worker_{worker_id}_in_progress'
+        completion_marker = data_dir / ".initialization_complete"
+        state_file = data_dir / ".initialization_state"
+        in_progress_marker = data_dir / ".initialization_in_progress"
+        worker_marker = data_dir / f".worker_{worker_id}_in_progress"
 
         # Per Chanscope approach: First check if complete_data.csv exists
-        complete_data_path = Path(data_dir.parent) / 'complete_data.csv'
+        complete_data_path = Path(data_dir.parent) / "complete_data.csv"
         complete_data_exists = complete_data_path.exists()
 
         if not complete_data_exists:
-            logger.info(f"complete_data.csv not found at {complete_data_path}. Will process data regardless of force_refresh setting.")
+            logger.info(
+                f"complete_data.csv not found at {complete_data_path}. Will process data regardless of force_refresh setting."
+            )
             # Force refresh to ensure data processing happens
             force_refresh = True
         else:
-            logger.info(f"complete_data.csv exists at {complete_data_path}. Checking embedding files.")
+            logger.info(
+                f"complete_data.csv exists at {complete_data_path}. Checking embedding files."
+            )
 
         # Skip if complete_data.csv exists, embeddings already exist, and force_refresh is False
-        if not force_refresh and complete_data_exists and embeddings_path.exists() and thread_id_map_path.exists():
+        if (
+            not force_refresh
+            and complete_data_exists
+            and embeddings_path.exists()
+            and thread_id_map_path.exists()
+        ):
             # Load and verify embeddings
             embeddings, metadata = load_embeddings(embeddings_path)
             thread_id_map = load_thread_id_map(thread_id_map_path)
 
             if embeddings is not None and thread_id_map is not None:
-                logger.info(f"Embeddings already exist and force_refresh=False, skipping generation")
+                logger.info(
+                    f"Embeddings already exist and force_refresh=False, skipping generation"
+                )
                 return
             elif not force_refresh:
                 logger.warning("Embeddings exist but could not be loaded properly, regenerating")
@@ -416,14 +435,20 @@ async def get_relevant_content(
             if force_refresh:
                 logger.info("Proceeding with embedding generation because force_refresh=True")
             elif not complete_data_exists:
-                logger.info("Proceeding with embedding generation because complete_data.csv doesn't exist")
+                logger.info(
+                    "Proceeding with embedding generation because complete_data.csv doesn't exist"
+                )
             elif not embeddings_path.exists() or not thread_id_map_path.exists():
-                logger.info("Proceeding with embedding generation because embedding files don't exist")
+                logger.info(
+                    "Proceeding with embedding generation because embedding files don't exist"
+                )
 
         # Check if another worker is already processing
-        worker_markers = list(data_dir.glob('.worker_*_in_progress'))
+        worker_markers = list(data_dir.glob(".worker_*_in_progress"))
         if worker_markers and not force_refresh:
-            other_workers = [m for m in worker_markers if m.name != f'.worker_{worker_id}_in_progress']
+            other_workers = [
+                m for m in worker_markers if m.name != f".worker_{worker_id}_in_progress"
+            ]
             if other_workers and complete_data_exists:  # Only skip if complete_data.csv exists
                 # Check if the worker marker is stale (older than 30 minutes)
                 current_time = time.time()
@@ -435,7 +460,9 @@ async def get_relevant_content(
                         marker_time = marker.stat().st_mtime
                         marker_age_minutes = (current_time - marker_time) / 60
 
-                        if marker_age_minutes > 30:  # Consider markers older than 30 minutes as stale
+                        if (
+                            marker_age_minutes > 30
+                        ):  # Consider markers older than 30 minutes as stale
                             stale_markers.append(marker)
                         else:
                             active_markers.append(marker)
@@ -446,17 +473,23 @@ async def get_relevant_content(
                 # Remove stale markers
                 for marker in stale_markers:
                     try:
-                        logger.warning(f"Removing stale worker marker: {marker.name} (age: {(current_time - marker.stat().st_mtime) / 60:.1f} minutes)")
+                        logger.warning(
+                            f"Removing stale worker marker: {marker.name} (age: {(current_time - marker.stat().st_mtime) / 60:.1f} minutes)"
+                        )
                         marker.unlink()
                     except Exception as e:
                         logger.warning(f"Error removing stale marker {marker}: {e}")
 
                 # If there are still active markers, skip embedding generation
                 if active_markers:
-                    logger.info(f"Another worker is already processing: {active_markers[0].name}. Skipping embedding generation.")
+                    logger.info(
+                        f"Another worker is already processing: {active_markers[0].name}. Skipping embedding generation."
+                    )
                     return
                 else:
-                    logger.info(f"Removed {len(stale_markers)} stale worker markers. Proceeding with embedding generation.")
+                    logger.info(
+                        f"Removed {len(stale_markers)} stale worker markers. Proceeding with embedding generation."
+                    )
 
         # Create worker marker
         worker_marker.touch()
@@ -467,8 +500,15 @@ async def get_relevant_content(
             try:
                 with FileLock(str(lock_file), timeout=5):
                     # Double check if embeddings exist after acquiring lock
-                    if not force_refresh and complete_data_exists and embeddings_path.exists() and thread_id_map_path.exists():
-                        logger.info(f"Embeddings already exist at {embeddings_path} (checked after lock), skipping generation")
+                    if (
+                        not force_refresh
+                        and complete_data_exists
+                        and embeddings_path.exists()
+                        and thread_id_map_path.exists()
+                    ):
+                        logger.info(
+                            f"Embeddings already exist at {embeddings_path} (checked after lock), skipping generation"
+                        )
                         return
 
                     # Clean up any stale markers
@@ -487,7 +527,9 @@ async def get_relevant_content(
                     with tqdm(total=1, desc="Loading stratified dataset") as pbar:
                         try:
                             if not stratified_path.exists():
-                                raise FileNotFoundError(f"Stratified sample not found at {stratified_path}")
+                                raise FileNotFoundError(
+                                    f"Stratified sample not found at {stratified_path}"
+                                )
 
                             df = pd.read_csv(stratified_path)
                             if df.empty:
@@ -495,9 +537,9 @@ async def get_relevant_content(
                             for _, row in df.iterrows():
                                 try:
                                     article = KnowledgeDocument(
-                                        thread_id=str(row['thread_id']),
-                                        posted_date_time=str(row['posted_date_time']),
-                                        text_clean=str(row['text_clean'])
+                                        thread_id=str(row["thread_id"]),
+                                        posted_date_time=str(row["posted_date_time"]),
+                                        text_clean=str(row["text_clean"]),
                                     )
                                     articles.append(article)
                                 except Exception as e:
@@ -519,7 +561,7 @@ async def get_relevant_content(
                             articles=articles,
                             embedding_batch_size=batch_size,
                             provider=provider,
-                            progress_callback=progress_callback
+                            progress_callback=progress_callback,
                         )
 
                         if results:
@@ -552,51 +594,80 @@ async def get_relevant_content(
                                         "created_at": datetime.now().isoformat(),
                                         "dimensions": embeddings_array.shape[1],
                                         "count": len(thread_ids),
-                                        "is_mock": any("mock" in str(r) for r in results[:10])  # Check if these are mock embeddings
+                                        "is_mock": any(
+                                            "mock" in str(r) for r in results[:10]
+                                        ),  # Check if these are mock embeddings
                                     }
                                     np.savez_compressed(
-                                        temp_embeddings_path, 
-                                        embeddings=embeddings_array, 
-                                        metadata=json.dumps(metadata)
+                                        temp_embeddings_path,
+                                        embeddings=embeddings_array,
+                                        metadata=json.dumps(metadata),
                                     )
 
                                     # Save thread_id mapping
-                                    with open(temp_thread_id_map_path, 'w') as f:
+                                    with open(temp_thread_id_map_path, "w") as f:
                                         json.dump(thread_id_map, f)
 
                                     # Move files to final destination atomically
                                     try:
                                         shutil.move(str(temp_embeddings_path), str(embeddings_path))
-                                        shutil.move(str(temp_thread_id_map_path), str(thread_id_map_path))
+                                        shutil.move(
+                                            str(temp_thread_id_map_path), str(thread_id_map_path)
+                                        )
                                     except (OSError, PermissionError) as e:
-                                        logger.warning(f"Move operation failed: {e}. Falling back to copy.")
+                                        logger.warning(
+                                            f"Move operation failed: {e}. Falling back to copy."
+                                        )
                                         try:
-                                            shutil.copy2(str(temp_embeddings_path), str(embeddings_path))
-                                            shutil.copy2(str(temp_thread_id_map_path), str(thread_id_map_path))
+                                            shutil.copy2(
+                                                str(temp_embeddings_path), str(embeddings_path)
+                                            )
+                                            shutil.copy2(
+                                                str(temp_thread_id_map_path),
+                                                str(thread_id_map_path),
+                                            )
                                         except PermissionError as pe:
-                                            logger.warning(f"Copy with metadata failed: {pe}. Using simple file copy.")
+                                            logger.warning(
+                                                f"Copy with metadata failed: {pe}. Using simple file copy."
+                                            )
                                             # Use simple file copy without metadata preservation
-                                            with open(temp_embeddings_path, 'rb') as src, open(embeddings_path, 'wb') as dst:
+                                            with (
+                                                open(temp_embeddings_path, "rb") as src,
+                                                open(embeddings_path, "wb") as dst,
+                                            ):
                                                 dst.write(src.read())
-                                            with open(temp_thread_id_map_path, 'r') as src, open(thread_id_map_path, 'w') as dst:
+                                            with (
+                                                open(temp_thread_id_map_path, "r") as src,
+                                                open(thread_id_map_path, "w") as dst,
+                                            ):
                                                 dst.write(src.read())
 
-                                    logger.info(f"Saved embeddings ({embeddings_array.shape}) and thread_id map to {embeddings_path}")
+                                    logger.info(
+                                        f"Saved embeddings ({embeddings_array.shape}) and thread_id map to {embeddings_path}"
+                                    )
 
                                 finally:
                                     # Clean up temporary directory
                                     try:
                                         shutil.rmtree(temp_dir)
                                     except Exception as e:
-                                        logger.warning(f"Error cleaning up temp dir {temp_dir}: {e}")
+                                        logger.warning(
+                                            f"Error cleaning up temp dir {temp_dir}: {e}"
+                                        )
                             else:
-                                logger.warning("No valid embeddings extracted from results, this should not happen with updated error handling")
+                                logger.warning(
+                                    "No valid embeddings extracted from results, this should not happen with updated error handling"
+                                )
                         else:
-                            logger.warning("No results returned from batch processing, this should not happen with updated error handling")
+                            logger.warning(
+                                "No results returned from batch processing, this should not happen with updated error handling"
+                            )
                     except Exception as batch_error:
                         logger.error(f"Error in batch processing: {batch_error}")
                         logger.error(traceback.format_exc())
-                        logger.warning("Falling back to mock embeddings generation at the get_relevant_content level")
+                        logger.warning(
+                            "Falling back to mock embeddings generation at the get_relevant_content level"
+                        )
 
                         # Final fallback - generate mock embeddings
                         embedding_dim = 3072  # Match OpenAI's text-embedding-3-large dimension
@@ -635,16 +706,16 @@ async def get_relevant_content(
                                 "created_at": datetime.now().isoformat(),
                                 "dimensions": embedding_dim,
                                 "count": len(thread_ids),
-                                "is_mock": True  # Flag to indicate these are mock embeddings
+                                "is_mock": True,  # Flag to indicate these are mock embeddings
                             }
                             np.savez_compressed(
-                                temp_embeddings_path, 
-                                embeddings=embeddings_array, 
-                                metadata=json.dumps(metadata)
+                                temp_embeddings_path,
+                                embeddings=embeddings_array,
+                                metadata=json.dumps(metadata),
                             )
 
                             # Save thread_id mapping
-                            with open(temp_thread_id_map_path, 'w') as f:
+                            with open(temp_thread_id_map_path, "w") as f:
                                 json.dump(thread_id_map, f)
 
                             # Move files to final destination atomically
@@ -679,7 +750,9 @@ async def get_relevant_content(
                     completion_marker.touch()
                     logger.info(f"Embeddings generation completed by worker {worker_id}")
             except Timeout:
-                logger.info(f"Worker {worker_id} could not acquire lock, another worker is likely processing. Skipping.")
+                logger.info(
+                    f"Worker {worker_id} could not acquire lock, another worker is likely processing. Skipping."
+                )
                 return
 
         finally:
@@ -694,7 +767,9 @@ async def get_relevant_content(
         logger.error(f"Error in get_relevant_content: {e}")
         logger.error(traceback.format_exc())
 
-async def merge_articles_and_embeddings(stratified_path: Path, embeddings_path: Path, thread_id_map_path: Path) -> pd.DataFrame:
+async def merge_articles_and_embeddings(
+    stratified_path: Path, embeddings_path: Path, thread_id_map_path: Path
+) -> pd.DataFrame:
     """Merge article data with their embeddings efficiently.
     Args:
         stratified_path: Path to the stratified sample CSV
@@ -727,49 +802,35 @@ async def merge_articles_and_embeddings(stratified_path: Path, embeddings_path: 
         logger.info(f"Successfully loaded embeddings with shape {embeddings_array.shape}")
 
         # Convert thread IDs to strings for consistent comparison
-        articles_df['thread_id'] = articles_df['thread_id'].astype(str)
+        articles_df["thread_id"] = articles_df["thread_id"].astype(str)
         thread_id_map = {str(k): v for k, v in thread_id_map.items()}
 
-        # Create embeddings column
-        articles_df['embedding'] = None
-        articles_df['is_mock_embedding'] = False
+        # Convert thread_id_map to DataFrame for vectorized merge
+        thread_map_df = (
+            pd.DataFrame.from_dict(thread_id_map, orient="index", columns=["embedding_index"])
+            .reset_index()
+            .rename(columns={"index": "thread_id"})
+        )
 
-        # Track success rate
-        successful_mappings = 0
+        # Filter out invalid indices and attach embedding vectors
+        thread_map_df = thread_map_df[thread_map_df["embedding_index"] < len(embeddings_array)]
+        thread_map_df["embedding"] = list(
+            embeddings_array[thread_map_df["embedding_index"].astype(int)]
+        )
+        thread_map_df.drop(columns=["embedding_index"], inplace=True)
 
-        # Try to merge embeddings with articles
-        for thread_id, idx in thread_id_map.items():
-            try:
-                if idx < len(embeddings_array):
-                    # Thread IDs are now both strings
-                    mask = articles_df['thread_id'] == thread_id
-                    mask_count = mask.sum()
+        # Merge embeddings directly onto articles_df
+        articles_df = articles_df.merge(thread_map_df, on="thread_id", how="left")
 
-                    if mask.any():
-                        # Get the embedding value
-                        embedding_value = embeddings_array[idx]
-
-                        # Assign the embedding to each matching row individually
-                        matching_indices = articles_df.index[mask].tolist()
-                        for match_idx in matching_indices:
-                            articles_df.at[match_idx, 'embedding'] = embedding_value
-                            articles_df.at[match_idx, 'is_mock_embedding'] = False
-
-                        successful_mappings += 1
-                    else:
-                        logger.debug(f"Thread ID {thread_id} not found in articles dataframe")
-                else:
-                    logger.warning(f"Embedding index {idx} out of bounds for thread_id {thread_id} (embeddings length: {len(embeddings_array)})")
-            except Exception as e:
-                logger.warning(f"Error mapping embedding for thread_id {thread_id}: {e}")
+        # Set is_mock_embedding flag using vectorized operation (all False for merged embeddings)
+        articles_df["is_mock_embedding"] = False
 
         # Log statistics about embedding coverage
         total_articles = len(articles_df)
-        articles_with_embeddings = articles_df['embedding'].notna().sum()
+        articles_with_embeddings = articles_df["embedding"].notna().sum()
         logger.info(
             f"Merged {articles_with_embeddings}/{total_articles} articles with embeddings "
-            f"({articles_with_embeddings/total_articles*100:.1f}% coverage). "
-            f"Successful thread ID mappings: {successful_mappings}/{len(thread_id_map)}"
+            f"({articles_with_embeddings/total_articles*100:.1f}% coverage)."
         )
 
         return articles_df
@@ -794,31 +855,12 @@ def validate_text_for_embedding(text: str) -> Tuple[bool, str]:
     Returns:
         Tuple[bool, str]: (is_valid, reason)
     """
-    if text is None:
-        return False, "Text is None"
-
-    if not isinstance(text, str):
-        return False, f"Text is not a string (type: {type(text)})"
-
-    # Remove whitespace to check if there's actual content
-    text_clean = text.strip()
-
-    if not text_clean:
-        return False, "Text is empty or whitespace only"
-
-    if len(text_clean) < 10:
-        return False, f"Text is too short ({len(text_clean)} chars)"
-
-    # Check for excessive repetition which might confuse embedding models
-    if len(set(text_clean)) / len(text_clean) < 0.1:
-        return False, "Text has low character diversity (possible repetition)"
-
-    return True, "Valid"
+    return validate_text(text)
 
 async def process_sub_batch(
     sub_batch_articles: List[KnowledgeDocument],
     agent: KnowledgeAgent,
-    provider: Optional[ModelProvider] = None
+    provider: Optional[ModelProvider] = None,
 ) -> List[Tuple[str, str, str, List[float]]]:
     """Process a sub-batch of articles for embedding generation.
 
@@ -875,7 +917,11 @@ async def process_sub_batch(
 
                 if response and response.embedding:
                     # Validate embedding response
-                    embeddings = response.embedding if isinstance(response.embedding, list) else [response.embedding]
+                    embeddings = (
+                        response.embedding
+                        if isinstance(response.embedding, list)
+                        else [response.embedding]
+                    )
 
                     # Check if we got the expected number of embeddings
                     if len(embeddings) != len(valid_articles):
@@ -885,7 +931,7 @@ async def process_sub_batch(
                         )
 
                         # Try to use as many as we can
-                        valid_articles = valid_articles[:len(embeddings)]
+                        valid_articles = valid_articles[: len(embeddings)]
 
                     # Process each embedding with validation
                     embedding_stats = {"valid": 0, "invalid": 0, "single_float": 0}
@@ -910,7 +956,14 @@ async def process_sub_batch(
                             continue
 
                         # Add valid result
-                        batch_results.append((article.thread_id, article.posted_date_time, article.text_clean, embedding))
+                        batch_results.append(
+                            (
+                                article.thread_id,
+                                article.posted_date_time,
+                                article.text_clean,
+                                embedding,
+                            )
+                        )
                         embedding_stats["valid"] += 1
 
                     # Log embedding statistics
@@ -946,7 +999,7 @@ async def process_batch(
     articles: List[KnowledgeDocument],
     embedding_batch_size: int = 10,
     provider: Optional[ModelProvider] = None,
-    progress_callback: Optional[Callable[[int, int], Union[None, Awaitable[None]]]] = None
+    progress_callback: Optional[Callable[[int, int], Union[None, Awaitable[None]]]] = None,
 ) -> List[Tuple[str, str, str, List[float]]]:
     """Process a batch of articles, computing their embeddings.
 
@@ -973,7 +1026,10 @@ async def process_batch(
         logger.info(f"Processing {total_articles} articles in batches of {embedding_batch_size}")
 
         # Split articles into sub-batches
-        sub_batches = [articles[i:i+embedding_batch_size] for i in range(0, total_articles, embedding_batch_size)]
+        sub_batches = [
+            articles[i : i + embedding_batch_size]
+            for i in range(0, total_articles, embedding_batch_size)
+        ]
         total_batches = len(sub_batches)
         logger.info(f"Split into {total_batches} sub-batches")
 
@@ -988,7 +1044,9 @@ async def process_batch(
         for i, sub_batch in enumerate(sub_batches):
             batch_start = i * embedding_batch_size
             batch_end = min((i + 1) * embedding_batch_size, total_articles)
-            logger.info(f"Processing sub-batch {i+1}/{total_batches} (articles {batch_start}-{batch_end})")
+            logger.info(
+                f"Processing sub-batch {i+1}/{total_batches} (articles {batch_start}-{batch_end})"
+            )
 
             try:
                 # Process the sub-batch - this now returns mock embeddings on error rather than raising
@@ -997,7 +1055,9 @@ async def process_batch(
                 # Check if results were returned (the sub-batch function should always return something now)
                 if results:
                     all_results.extend(results)
-                    logger.info(f"Successfully processed sub-batch {i+1}/{total_batches} with {len(results)} results")
+                    logger.info(
+                        f"Successfully processed sub-batch {i+1}/{total_batches} with {len(results)} results"
+                    )
                 else:
                     # This should never happen now, but if it does, log it
                     logger.warning(f"No results from sub-batch {i+1}/{total_batches}")
@@ -1018,7 +1078,9 @@ async def process_batch(
 
             except Exception as e:
                 error_count += 1
-                logger.error(f"Unexpected error processing sub-batch {i+1}/{total_batches} ({batch_start}-{batch_end}): {e}")
+                logger.error(
+                    f"Unexpected error processing sub-batch {i+1}/{total_batches} ({batch_start}-{batch_end}): {e}"
+                )
                 logger.error(traceback.format_exc())
                 # Continue with next batch despite errors
 
@@ -1039,20 +1101,26 @@ async def process_batch(
                 mock_embedding = np.random.normal(0, 0.1, embedding_dim)
                 mock_embedding = mock_embedding / np.linalg.norm(mock_embedding)
 
-                mock_results.append((
-                    article.thread_id, 
-                    article.posted_date_time, 
-                    article.text_clean, 
-                    mock_embedding.tolist()
-                ))
+                mock_results.append(
+                    (
+                        article.thread_id,
+                        article.posted_date_time,
+                        article.text_clean,
+                        mock_embedding.tolist(),
+                    )
+                )
 
             logger.info(f"Generated {len(mock_results)} mock embeddings at batch level fallback")
             all_results = mock_results
 
         # Log statistics at the end
-        logger.info(f"Completed processing with {len(all_results)} results from {total_articles} articles")
+        logger.info(
+            f"Completed processing with {len(all_results)} results from {total_articles} articles"
+        )
         if error_count > 0:
-            logger.warning(f"{error_count}/{total_batches} sub-batches had errors but were handled gracefully")
+            logger.warning(
+                f"{error_count}/{total_batches} sub-batches had errors but were handled gracefully"
+            )
 
         return all_results
 
@@ -1069,21 +1137,21 @@ async def process_batch(
             np.random.seed(seed)
             mock_embedding = np.random.normal(0, 0.1, embedding_dim)
             mock_embedding = mock_embedding / np.linalg.norm(mock_embedding)
-            mock_results.append((
-                article.thread_id, 
-                article.posted_date_time, 
-                article.text_clean, 
-                mock_embedding.tolist()
-            ))
+            mock_results.append(
+                (
+                    article.thread_id,
+                    article.posted_date_time,
+                    article.text_clean,
+                    mock_embedding.tolist(),
+                )
+            )
 
         logger.info(f"Generated {len(mock_results)} mock embeddings as master fallback")
         return mock_results
 
 @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
 async def generate_embeddings(
-    texts: List[str],
-    provider: Optional[ModelProvider] = None,
-    request_timeout: int = 30
+    texts: List[str], provider: Optional[ModelProvider] = None, request_timeout: int = 30
 ) -> List[List[float]]:
     """Generate embeddings for a list of texts with improved error handling and retries.
 
@@ -1130,7 +1198,7 @@ async def generate_embeddings(
         response = await agent.embedding_request(
             text=filtered_texts,
             provider=provider,
-            batch_size=None  # Use default batch size from config
+            batch_size=None,  # Use default batch size from config
         )
         elapsed = time.time() - start_time
 
@@ -1145,8 +1213,7 @@ async def generate_embeddings(
 
         # Validate embeddings
         valid_embeddings = [
-            emb for emb in embeddings 
-            if isinstance(emb, (list, np.ndarray)) and len(emb) > 0
+            emb for emb in embeddings if isinstance(emb, (list, np.ndarray)) and len(emb) > 0
         ]
 
         logger.info(f"Generated {len(valid_embeddings)} embeddings in {elapsed:.2f}s")

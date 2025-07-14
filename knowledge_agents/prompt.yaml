@@ -240,7 +240,7 @@ user_prompts:
         credibility: "Source reliability"
         
     content: |
-      You are analyzing aggregated chunk analyses to generate a comprehensive summary and forecast.
+      You are analyzing aggregated chunk analyses to generate a comprehensive summary and forecast (limit: 300 words total).
       Your input consists of multiple chunk analyses, each containing detailed metrics and patterns.
       Your goal is to synthesize these analyses into a coherent narrative while identifying key events and trends.
 
@@ -296,15 +296,15 @@ user_prompts:
       </analysis_framework>
 
       <output_format>
-      Structure your analysis in clear sections with line breaks for readability:
+      Structure your analysis concisely (max 300 words total):
 
-      ### 1. Temporal Overview
+      ### 1. Temporal Overview (max 75 words)
       Time Range: {start_date} to {end_date}
       Active Periods: List key activity spikes with descriptive event names
       Thread Distribution: Summarize thread patterns
       Key Correlations: Note relationships between events using descriptive names
 
-      ### 2. Thread Analysis
+      ### 2. Thread Analysis (max 100 words)
       #### A. Key Metrics
       [Activity & Reach]
       - (t, "Descriptive Event Name 1", activity_rate, value, conf)
@@ -321,7 +321,7 @@ user_prompts:
       * Credibility: Rate source reliability
       * Anomalies: Flag unusual patterns
 
-      ### 3. Content Analysis
+      ### 3. Content Analysis (max 75 words)
       #### A. Key Claims
       [Primary Claims]
       - (t, "descriptive_event_name", claim, credibility, impact)
@@ -338,7 +338,7 @@ user_prompts:
       * Catalysts: Link trigger events by name
       * Cross-Platform: Note external signals
 
-      ### 4. Forecasts
+      ### 4. Forecasts (max 50 words)
       #### A. 24h Outlook
       [Activity]
       - (t+24h, "descriptive_event_name_forecast", p, [ci_low, ci_high])
@@ -369,7 +369,7 @@ user_prompts:
         impact: "Thread influence"
         
     content: |
-      Analyze the following anonymous message board content to extract early signals:
+      Analyze the following anonymous message board content to extract early signals (limit: 150 words):
 
       <content>
       {content}
@@ -409,7 +409,7 @@ user_prompts:
          - Flag patterns (novelty)
       </analysis_framework>
 
-      First, provide the metrics:
+      Provide concise analysis (max 150 words):
       1. **Thread Stats**:
          - Activity level (activity)
          - Reply patterns (impact)
@@ -423,14 +423,14 @@ user_prompts:
          - Risk factors (activity)
 
       Then, after "<forecast_context>", provide:
-      1. **Pattern Analysis**:
+      1. **Pattern Analysis** (max 100 words):
          - Actors involved (impact)
          - Evolution trend (novelty)
          - Breakdown risks (toxicity)
          - Viral triggers (activity)
          - Impact forecast (impact)
          
-      2. **Confidence Assessment**:
+      2. **Confidence Assessment** (max 50 words):
          - Signal strength (novelty)
          - Pattern stability (activity)
          - Risk factors (toxicity)
