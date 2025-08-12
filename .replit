@@ -201,4 +201,4 @@ command = "tail -n 50 logs/scheduler.log"
 bucket = "rolling-data"
 
 [objectStorage]
-defaultBucketID = "replit-objstore-05cbbe20-4215-4b30-a9e9-5d2d386b4ae7"
+defaultBucketID = "replit-objstore-bbfe5aa0-5c0d-484a-9dce-803e7d5bb0f4"
