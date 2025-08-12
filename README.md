@@ -470,6 +470,41 @@ print('Environment detected:', detect_environment())
 
 **Result**: Docker deployments now correctly use file-based storage, eliminating database dependency errors and enabling successful data processing of 661K+ records from 161 S3 files.
 
+## Features
+
+- **Chanscope Query System**: Unified approach to ingesting, processing, and querying 4chan data
+- **Multi-Environment Support**: Seamless operation in both local Docker and cloud Replit environments
+- **Optimized Data Processing**: Advanced stratified sampling with temporal distribution preservation
+- **LLM Integration**: Support for OpenAI, Grok, and Venice AI models for enhanced query understanding
+- **API Interface**: FastAPI-based REST API for easy integration
+
+## LLM Chunking Optimization
+
+The system includes advanced chunking optimization to handle text processing efficiently:
+
+### Deterministic Chunking (Recommended for Production)
+```bash
+# Enable local text splitting without LLM calls
+export USE_DETERMINISTIC_CHUNKING=true
+export CHUNK_SIZE=1000        # Characters per chunk
+export CHUNK_OVERLAP=200      # Overlap between chunks
+```
+
+### LLM-Based Chunking with Retry Logic
+```bash
+# Use LLM with robust retry mechanism
+export USE_DETERMINISTIC_CHUNKING=false
+export CHUNK_MAX_RETRIES=3    # Retry attempts with exponential backoff
+```
+
+### Key Benefits:
+- **100% reliability** with deterministic chunking
+- **No API costs** when using local processing
+- **3-5x faster** processing with parallel batch operations
+- **Automatic fallbacks** from LLM to deterministic on failures
+
+See [docs/llm_chunking_optimization.md](docs/llm_chunking_optimization.md) for detailed configuration and performance metrics.
+
 ## Quick Start
 
 ### 1. Setup Environment
