@@ -80,11 +80,11 @@ async def process_data(force_refresh: bool = False, skip_embeddings: bool = Fals
                     # Try to load sample
                     sample = await data_manager.stratified_storage.get_sample()
                     if sample is not None and len(sample) > 0:
-                        print(f"✅ Verified stratified sample in key-value store: {len(sample)} rows")
+                        print(f"[OK] Verified stratified sample in key-value store: {len(sample)} rows")
                     else:
-                        print("⚠️ Warning: Stratified sample exists but couldn't be loaded")
+                        print("[WARN] Stratified sample exists but couldn't be loaded")
                 else:
-                    print("❌ Error: Failed to create stratified sample in key-value store")
+                    print("[ERROR] Failed to create stratified sample in key-value store")
             
             # Mark initialization as complete
             lock_manager.mark_initialization_complete(True, {
@@ -177,9 +177,9 @@ async def check_data_status():
             # Verify Object Storage is being used in Replit environment
             if os.environ.get('REPLIT_ENV') or os.environ.get('REPL_ID'):
                 if "Object" in storage_type:
-                    print("✅ Using Object Storage for embeddings (recommended for large embeddings)")
+                    print("[OK] Using Object Storage for embeddings (recommended for large embeddings)")
                 else:
-                    print("⚠️ WARNING: Not using Object Storage for embeddings. Large embeddings may fail to store.")
+                    print("[WARN] Not using Object Storage for embeddings. Large embeddings may fail to store.")
         
         # Check initialization status
         lock_manager = ProcessLockManager()
@@ -248,22 +248,22 @@ async def regenerate_derived_data(force_stratified: bool = True, force_embedding
                 if strat_exists:
                     sample = await data_manager.stratified_storage.get_sample()
                     if sample is not None:
-                        print(f"✅ Successfully regenerated stratified sample with {len(sample)} rows")
+                        print(f"[OK] Successfully regenerated stratified sample with {len(sample)} rows")
                     else:
-                        print("⚠️ Stratified sample exists but couldn't be loaded")
+                        print("[WARN] Stratified sample exists but couldn't be loaded")
                 else:
-                    print("❌ Failed to verify stratified sample existence")
+                    print("[ERROR] Failed to verify stratified sample existence")
             else:
-                print("❌ Failed to regenerate stratified sample")
+                print("[ERROR] Failed to regenerate stratified sample")
         
         # Generate embeddings if requested
         if force_embeddings:
             print("Regenerating embeddings...")
             success = await data_manager.generate_embeddings(force_refresh=True)
             if success:
-                print("✅ Successfully regenerated embeddings")
+                print("[OK] Successfully regenerated embeddings")
             else:
-                print("❌ Failed to regenerate embeddings")
+                print("[ERROR] Failed to regenerate embeddings")
         
         # Mark initialization as complete if successful
         if (not force_stratified or success) and (not force_embeddings or success):
