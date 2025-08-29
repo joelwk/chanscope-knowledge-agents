@@ -1,6 +1,7 @@
 # Chanscope Retrieval: Multi-Provider LLM Microservice for Information Intelligence
 
 - **Natural Language to SQL Query Engine**: Ask questions in plain English, get structured data responses
+- **Interactive Console Interface**: New command-line tools for real-time natural language queries
 - **Multi-Provider LLM Orchestration**: Seamlessly switch between OpenAI, Grok (X.AI), and Venice.AI
 - **Venice AI Character Support**: Leverage specialized AI personas for domain-specific analysis
 - **Enhanced Temporal Analysis**: Improved forecasting with time-aware query processing
@@ -98,6 +99,9 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
 │   │   └── dialog_processor.py # Text processing utilities
 │   └── run.py            # Main execution logic
 ├── scripts/              # Utility scripts for testing and deployment
+│   ├── interactive_nl_query.py  # Interactive console for natural language queries
+│   ├── simple_nl_query.py       # Simple single-query tool
+│   └── README_NL_QUERY.md       # Natural language query documentation
 ├── tests/                # Test suites and fixtures
 └── examples/             # Example usage and integrations
 ```
@@ -459,7 +463,19 @@ print('Environment detected:', detect_environment())
 
 ## Recent Updates
 
-### Environment Detection Fixes (Latest)
+### Natural Language Query Console Interface (New)
+🎯 **New Feature**: Added interactive console tools for natural language database queries, making it easier to explore data without writing SQL.
+
+**What's new:**
+- Interactive console application with continuous query mode
+- Simple single-query script for one-off searches
+- Built-in help with query examples
+- Formatted table output with result previews
+- Support for all model providers (OpenAI, Grok, Venice)
+
+**Usage**: Run `python scripts/interactive_nl_query.py` to start querying your data in plain English. See [scripts/README_NL_QUERY.md](scripts/README_NL_QUERY.md) for full documentation.
+
+### Environment Detection Fixes (Previous)
 🔧 **Resolved Critical Issue**: Fixed Docker containers incorrectly detecting as 'replit' environment, which caused PostgreSQL connection errors and "states failed" messages.
 
 **What was fixed:**
@@ -504,6 +520,33 @@ export CHUNK_MAX_RETRIES=3    # Retry attempts with exponential backoff
 - **Automatic fallbacks** from LLM to deterministic on failures
 
 See [docs/llm_chunking_optimization.md](docs/llm_chunking_optimization.md) for detailed configuration and performance metrics.
+
+## Natural Language Query Interface
+
+The project now includes interactive console tools for querying the database using natural language:
+
+### Interactive Console Application
+```bash
+# Start interactive mode for continuous queries
+python scripts/interactive_nl_query.py
+
+# With custom settings
+python scripts/interactive_nl_query.py --api http://your-api:port --provider openai
+```
+
+### Simple Query Tool
+```bash
+# Run a single query with prompts
+python scripts/simple_nl_query.py
+```
+
+### Example Natural Language Queries
+- "Show me posts from the last hour"
+- "Find messages containing bitcoin from yesterday"
+- "Get 5 recent posts about AI"
+- "Show posts by author satoshi containing crypto"
+
+For detailed usage and more examples, see [scripts/README_NL_QUERY.md](scripts/README_NL_QUERY.md)
 
 ## Quick Start
 
@@ -556,7 +599,18 @@ API: http://localhost:80
 
 ### 5. Basic API Usage
 
-#### Synchronous Query
+#### Interactive Console (Recommended for Exploration)
+```bash
+# Use the interactive console for natural language queries
+python scripts/interactive_nl_query.py
+
+# Or for a single query
+python scripts/simple_nl_query.py
+```
+
+#### Direct API Calls
+
+##### Synchronous Query
 ```bash
 curl -X POST "http://localhost/api/v1/query" \
   -H "Content-Type: application/json" \
@@ -566,7 +620,7 @@ curl -X POST "http://localhost/api/v1/query" \
   }'
 ```
 
-#### Background Processing
+##### Background Processing
 ```bash
 # Submit background task
 curl -X POST "http://localhost/api/v1/query" \
@@ -581,7 +635,7 @@ curl -X POST "http://localhost/api/v1/query" \
 curl -X GET "http://localhost/api/v1/batch_status/bitcoin_analysis_123"
 ```
 
-#### Natural Language Database Query
+##### Natural Language Database Query
 ```bash
 # Query using natural language
 curl -X POST "http://localhost/api/v1/nl_query" \
@@ -716,6 +770,7 @@ The project supports multiple AI model providers:
 - **[docs/llm_sql_feature.md](docs/llm_sql_feature.md)**: LLM-based SQL generation documentation
 - **[docs/stratification_guide.md](docs/stratification_guide.md)**: Stratification best practices
 - **[api/README_REQUESTS.md](api/README_REQUESTS.md)**: API usage examples
+- **[scripts/README_NL_QUERY.md](scripts/README_NL_QUERY.md)**: Natural language query interface documentation
 
 ## Environment Variables
 For a complete and up-to-date list of environment variables, see [.env.template](.env.template)
