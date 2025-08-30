@@ -1065,15 +1065,25 @@ async def batch_process_queries(
             result_config = copy.deepcopy(config)
             result_config.query = query
             
+            # Schema-aware extraction: handle both dict and tuple result formats
+            if isinstance(result, dict):
+                chunks = result.get("chunks", [])
+                summary = result.get("summary", "")
+                meta_extra = result.get("metadata", {})
+            else:  # tuple fallback
+                chunks, summary = result[:2]
+                meta_extra = result[2] if len(result) > 2 else {}
+            
             # Create a structured result dictionary
             result_dict = {
-                "chunks": result[0],  # First element is chunks
-                "summary": result[1],  # Second element is summary
+                "chunks": chunks,
+                "summary": summary,
                 "metadata": {
                     "batch_id": batch_id,
                     "item_index": i,
                     "query": query,
-                    "processing_time_ms": duration_ms / len(request.queries)  # Approximate per-query time
+                    "processing_time_ms": duration_ms / len(request.queries),  # Approximate per-query time
+                    **meta_extra  # Include any additional metadata from the result
                 }
             }
             
@@ -2016,6 +2026,11 @@ async def _store_batch_result(batch_id: str, result: Union[tuple, Dict[str, Any]
     # Not active, so set to None
     redis_client = None 
     try:
+        # Early detection guard for future contract drift
+        if not isinstance(result, (tuple, dict)):
+            logger.warning(f"Unexpected result type detected in _store_batch_result: {type(result)}. Expected tuple or dict. Value: {result}")
+            # Continue processing but log the issue for investigation
+        
         # Handle both tuple and dict formats for backward compatibility
         if isinstance(result, tuple):
             if len(result) == 2:

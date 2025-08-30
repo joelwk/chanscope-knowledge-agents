@@ -672,7 +672,7 @@ async def process_query(
             chunk_results = await agent.generate_chunks_batch(
                 contents=texts,
                 provider=provider_map.get(ModelOperation.CHUNK_GENERATION),
-                chunk_batch_size=chunk_batch_size,
+                batch_size=chunk_batch_size,
                 character_slug=character_slug,
             )
         else:
