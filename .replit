@@ -135,6 +135,15 @@ author = 38779469
 task = "shell.exec"
 args = "python scripts/process_data.py --force-refresh"
 
+[[workflows.workflow]]
+name = "Interactive NL Query"
+author = 38779469
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python scripts/interactive_nl_query.py"
+
 [server]
 host = "0.0.0.0"
 port = 80
@@ -200,5 +209,8 @@ command = "tail -n 50 logs/scheduler.log"
 [replit]
 bucket = "rolling-data"
 
+[agent]
+expertMode = true
+
 [objectStorage]
-defaultBucketID = "replit-objstore-05cbbe20-4215-4b30-a9e9-5d2d386b4ae7"
+defaultBucketID = "replit-objstore-21e6f39c-a3d9-4156-b809-0c4a0efc2d66"

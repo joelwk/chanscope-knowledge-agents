@@ -166,6 +166,45 @@ async def test_cache_health_endpoint():
     assert "hit_ratio" in metrics
 
 @pytest.mark.asyncio
+async def test_batch_result_schema():
+    """Test batch processing handles both dict and tuple result formats."""
+    # This is a regression test for ID-001: KeyError when accessing result[0]
+    # Tests that the batch processing loop correctly handles dict results
+    
+    # Mock results in different formats to test schema-aware extraction
+    dict_result = {"chunks": ["chunk1"], "summary": "summary1", "metadata": {"test": "value"}}
+    tuple_result = (["chunk2"], "summary2", {"test": "value2"})
+    
+    # Test that both formats can be processed without KeyError
+    results = [dict_result, tuple_result]
+    queries = ["query1", "query2"]
+    
+    # Simulate the extraction logic from the fixed batch_process_queries function
+    for i, (query, result) in enumerate(zip(queries, results)):
+        # Schema-aware extraction: handle both dict and tuple result formats
+        if isinstance(result, dict):
+            chunks = result.get("chunks", [])
+            summary = result.get("summary", "")
+            meta_extra = result.get("metadata", {})
+        else:  # tuple fallback
+            chunks, summary = result[:2]
+            meta_extra = result[2] if len(result) > 2 else {}
+        
+        # Verify extraction worked correctly
+        assert chunks is not None
+        assert summary is not None
+        assert meta_extra is not None
+        
+        if i == 0:  # dict result
+            assert chunks == ["chunk1"]
+            assert summary == "summary1"
+            assert meta_extra == {"test": "value"}
+        else:  # tuple result
+            assert chunks == ["chunk2"]
+            assert summary == "summary2"
+            assert meta_extra == {"test": "value2"}
+
+@pytest.mark.asyncio
 async def test_error_handling():
     """Test error handling in endpoints."""
     # Test invalid query

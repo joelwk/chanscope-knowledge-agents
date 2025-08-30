@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional, AsyncGenerator, List, Dict, Any
+from typing import Optional, AsyncGenerator, List, Dict, Any, Tuple
 from datetime import datetime
 import pandas as pd
 import boto3
@@ -331,38 +331,88 @@ class S3Handler:
             logger.info(f"Board filtering enabled for: {self.select_board}")
 
         try:
-            response = self.s3.list_objects_v2(Bucket=self.bucket_name, Prefix=self.bucket_prefix)
-            if 'Contents' not in response:
-                logger.warning(f"No objects found in bucket {self.bucket_name} with prefix {self.bucket_prefix}")
-                return []
+            # Helper to parse date ranges embedded in filenames, e.g.
+            #   chanscope_sci_2025-04-25_2025-08-29_processed.csv
+            def _extract_date_range_from_key(key: str) -> Optional[Tuple[datetime, datetime]]:
+                import re
+                # Look for two ISO dates separated by '_' anywhere in key
+                m = re.search(r"(\d{4}-\d{2}-\d{2}).*?(\d{4}-\d{2}-\d{2})", key)
+                if not m:
+                    return None
+                try:
+                    start = pd.to_datetime(m.group(1), utc=True)
+                    end = pd.to_datetime(m.group(2), utc=True)
+                    return (start.to_pydatetime(), end.to_pydatetime())
+                except Exception:
+                    return None
 
-            csv_keys = []
+            paginator = self.s3.get_paginator('list_objects_v2')
+            page_iter = paginator.paginate(Bucket=self.bucket_name, Prefix=self.bucket_prefix)
+
+            total_objects = 0
             total_files = 0
-            filtered_by_date = 0
             filtered_by_board = 0
+            candidates_last_modified: List[Tuple[str, datetime]] = []
+            candidates_with_ranges: List[Tuple[str, Tuple[datetime, datetime]]] = []
 
-            # Get current time for upper bound
-            current_time = datetime.now(tz.UTC)
-
-            for item in response.get('Contents', []):
-                key = item['Key']
-                if key.endswith('.csv'):
+            for page in page_iter:
+                contents = page.get('Contents', [])
+                total_objects += len(contents)
+                for item in contents:
+                    key = item['Key']
+                    if not key.endswith('.csv'):
+                        continue
                     total_files += 1
-                    file_date = item['LastModified'].astimezone(tz.UTC)
-                    board_match = True if not self.select_board else self.select_board.lower() in key.lower()
-                    if not board_match:
+                    if self.select_board and self.select_board.lower() not in key.lower():
                         filtered_by_board += 1
                         continue
 
-                    if latest_date is not None:
-                        # Keep files between latest_date (retention period start) and current time
-                        if file_date < latest_date or file_date > current_time:
-                            filtered_by_date += 1
-                            logger.info(f"Skipping {key} (date {file_date} outside range {latest_date} to {current_time})")
-                            continue
-                    csv_keys.append(key)
+                    rng = _extract_date_range_from_key(key)
+                    if rng is not None:
+                        candidates_with_ranges.append((key, rng))
+                    else:
+                        # Fallback to LastModified for files without an identifiable range
+                        lm = item['LastModified'].astimezone(tz.UTC)
+                        candidates_last_modified.append((key, lm))
+
+            if not candidates_with_ranges and not candidates_last_modified:
+                logger.warning(f"No CSV files found in bucket {self.bucket_name} with prefix {self.bucket_prefix}")
+                return []
+
+            # If filenames encode a date range, prefer selecting the minimal set of files
+            # that cover our target window. Given the observed pattern of cumulative
+            # snapshots, the latest 'end' date typically supersedes earlier files, so we
+            # pick only the file with the max end date.
+            if candidates_with_ranges:
+                # Optionally respect a lower bound if provided: only consider files whose
+                # end is on/after latest_date (otherwise a very old snapshot could be chosen)
+                if latest_date is not None:
+                    candidates_with_ranges = [
+                        (k, (s, e)) for (k, (s, e)) in candidates_with_ranges if e >= latest_date
+                    ]
+                if not candidates_with_ranges:
+                    logger.info("No range-encoded files overlap the requested window; falling back to LastModified filter.")
+                else:
+                    # Choose the single file with the maximum end date
+                    key, (start_dt, end_dt) = max(candidates_with_ranges, key=lambda kv: kv[1][1])
+                    logger.info(
+                        f"Selected latest snapshot by filename range: {key} (start={start_dt.isoformat()}, end={end_dt.isoformat()})"
+                    )
+                    return [key]
+
+            # Fallback: filter by LastModified within [latest_date, now]
+            csv_keys: List[str] = []
+            filtered_by_date = 0
+            current_time = datetime.now(tz.UTC)
+            for key, lm in candidates_last_modified:
+                if latest_date is not None:
+                    if lm < latest_date or lm > current_time:
+                        filtered_by_date += 1
+                        continue
+                csv_keys.append(key)
+
             logger.info(
-                f"Total objects: {len(response['Contents'])}, CSV files: {total_files}, "
+                f"Total objects: {total_objects}, CSV files: {total_files}, "
                 f"Filtered by date: {filtered_by_date}, board: {filtered_by_board}, Selected: {len(csv_keys)}"
             )
             return csv_keys

@@ -58,8 +58,9 @@ class ChanScopeConfig:
         self.embedding_batch_size = embedding_batch_size
         self.force_refresh = force_refresh
         
-        # Determine environment with robust Docker detection
-        self.env = env or self._robust_detect_environment()
+        # Determine environment using centralized detection to avoid mismatches
+        # between modules. Prefer explicit env param, otherwise use env_loader.detect_environment().
+        self.env = env or detect_environment()
     
     def _detect_environment(self) -> str:
         """Detect the execution environment. 
@@ -119,7 +120,9 @@ class ChanScopeConfig:
         Returns:
             ChanScopeConfig: Configuration for the detected environment
         """
-        env = env_override or ChanScopeConfig._robust_detect_environment_static()
+        # Use the centralized environment detection to ensure consistency
+        # across the codebase (avoids defaulting to 'docker' in Replit).
+        env = env_override or detect_environment()
         
         if env == 'replit':
             # Replit configuration

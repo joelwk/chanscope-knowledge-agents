@@ -20,18 +20,24 @@ class APIError(Exception):
         super().__init__(self.message)
         
     def log_error(self, logger):
-        """Log the error with structured information."""
+        """Log the error with structured information.
+
+        Use a nested dict in `extra` to avoid conflicts with
+        LogRecord's reserved attribute names (e.g. "message").
+        """
         error_info = {
-            "error_code": self.error_code,
-            "status_code": self.status_code,
-            "message": self.message
+            "error_details": {
+                "error_code": self.error_code,
+                "status_code": self.status_code,
+                "message": self.message,
+            }
         }
         if self.details:
-            error_info["details"] = self.details
+            error_info["error_details"]["details"] = self.details
         if self.original_error:
-            error_info["original_error"] = str(self.original_error)
-            error_info["original_error_type"] = type(self.original_error).__name__
-        
+            error_info["error_details"]["original_error"] = str(self.original_error)
+            error_info["error_details"]["original_error_type"] = type(self.original_error).__name__
+
         logger.error(f"API Error: {self.error_code}", extra=error_info)
         
     def to_dict(self):
@@ -116,19 +122,24 @@ class ConfigurationError(APIError):
         self.config_value = config_value
         
     def log_error(self, logger):
-        """Log the configuration error with additional context."""
+        """Log the configuration error with additional context.
+
+        Nest details to prevent overwriting LogRecord fields.
+        """
         error_info = {
-            "error_code": self.error_code,
-            "status_code": self.status_code,
-            "message": self.message,
-            "config_key": self.config_key,
-            "config_value": str(self.config_value) if self.config_value is not None else None
+            "error_details": {
+                "error_code": self.error_code,
+                "status_code": self.status_code,
+                "message": self.message,
+                "config_key": self.config_key,
+                "config_value": str(self.config_value) if self.config_value is not None else None,
+            }
         }
-        
+
         if self.original_error:
-            error_info["original_error"] = str(self.original_error)
-            error_info["original_error_type"] = type(self.original_error).__name__
-            
+            error_info["error_details"]["original_error"] = str(self.original_error)
+            error_info["error_details"]["original_error_type"] = type(self.original_error).__name__
+
         logger.error(f"Configuration Error: {self.config_key}", extra=error_info)
 
 

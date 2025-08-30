@@ -763,7 +763,7 @@ class DataOperations:
                         return False
                     
                     # Clear caches after data refresh
-                    _clear_caches()
+                        _clear_caches()
                 
                 # Check if stratified sample exists
                 stratified_storage = storage['stratified_sample']
@@ -781,8 +781,8 @@ class DataOperations:
                 
                 # Generate embeddings if not skipping
                 if not skip_embeddings:
-                    await self._update_embeddings(force_refresh=force_refresh, max_workers=max_workers)
-                
+                        await self._update_embeddings(force_refresh=force_refresh, max_workers=max_workers)
+
             else:
                 # Use standard file-based approach for Docker/local environment
                 logger.info("Using file-based data preparation")
@@ -818,12 +818,31 @@ class DataOperations:
                     
                     if not embeddings_path.exists() or not thread_map_path.exists() or force_refresh:
                         await self._update_embeddings(force_refresh=force_refresh, max_workers=max_workers)
-            
+
             logger.info("Data preparation completed successfully")
             return True
-            
         except Exception as e:
             logger.error(f"Error ensuring data ready: {e}")
+            logger.error(traceback.format_exc())
+            return False
+
+    async def _fetch_and_store_s3_data(self) -> bool:
+        """Fetch data from S3 and store it using the active storage backend.
+
+        - In Replit (PostgreSQL-backed), delegate to storage.prepare_data().
+        - In file-based environments, download and write CSV locally.
+        """
+        try:
+            # Prefer a storage-provided implementation if available (Replit path)
+            if hasattr(self.complete_data_storage, "prepare_data"):
+                logger.info("Delegating S3 fetch to storage.prepare_data()")
+                return await self.complete_data_storage.prepare_data()
+
+            # Fallback to local file-based implementation
+            logger.info("Using internal downloader for S3 -> local CSV")
+            return await self._download_and_process_data()
+        except Exception as e:
+            logger.error(f"Error in _fetch_and_store_s3_data: {e}")
             logger.error(traceback.format_exc())
             return False
 
@@ -951,12 +970,46 @@ class DataOperations:
             logger.error(traceback.format_exc())
             return True
 
-    async def _create_stratified_sample(self) -> pd.DataFrame:
-        """Create a stratified sample from the given data."""
-        self._logger.info("Creating stratified sample")
-        stratified = self.processor.stratify_data(await self._load_stratified_data())
-        self._logger.info(f"Stratification complete; result size: {len(stratified)}")
-        return stratified
+    async def _create_stratified_sample(self) -> bool:
+        """Create and store a stratified sample from the complete dataset.
+
+        Returns True on successful storage, False otherwise.
+        """
+        try:
+            self._logger.info("Creating stratified sample from complete data")
+            
+            # Load complete data via the active storage backend
+            complete_df = await self.complete_data_storage.get_data(
+                filter_date=self.config.filter_date
+            )
+            if complete_df is None or len(complete_df) == 0:
+                self._logger.error("Complete dataset is empty or unavailable; cannot stratify")
+                return False
+
+            # Ensure we have a usable text column
+            if 'text_clean' not in complete_df.columns:
+                if 'content' in complete_df.columns:
+                    self._logger.warning("text_clean not found; falling back to content column for stratification")
+                    complete_df['text_clean'] = complete_df['content']
+                else:
+                    self._logger.error("Neither text_clean nor content column present; cannot stratify")
+                    return False
+
+            # Perform stratification
+            stratified_df = await self.processor.stratify_data(complete_df)
+            
+            # Persist using the active storage
+            storage_success = await self.stratified_storage.store_sample(stratified_df)
+            if storage_success:
+                self._logger.info(f"Stored stratified sample with {len(stratified_df)} rows")
+                return True
+            
+            self._logger.error("Failed to store stratified sample")
+            return False
+        except Exception as e:
+            self._logger.error(f"Error creating stratified sample: {e}")
+            self._logger.error(traceback.format_exc())
+            return False
 
     async def _generate_embeddings(self) -> bool:
         """

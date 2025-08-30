@@ -101,10 +101,7 @@ class KnowledgeDocument:
             except:
                 return None
 
-# Export public interface - use lazy imports to avoid circular dependencies
-# This approach defers the imports until they're actually needed
-from .run import run_inference
-
+# Export public interface lazily to avoid heavy side effects on import
 # Create placeholder names that will be imported only when used
 __all__ = ['ModelConfig', 'ModelProvider', 'ModelOperation', 'run_inference', 'KnowledgeDocument']
 
@@ -118,4 +115,7 @@ def __getattr__(name):
             return ModelProvider
         elif name == 'ModelOperation':
             return ModelOperation
+    if name == 'run_inference':
+        from .run import run_inference
+        return run_inference
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

@@ -78,10 +78,16 @@ def load_environment():
     # Configure environment-specific settings
     if is_replit:
         logger.info("Configuring Replit-specific settings")
-        configure_replit_environment()
+        try:
+            configure_replit_environment()
+        except Exception as e:
+            logger.warning(f"Replit environment configuration skipped due to error: {e}")
     elif is_docker:
         logger.info("Configuring Docker-specific settings")
-        configure_docker_environment()
+        try:
+            configure_docker_environment()
+        except Exception as e:
+            logger.warning(f"Docker environment configuration skipped due to error: {e}")
     else:
         logger.info("Using local environment settings")
     
@@ -212,7 +218,10 @@ def configure_replit_environment():
         
         # Create directories
         for path in paths.values():
-            Path(path).mkdir(parents=True, exist_ok=True)
+            try:
+                Path(path).mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logger.warning(f"Could not create path {path}: {e}")
         
         # Check if we're using mock data
         use_mock_data = os.environ.get("USE_MOCK_DATA", "").lower() == "true"
@@ -259,7 +268,10 @@ def configure_docker_environment():
         
         # Create directories
         for path in [docker_data_path, docker_stratified_path, docker_generated_data_path, docker_temp_path]:
-            Path(path).mkdir(parents=True, exist_ok=True)
+            try:
+                Path(path).mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logger.warning(f"Could not create path {path}: {e}")
         
         # Set environment variables with Docker-specific defaults
         os.environ.update({

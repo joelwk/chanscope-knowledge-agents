@@ -18,6 +18,7 @@ import hashlib
 import numpy as np
 from config.base import BaseConfig
 from knowledge_agents.utils import get_venice_character_slug
+from datetime import datetime
 # Initialize logging
 logger = logging.getLogger(__name__)
 
@@ -415,6 +416,12 @@ class KnowledgeAgent:
                     self._models_without_temperature = set()
                     self._initialized = True
                     logger.info("Initialized KnowledgeAgent singleton")
+                    
+                    # Add configuration for deterministic chunking
+                    self.use_deterministic_chunking = os.environ.get('USE_DETERMINISTIC_CHUNKING', 'false').lower() in ('true', '1', 'yes')
+                    self.chunk_size = int(os.environ.get('CHUNK_SIZE', '1000'))  # Characters per chunk
+                    self.chunk_overlap = int(os.environ.get('CHUNK_OVERLAP', '200'))  # Overlap between chunks
+                    self.max_retries = int(os.environ.get('CHUNK_MAX_RETRIES', '3'))  # Max retries for LLM chunking
 
     async def _get_client(self, provider: ModelProvider) -> Any:
         """Get or create a client for the specified provider with proper locking."""
@@ -422,6 +429,75 @@ class KnowledgeAgent:
             if provider not in self._clients:
                 self._clients[provider] = await self._create_client(provider)
             return self._clients[provider]
+    
+    def _deterministic_text_splitter(self, content: str) -> List[str]:
+        """Split text into chunks deterministically without using LLM.
+        
+        Args:
+            content: Text content to split
+            
+        Returns:
+            List of text chunks
+        """
+        if not content:
+            return []
+            
+        # Clean and normalize the text
+        content = content.strip()
+        
+        # If content is smaller than chunk size, return as single chunk
+        if len(content) <= self.chunk_size:
+            return [content]
+        
+        chunks = []
+        start = 0
+        
+        while start < len(content):
+            # Calculate end position
+            end = start + self.chunk_size
+            
+            # If this is not the last chunk, try to find a good breaking point
+            if end < len(content):
+                # Look for sentence boundaries (. ! ?) within the last 20% of the chunk
+                search_start = end - int(self.chunk_size * 0.2)
+                
+                # Find the last sentence boundary
+                last_boundary = -1
+                for i in range(end - 1, search_start, -1):
+                    if content[i] in '.!?' and i + 1 < len(content) and content[i + 1].isspace():
+                        last_boundary = i + 1
+                        break
+                
+                # If we found a boundary, use it
+                if last_boundary > 0:
+                    end = last_boundary
+                else:
+                    # Otherwise, try to find a word boundary
+                    for i in range(end - 1, search_start, -1):
+                        if content[i].isspace():
+                            end = i
+                            break
+            
+            # Extract chunk
+            chunk = content[start:end].strip()
+            if chunk:  # Only add non-empty chunks
+                chunks.append(chunk)
+            
+            # Move start position, accounting for overlap
+            start = end - self.chunk_overlap
+            
+            # Ensure we make progress
+            if start <= len(chunks) * self.chunk_size - self.chunk_size:
+                start = end
+        
+        return chunks
+    
+    def _generate_thread_id_for_chunk(self, chunk: str, index: int) -> str:
+        """Generate a unique thread ID for a chunk."""
+        # Create a hash of the chunk content
+        content_hash = hashlib.md5(chunk.encode()).hexdigest()[:8]
+        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+        return f"chunk_{timestamp}_{index}_{content_hash}"
 
     async def _create_client(self, provider: ModelProvider) -> Any:
         """Create a new client for the specified provider."""
@@ -873,8 +949,23 @@ class KnowledgeAgent:
         content: str,
         provider: Optional[ModelProvider] = None,
         character_slug: Optional[str] = None
-    ) -> Dict[str, str]:
-        """Generate chunks using the specified provider."""
+    ) -> Dict[str, Any]:
+        """Generate chunks using the specified provider or deterministic method."""
+        # Use deterministic chunking if configured
+        if self.use_deterministic_chunking:
+            logger.info("Using deterministic text splitter for chunking")
+            chunks = self._deterministic_text_splitter(content)
+            
+            # Generate summary from first chunk or full content if small
+            summary = chunks[0][:200] + "..." if len(chunks[0]) > 200 else chunks[0]
+            
+            return {
+                "thread_id": self._generate_thread_id_for_chunk(content, 0),
+                "chunks": chunks,
+                "summary": summary
+            }
+        
+        # Otherwise use LLM-based chunking with improved prompting and retry logic
         if provider is None:
             provider = self._get_default_provider(ModelOperation.CHUNK_GENERATION)
 
@@ -882,81 +973,124 @@ class KnowledgeAgent:
         model = self._get_model_name(provider, ModelOperation.CHUNK_GENERATION)
 
         async with self._chunk_lock:
-            try:
-                # Prepare API request params
-                request_params = {
-                    "model": model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": self.prompts["system_prompts"]["generate_chunks"]["content"]
-                        },
-                        {
-                            "role": "user",
-                            "content": self.prompts["user_prompts"]["text_chunk_summary"]["content"].format(
-                                content=content
-                            )
-                        }
-                    ]
-                }
-                
-                # Prepare parameters based on provider
-                request_params = self._prepare_model_params(provider, request_params)
-                
-                # Add venice_parameters if using Venice provider and character_slug is specified
-                if provider == ModelProvider.VENICE:
-                    # Use provided character_slug or get default from config
-                    char_slug = character_slug
-                    if char_slug is None:
-                        char_slug = get_venice_character_slug()
-                    
-                    if char_slug:
-                        # Pass character_slug in the messages parameter structure
-                        for message in request_params["messages"]:
-                            if "parameters" not in message:
-                                message["parameters"] = {}
-                            message["parameters"]["character_slug"] = char_slug
-
-                # Make the API call with safe error handling
-                response = await self._safe_model_call(client, request_params)
-                
-                # Process the response
-                content = response.choices[0].message.content
-                
-                # Try to parse the response as JSON
+            # Implement retry logic
+            last_error = None
+            for attempt in range(self.max_retries):
                 try:
-                    result = json.loads(content)
-                    
-                    # Ensure all keys are present
-                    if not all(key in result for key in ["thread_id", "chunks", "summary"]):
-                        logger.warning(f"Unexpected structure in chunks response: {content[:50]}...")
-                        # Format as minimum viable result
-                        return {
-                            "thread_id": self._generate_thread_id(content),
-                            "chunks": [content],  # Use full content as single chunk
-                            "summary": content[:100]  # Use first 100 chars as summary
-                        }
-                    
-                    return result
-                except json.JSONDecodeError:
-                    logger.warning(f"Could not parse chunks response as JSON: {content[:50]}...")
-                    # Return a fallback response
-                    return {
-                        "thread_id": self._generate_thread_id(content),
-                        "chunks": [content],  # Use full content as single chunk
-                        "summary": content[:100]  # Use first 100 chars as summary
+                    # Create a JSON-focused system prompt
+                    json_system_prompt = """You are a JSON generator for text analysis. 
+You must ALWAYS respond with valid JSON in exactly this format:
+{
+    "thread_id": "unique_id_string",
+    "chunks": ["chunk1", "chunk2", ...],
+    "summary": "brief summary of the content"
+}
+
+Rules:
+1. Split the content into logical chunks of approximately 500-1000 characters
+2. Each chunk should be a complete thought or section
+3. The summary should be 1-2 sentences capturing the main idea
+4. ONLY output valid JSON, no other text or formatting"""
+
+                    # Prepare API request params
+                    request_params = {
+                        "model": model,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": json_system_prompt
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Process this text and return JSON:\n\n{content}"
+                            }
+                        ]
                     }
-            
-            except Exception as e:
-                logger.error(f"Error generating chunks with {provider.value}: {str(e)}")
+                    
+                    # Add JSON mode for OpenAI if supported
+                    if provider == ModelProvider.OPENAI and "gpt-4" in model:
+                        request_params["response_format"] = {"type": "json_object"}
+                    
+                    # Prepare parameters based on provider
+                    request_params = self._prepare_model_params(provider, request_params)
+                    
+                    # Add venice_parameters if using Venice provider and character_slug is specified
+                    if provider == ModelProvider.VENICE:
+                        # Use provided character_slug or get default from config
+                        char_slug = character_slug
+                        if char_slug is None:
+                            char_slug = get_venice_character_slug()
+                        
+                        if char_slug:
+                            # Pass character_slug in the messages parameter structure
+                            for message in request_params["messages"]:
+                                if "parameters" not in message:
+                                    message["parameters"] = {}
+                                message["parameters"]["character_slug"] = char_slug
+
+                    # Make the API call with safe error handling
+                    response = await self._safe_model_call(client, request_params)
+                    
+                    # Process the response
+                    content = response.choices[0].message.content
+                    
+                    # Try to parse the response as JSON
+                    try:
+                        result = json.loads(content)
+                        
+                        # Ensure all keys are present
+                        if not all(key in result for key in ["thread_id", "chunks", "summary"]):
+                            logger.warning(f"Incomplete JSON structure in chunks response, adding missing fields")
+                            # Add missing fields with defaults
+                            if "thread_id" not in result:
+                                result["thread_id"] = self._generate_thread_id(content)
+                            if "chunks" not in result:
+                                result["chunks"] = [content]
+                            if "summary" not in result:
+                                result["summary"] = content[:100] + "..." if len(content) > 100 else content
+                        
+                        return result
+                        
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"JSON parse error on attempt {attempt + 1}/{self.max_retries}: {str(e)}")
+                        logger.debug(f"Response content: {content[:200]}...")
+                        last_error = e
+                        
+                        # If this is the last attempt, fall back to deterministic chunking
+                        if attempt == self.max_retries - 1:
+                            logger.warning("All LLM attempts failed, falling back to deterministic chunking")
+                            chunks = self._deterministic_text_splitter(content)
+                            return {
+                                "thread_id": self._generate_thread_id_for_chunk(content, 0),
+                                "chunks": chunks,
+                                "summary": chunks[0][:100] + "..." if chunks and len(chunks[0]) > 100 else (chunks[0] if chunks else "")
+                            }
+                        
+                        # Wait before retry with exponential backoff
+                        await asyncio.sleep(2 ** attempt)
                 
-                # If the first provider fails, try fallback to OpenAI
-                if provider != ModelProvider.OPENAI:
-                    logger.warning(f"Falling back to OpenAI for chunk generation")
-                    return await self.generate_chunks(content, provider=ModelProvider.OPENAI)
-                
-                # If we're already using OpenAI or all fallbacks fail, raise the error
-                raise ChunkGenerationError(f"Failed to generate chunks: {str(e)}") from e
+                except Exception as e:
+                    logger.error(f"Error generating chunks with {provider.value} on attempt {attempt + 1}: {str(e)}")
+                    last_error = e
+                    
+                    # If not the last attempt, wait and retry
+                    if attempt < self.max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    
+                    # If the first provider fails on all attempts, try fallback to OpenAI
+                    if provider != ModelProvider.OPENAI:
+                        logger.warning(f"All attempts failed with {provider.value}, falling back to OpenAI")
+                        return await self.generate_chunks(content, provider=ModelProvider.OPENAI)
+                    
+                    # If we're already using OpenAI or all fallbacks fail, use deterministic chunking
+                    logger.error("All LLM providers failed, using deterministic chunking as final fallback")
+                    chunks = self._deterministic_text_splitter(content)
+                    return {
+                        "thread_id": self._generate_thread_id_for_chunk(content, 0),
+                        "chunks": chunks,
+                        "summary": chunks[0][:100] + "..." if chunks and len(chunks[0]) > 100 else (chunks[0] if chunks else "")
+                    }
 
     def _optimize_batch_size(self, contents: List[str], default_batch_size: int) -> int:
         """Dynamically optimize batch size based on content length and token count.
@@ -1021,85 +1155,148 @@ class KnowledgeAgent:
                 return default_batch_size
             
     async def generate_chunks_batch(
-        self,
-        contents: List[str],
+        self, 
+        contents: List[str], 
+        batch_size: Optional[int] = None,
         provider: Optional[ModelProvider] = None,
-        chunk_batch_size: Optional[int] = None,
         character_slug: Optional[str] = None
-    ) -> List[Dict[str, str]]:
+    ) -> List[Optional[Dict[str, Any]]]:
         """Generate content chunks for a batch of text contents.
         
         Args:
             contents: List of text contents to process
-            provider: Optional model provider override
-            chunk_batch_size: Optional batch size override
+            batch_size: Maximum number of contents to process in one batch
+            provider: Model provider to use (defaults to configured provider)
             character_slug: Optional character slug for Venice provider
             
         Returns:
-            List of chunked contents
+            List of chunk results (None for failed items)
         """
         if not contents:
             return []
-            
-        # Ensure we have a valid config
-        self._config = self._validate_config(self._config)
+        
+        # Use deterministic chunking for all if configured
+        if self.use_deterministic_chunking:
+            logger.info(f"Using deterministic chunking for {len(contents)} items")
+            results = []
+            for i, content in enumerate(contents):
+                chunks = self._deterministic_text_splitter(content)
+                summary = chunks[0][:200] + "..." if chunks and len(chunks[0]) > 200 else (chunks[0] if chunks else "")
+                results.append({
+                    "thread_id": self._generate_thread_id_for_chunk(content, i),
+                    "chunks": chunks,
+                    "summary": summary
+                })
+            return results
         
         # Get provider (use default if not specified)
-        provider = provider or self._get_default_provider(ModelOperation.CHUNK_GENERATION)
+        if provider is None:
+            provider = self._get_default_provider(ModelOperation.CHUNK_GENERATION)
         
         # Get appropriate batch size from config if not specified
-        config_batch_size = self._config.chunk_batch_size
-        
-        # Use provided batch size, or config batch size, or default
-        batch_size = chunk_batch_size or config_batch_size or 5
+        if batch_size is None:
+            if hasattr(self, '_config') and self._config:
+                batch_size = self._config.chunk_batch_size
+            else:
+                batch_size = ModelConfig.get_batch_settings().get('chunk_batch_size', 25)
         
         # Optimize batch size based on content length if needed
         optimized_batch_size = self._optimize_batch_size(contents, batch_size)
         
-        # Log debug information about batching
-        logger.info(f"Chunk generation batch settings - Requested: {chunk_batch_size}, " +
-                   f"Config: {config_batch_size}, Optimized: {optimized_batch_size}, Using: {optimized_batch_size}")
-        logger.info(f"Content statistics - Count: {len(contents)}, " + 
-                   f"Avg Length: {sum(len(c) for c in contents) / len(contents):.1f} chars, " +
-                   f"Max Length: {max(len(c) for c in contents)} chars")
+        # Calculate total stats
+        total_contents = len(contents)
+        avg_length = sum(len(c) for c in contents) / total_contents if total_contents > 0 else 0
+        max_length = max(len(c) for c in contents) if contents else 0
         
-        # Actual number of batches
-        num_batches = (len(contents) + optimized_batch_size - 1) // optimized_batch_size
+        logger.info(f"Content statistics - Count: {total_contents}, Avg Length: {avg_length:.1f} chars, Max Length: {max_length} chars")
         
-        logger.info(f"Starting generate_chunks_batch with {len(contents)} items, batch_size={optimized_batch_size}, resulting in {num_batches} batches")
+        # Determine optimal parallelism based on batch size
+        # Use more parallel tasks for smaller batches
+        max_concurrent_tasks = min(10, max(3, 50 // optimized_batch_size))
         
-        results = []
-        total_batches = (len(contents) + optimized_batch_size - 1) // optimized_batch_size
-        
-        for i in range(0, len(contents), optimized_batch_size):
+        # Split contents into batches
+        batches = []
+        for i in range(0, total_contents, optimized_batch_size):
             batch = contents[i:i + optimized_batch_size]
-            batch_num = i // optimized_batch_size + 1
+            batches.append((i // optimized_batch_size + 1, batch))
+        
+        num_batches = len(batches)
+        logger.info(f"Starting generate_chunks_batch with {total_contents} items, batch_size={optimized_batch_size}, "
+                   f"resulting in {num_batches} batches, max_concurrent={max_concurrent_tasks}")
+        
+        results = [None] * total_contents
+        
+        # Process batches with controlled parallelism
+        async def process_batch(batch_num: int, batch_contents: List[str], start_idx: int):
+            """Process a single batch of contents."""
+            logger.info(f"Processing chunk batch {batch_num}/{num_batches}: {len(batch_contents)} items")
             
-            logger.info(f"Processing chunk batch {batch_num}/{total_batches}: {len(batch)} items")
-            
-            # Process batch with proper error handling
             try:
+                # Process items in parallel within the batch
+                tasks = []
+                for idx, content in enumerate(batch_contents):
+                    task = self.generate_chunks(
+                        content, 
+                        provider=provider, 
+                        character_slug=character_slug
+                    )
+                    tasks.append((start_idx + idx, task))
+                
+                # Wait for all tasks in this batch
                 batch_results = await asyncio.gather(
-                    *[self.generate_chunks(content, provider=provider, character_slug=character_slug) for content in batch],
+                    *[task for _, task in tasks],
                     return_exceptions=True
                 )
                 
-                # Handle any exceptions in the batch
-                processed_results = []
-                for j, result in enumerate(batch_results):
+                # Store results
+                for (result_idx, _), result in zip(tasks, batch_results):
                     if isinstance(result, Exception):
-                        logger.error(f"Error in chunk generation (item {i+j}): {str(result)}")
-                        processed_results.append(None)  # Use None for failed items
+                        logger.error(f"Error processing content at index {result_idx}: {result}")
+                        # Try deterministic chunking as fallback
+                        try:
+                            fallback_content = contents[result_idx]
+                            chunks = self._deterministic_text_splitter(fallback_content)
+                            results[result_idx] = {
+                                "thread_id": self._generate_thread_id_for_chunk(fallback_content, result_idx),
+                                "chunks": chunks,
+                                "summary": chunks[0][:100] + "..." if chunks and len(chunks[0]) > 100 else ""
+                            }
+                        except Exception as e:
+                            logger.error(f"Fallback chunking also failed: {e}")
+                            results[result_idx] = None
                     else:
-                        processed_results.append(result)
-                        
-                results.extend(processed_results)
-                logger.info(f"Completed chunk batch {batch_num}/{total_batches}, total results: {len(results)}/{len(contents)}")
+                        results[result_idx] = result
+                
+                logger.info(f"Completed chunk batch {batch_num}/{num_batches}, "
+                           f"successful: {sum(1 for r in batch_results if not isinstance(r, Exception))}/{len(batch_results)}")
                 
             except Exception as e:
-                logger.error(f"Error processing chunk batch {batch_num}: {str(e)}")
-                # Add None results for the entire batch on catastrophic failure
-                results.extend([None] * len(batch))
+                logger.error(f"Error processing batch {batch_num}: {e}")
+                # Mark all items in this batch as failed
+                for idx in range(len(batch_contents)):
+                    results[start_idx + idx] = None
+        
+        # Process all batches with controlled concurrency
+        semaphore = asyncio.Semaphore(max_concurrent_tasks)
+        
+        async def process_with_semaphore(batch_num: int, batch_contents: List[str], start_idx: int):
+            async with semaphore:
+                await process_batch(batch_num, batch_contents, start_idx)
+        
+        # Create tasks for all batches
+        tasks = []
+        current_idx = 0
+        for batch_num, batch_contents in batches:
+            task = process_with_semaphore(batch_num, batch_contents, current_idx)
+            tasks.append(task)
+            current_idx += len(batch_contents)
+        
+        # Execute all tasks
+        await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Log final statistics
+        successful = sum(1 for r in results if r is not None)
+        logger.info(f"Batch chunking complete: {successful}/{total_contents} successful")
         
         return results
 

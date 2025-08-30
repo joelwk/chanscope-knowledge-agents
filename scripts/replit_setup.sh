@@ -17,7 +17,7 @@ python3 --version
 # Verify critical dependencies are installable (don't install them here)
 echo "Verifying requirements.txt format..."
 if [ -f "requirements.txt" ]; then
-  echo "✓ requirements.txt found"
+  echo "[OK] requirements.txt found"
   # Just validate the format, don't install
   python3 -c "
 import pkg_resources
@@ -37,7 +37,7 @@ except Exception as e:
     exit(1)
 "
 else
-  echo "❌ requirements.txt not found!"
+  echo "[ERROR] requirements.txt not found!"
   exit 1
 fi
 
@@ -65,9 +65,9 @@ SKIP_EMBEDDINGS=false
 ENABLE_DATA_SCHEDULER=false
 DATA_UPDATE_INTERVAL=3600
 EOF
-  echo "✓ Created default .env file"
+  echo "[OK] Created default .env file"
 else
-  echo "✓ .env file exists"
+  echo "[OK] .env file exists"
 fi
 
 # Verify FastAPI app can be imported (lightweight check)
@@ -80,54 +80,42 @@ sys.path.insert(0, '.')
 try:
     # Just check if the app module exists and can be imported
     from api.app import app
-    print('✓ FastAPI app can be imported')
+    print('[OK] FastAPI app can be imported')
 
     # Check if it has the required structure
     if hasattr(app, 'include_router'):
-        print('✓ FastAPI app structure is valid')
+        print('[OK] FastAPI app structure is valid')
     else:
-        print('❌ FastAPI app missing required structure')
+        print('[ERROR] FastAPI app missing required structure')
         sys.exit(1)
 
 except ImportError as e:
-    print(f'❌ Cannot import FastAPI app: {e}')
+    print(f'[ERROR] Cannot import FastAPI app: {e}')
     sys.exit(1)
 except Exception as e:
-    print(f'❌ Error with FastAPI app: {e}')
+    print(f'[ERROR] Error with FastAPI app: {e}')
     sys.exit(1)
 "
 
-# Check database configuration (don't actually connect)
-echo "Checking database configuration..."
-if [[ -n "$DATABASE_URL" ]] || [[ -n "$PGHOST" ]]; then
-  echo "✓ PostgreSQL connection variables found"
-else
-  echo "⚠️  PostgreSQL connection variables not found"
-  echo "   This is OK for testing, but production deployments need database access"
-fi
-
-if [[ -n "$REPLIT_DB_URL" ]]; then
-  echo "✓ Replit Key-Value store URL found"
-else
-  echo "⚠️  REPLIT_DB_URL not found"
-  echo "   This is normal in development, but may be needed for production"
-fi
+# Database connectivity checks are consolidated in Python.
+echo "Skipping shell DB var checks (use Python check instead)."
+echo "Run: python scripts/process_data.py --check"
 
 # Verify port configuration
 echo "Checking port configuration..."
 if grep -q "localPort = 80" .replit && grep -q "externalPort = 80" .replit; then
-  echo "✓ Port configuration is correct for deployment"
+  echo "[OK] Port configuration is correct for deployment"
 else
-  echo "❌ Port configuration may be incorrect"
+  echo "[WARN] Port configuration may be incorrect"
   echo "   Check .replit file for proper port settings"
 fi
 
 # Check run command
 echo "Checking deployment run command..."
 if grep -q "python -m uvicorn api.app:app --host 0.0.0.0 --port 80" .replit; then
-  echo "✓ Run command starts server properly"
+  echo "[OK] Run command starts server properly"
 else
-  echo "⚠️  Run command may need verification"
+  echo "[WARN] Run command may need verification"
 fi
 
 # Check health check endpoint
@@ -142,30 +130,34 @@ try:
     # Check if the root endpoint is defined
     routes = [route.path for route in app.routes]
     if '/' in routes:
-        print('✓ Health check endpoint (/) is available')
+        print('[OK] Health check endpoint (/) is available')
     else:
-        print('❌ Root health check endpoint not found')
+        print('[ERROR] Root health check endpoint not found')
         sys.exit(1)
 
 except Exception as e:
-    print(f'❌ Error checking health endpoint: {e}')
+    print(f'[ERROR] Error checking health endpoint: {e}')
     sys.exit(1)
 "
 
 echo ""
-echo "✅ Replit deployment verification completed successfully!"
+echo "[OK] Replit deployment verification completed."
 echo ""
-echo "📋 Deployment checklist:"
-echo "   ✓ Directory structure created"
-echo "   ✓ Requirements format validated"  
-echo "   ✓ FastAPI app structure verified"
-echo "   ✓ Health check endpoint confirmed"
-echo "   ✓ Port configuration checked"
+
+echo "Deployment checklist:"
+echo "   [OK] Directory structure created"
+echo "   [OK] Requirements format validated"  
+echo "   [OK] FastAPI app structure verified"
+echo "   [OK] Health check endpoint confirmed"
+echo "   [OK] Port configuration checked"
 echo ""
-echo "🚀 Ready for deployment!"
+
+echo "Ready for deployment!"
 echo ""
-echo "💡 To deploy:"
+
+echo "To deploy:"
 echo "   1. Ensure all secrets are set in Replit Deployment config"
 echo "   2. Click Deploy in Replit"
 echo "   3. Monitor deployment logs for any issues"
 echo "   4. Use /trigger-data-processing endpoint after deployment to initialize data" 
+
