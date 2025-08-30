@@ -10,7 +10,7 @@ Multi-provider LLM microservice and data pipeline for practical information inte
 
 ## What’s New
 - Smarter S3 selection with pagination and filename date-range parsing. Prefers the latest snapshot file that overlaps your retention window and falls back to LastModified when needed. Implemented in `knowledge_agents/data_processing/cloud_handler.py`.
-- Interactive NL Query improvements in `scripts/interactive_nl_query.py`:
+- Interactive NL Query improvements in `scripts/nl_query.py`:
   - Accepts base host, `/api`, `/api/v1`, or full `/api/v1/nl_query` and normalizes
   - Better error messages and dynamic table rendering
   - Respects `API_BASE_URL`; adds `tabulate` dependency

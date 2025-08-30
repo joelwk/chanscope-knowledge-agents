@@ -28,19 +28,56 @@ def _build_endpoint(api_base: str) -> str:
 
 
 def _default_api_base() -> str:
-    """Best-effort default API base for Replit/local.
+    """Best-effort default API base using project settings.
 
     Priority:
-    - API_BASE_URL (use as-is)
-    - API_PORT -> http://localhost:<port>
+    - config.settings.get_settings()["API_BASE_URL"] if available
+    - config.base_settings.get_base_settings()["api"]["base_url"] if available
+    - ENV var API_BASE_URL
+    - config.settings HOST/PORT -> http://<host>:<port>
+    - ENV var API_PORT -> http://localhost:<port>
     - fallback http://localhost
     """
+    # 1) Try consolidated settings (loads .env safely)
+    try:
+        from config.settings import get_settings  # lightweight; does not start the API
+        s = get_settings()
+        api_base_url = (s.get("API_BASE_URL") or "").strip()
+        if api_base_url:
+            return api_base_url
+        host = (s.get("HOST") or "localhost").strip()
+        if host in ("0.0.0.0", "::", "0:0:0:0:0:0:0:0", ""):
+            host = "localhost"
+        port = str(s.get("PORT") or "").strip()
+        if port:
+            return f"http://{host}:{port}"
+    except Exception:
+        pass
+
+    # 2) Try raw base settings (reads .env base block + sections)
+    try:
+        from config.base_settings import get_base_settings
+        bs = get_base_settings() or {}
+        api_cfg = bs.get("api") or {}
+        base_url = (api_cfg.get("base_url") or "").strip()
+        if base_url:
+            return base_url
+        host = (api_cfg.get("host") or "localhost").strip()
+        if host in ("0.0.0.0", "::", "0:0:0:0:0:0:0:0", ""):
+            host = "localhost"
+        port = str(api_cfg.get("port") or "").strip()
+        if port:
+            return f"http://{host}:{port}"
+    except Exception:
+        pass
+
+    # 3) Fallback to environment variables
     env_base = os.environ.get("API_BASE_URL")
     if env_base:
-        return env_base
+        return env_base.strip()
     port = os.environ.get("API_PORT")
     if port:
-        return f"http://localhost:{port}"
+        return f"http://localhost:{port.strip()}"
     return "http://localhost"
 
 
@@ -216,4 +253,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
