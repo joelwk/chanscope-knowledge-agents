@@ -114,6 +114,7 @@ python scripts/process_data.py
 
 # Status only (non‑invasive)
 python scripts/process_data.py --check
+Wipe dev (Replit development) completely:
 
 # Force refresh all data
 python scripts/process_data.py --force-refresh
@@ -185,5 +186,3 @@ python scripts/wipe_all_data.py --yes --no-files
 - Providers: OpenAI, Grok (x.ai), Venice
 
 ---
-
-If you need deeper checks (ephemeral write/read verification for PostgreSQL, KV, and Object Storage), we can add an optional `--deep-check` mode to `scripts/process_data.py`. For now, `--check` remains read‑only and safe for empty resources.
