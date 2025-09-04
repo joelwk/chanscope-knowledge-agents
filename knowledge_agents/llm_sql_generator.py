@@ -46,7 +46,7 @@ class LLMSQLGenerator:
     
     # Character slug configurations for each pipeline stage
     #CHARACTER_ENHANCER = "the-architect-of-precision-the-architect"  # For enhancing instructions
-    CHARACTER_ENHANCER = "nightswan"  # For enhancing instructions
+    CHARACTER_ENHANCER = "the-architect-of-precision-the-architect"  # For enhancing instructions
     CHARACTER_GENERATOR = "sqlman"  # For SQL generation
     CHARACTER_VALIDATOR = "sqlman"  # For SQL validation
 
