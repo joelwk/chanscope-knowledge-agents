@@ -62,6 +62,10 @@ consecutiveFailures = 3  # Less tolerant now that startup is fast
 localPort = 80
 externalPort = 80
 
+[[ports]]
+localPort = 5000
+externalPort = 80
+
 # =============================================
 # Language Configuration
 # =============================================
@@ -97,7 +101,7 @@ language = "python3"
 command = ["python3", "-u"]
 
 [workflows]
-runButton = "Force a complete data refresh including stratification and embeddings"
+runButton = "Project"
 
 [[workflows.workflow]]
 name = "test"
@@ -143,6 +147,27 @@ mode = "sequential"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python scripts/interactive_nl_query.py"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Refresh Dashboard"
+
+[[workflows.workflow]]
+name = "Refresh Dashboard"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python api/refresh_dashboard.py"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
 [server]
 host = "0.0.0.0"
