@@ -4,6 +4,7 @@ Unified Control Script for Automated Refresh System
 Provides command-line control for the refresh system
 """
 
+import os
 import sys
 import json
 import argparse
@@ -11,12 +12,19 @@ import requests
 from pathlib import Path
 from datetime import datetime
 
-API_URL = "http://localhost:5000/api"
+# Default to the API mounted under the main server at /refresh
+# Override via REFRESH_API_BASE env var or --base CLI argument
+API_URL = os.environ.get("REFRESH_API_BASE", "http://localhost/refresh/api")
+API_TOKEN = os.environ.get("REFRESH_CONTROL_TOKEN")
+
+def _headers(token: str | None = None):
+    t = token or API_TOKEN
+    return {"X-Refresh-Token": t} if t else {}
 
 def get_status():
     """Get current system status"""
     try:
-        response = requests.get(f"{API_URL}/status")
+        response = requests.get(f"{API_URL}/status", headers=_headers())
         status = response.json()
         
         print("\n=== ChanScope Refresh System Status ===")
@@ -26,7 +34,7 @@ def get_status():
         print(f"Interval: {status.get('interval_seconds', 3600) / 60:.0f} minutes")
         
         # Get metrics
-        response = requests.get(f"{API_URL}/metrics")
+        response = requests.get(f"{API_URL}/metrics", headers=_headers())
         metrics = response.json()
         
         print("\n=== Performance Metrics ===")
@@ -49,18 +57,25 @@ def get_status():
     
     return True
 
-def start_refresh(interval=3600):
+def start_refresh(interval=3600, token: str | None = None):
     """Start automatic refresh"""
     try:
         # Update interval if provided
         if interval != 3600:
-            response = requests.post(f"{API_URL}/config", 
-                                    json={"interval_seconds": interval, "max_retries": 3})
+            response = requests.post(
+                f"{API_URL}/config",
+                json={"interval_seconds": interval, "max_retries": 3},
+                headers=_headers(token)
+            )
             if response.status_code == 200:
                 print(f"Updated interval to {interval} seconds")
         
         # Start refresh
-        response = requests.post(f"{API_URL}/control", json={"action": "start"})
+        response = requests.post(
+            f"{API_URL}/control",
+            json={"action": "start"},
+            headers=_headers(token)
+        )
         result = response.json()
         
         if result['status'] == 'started':
@@ -77,10 +92,14 @@ def start_refresh(interval=3600):
     
     return True
 
-def stop_refresh():
+def stop_refresh(token: str | None = None):
     """Stop automatic refresh"""
     try:
-        response = requests.post(f"{API_URL}/control", json={"action": "stop"})
+        response = requests.post(
+            f"{API_URL}/control",
+            json={"action": "stop"},
+            headers=_headers(token)
+        )
         result = response.json()
         
         if result['status'] == 'stopped':
@@ -97,10 +116,14 @@ def stop_refresh():
     
     return True
 
-def run_once():
+def run_once(token: str | None = None):
     """Run a single refresh"""
     try:
-        response = requests.post(f"{API_URL}/control", json={"action": "refresh_once"})
+        response = requests.post(
+            f"{API_URL}/control",
+            json={"action": "refresh_once"},
+            headers=_headers(token)
+        )
         result = response.json()
         
         if result['status'] == 'refresh_triggered':
@@ -131,6 +154,8 @@ Examples:
         """
     )
     
+    parser.add_argument('--base', dest='base_url', help='Base API URL (default from REFRESH_API_BASE or http://localhost/refresh/api)')
+    parser.add_argument('--token', dest='token', help='Shared secret for control endpoints (default from REFRESH_CONTROL_TOKEN)')
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
     
     # Status command
@@ -149,6 +174,11 @@ Examples:
     
     args = parser.parse_args()
     
+    # Allow overriding base URL via CLI
+    global API_URL
+    if args.base_url:
+        API_URL = args.base_url.rstrip('/')
+
     if not args.command:
         parser.print_help()
         return
@@ -156,11 +186,11 @@ Examples:
     if args.command == 'status':
         get_status()
     elif args.command == 'start':
-        start_refresh(args.interval)
+        start_refresh(args.interval, args.token)
     elif args.command == 'stop':
-        stop_refresh()
+        stop_refresh(args.token)
     elif args.command == 'run-once':
-        run_once()
+        run_once(args.token)
 
 if __name__ == "__main__":
     main()

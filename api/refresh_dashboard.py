@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 
 # FastAPI imports
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -40,6 +40,23 @@ app.add_middleware(
 
 # Global refresh manager instance
 refresh_manager: Optional[AutomatedRefreshManager] = None
+CONTROL_TOKEN: Optional[str] = os.environ.get("REFRESH_CONTROL_TOKEN") or os.environ.get("DASHBOARD_CONTROL_TOKEN")
+
+def _auth_ok(request: Request) -> bool:
+    """Validate shared secret if configured.
+    Accepts header X-Refresh-Token or Authorization: Bearer <token>, or query param token.
+    If no CONTROL_TOKEN configured, allow by default.
+    """
+    if not CONTROL_TOKEN:
+        return True
+    token = request.headers.get("x-refresh-token")
+    if not token:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+    if not token:
+        token = request.query_params.get("token")
+    return token == CONTROL_TOKEN
 
 class RefreshConfig(BaseModel):
     interval_seconds: int = 3600
@@ -281,6 +298,10 @@ DASHBOARD_HTML = """
                         <span class="metric-value" id="total-runs">0</span>
                     </div>
                     <div class="metric">
+                        <span class="metric-label">Current Rows</span>
+                        <span class="metric-value" id="current-rows">0</span>
+                    </div>
+                    <div class="metric">
                         <span class="metric-label">Success Rate</span>
                         <span class="metric-value" id="success-rate">0%</span>
                     </div>
@@ -325,12 +346,20 @@ DASHBOARD_HTML = """
     
     <script>
         let refreshInterval;
+        // Resolve the base mount path (e.g., '/refresh' when mounted)
+        const __basePath = (function () {
+            const path = window.location.pathname.replace(/\/$/, '');
+            return path || '';
+        })();
+        const apiUrl = (suffix) => (__basePath ? `${__basePath}${suffix}` : suffix);
+        const tokenParam = new URLSearchParams(window.location.search).get('token');
+        const withToken = (url) => tokenParam ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(tokenParam)}` : url;
         
         async function fetchStatus() {
             try {
                 const [statusRes, metricsRes] = await Promise.all([
-                    fetch('/api/status'),
-                    fetch('/api/metrics')
+                    fetch(apiUrl('/api/status')),
+                    fetch(apiUrl('/api/metrics'))
                 ]);
                 
                 const status = await statusRes.json();
@@ -363,6 +392,8 @@ DASHBOARD_HTML = """
             
             // Update metrics
             document.getElementById('total-runs').textContent = metrics.total_runs || 0;
+            document.getElementById('current-rows').textContent = 
+                (metrics.current_row_count || 0).toLocaleString();
             document.getElementById('success-rate').textContent = 
                 `${Math.round(metrics.success_rate || 0)}%`;
             document.getElementById('avg-duration').textContent = 
@@ -414,7 +445,7 @@ DASHBOARD_HTML = """
         
         async function startRefresh() {
             const interval = document.getElementById('interval-input').value;
-            const response = await fetch('/api/control', {
+            const response = await fetch(withToken(apiUrl('/api/control')), {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({action: 'start'})
@@ -429,7 +460,7 @@ DASHBOARD_HTML = """
         }
         
         async function stopRefresh() {
-            const response = await fetch('/api/control', {
+            const response = await fetch(withToken(apiUrl('/api/control')), {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({action: 'stop'})
@@ -444,7 +475,7 @@ DASHBOARD_HTML = """
         }
         
         async function runOnce() {
-            const response = await fetch('/api/control', {
+            const response = await fetch(withToken(apiUrl('/api/control')), {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({action: 'refresh_once'})
@@ -460,7 +491,7 @@ DASHBOARD_HTML = """
         
         async function updateInterval() {
             const interval = document.getElementById('interval-input').value;
-            const response = await fetch('/api/config', {
+            const response = await fetch(withToken(apiUrl('/api/config')), {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({interval_seconds: parseInt(interval), max_retries: 3})
@@ -524,13 +555,16 @@ async def get_metrics():
         "failed_runs": 0,
         "success_rate": 0,
         "average_duration": 0,
-        "average_rows_processed": 0
+        "average_rows_processed": 0,
+        "current_row_count": 0
     }
 
 @app.post("/api/control")
-async def control_refresh(command: RefreshCommand, background_tasks: BackgroundTasks):
+async def control_refresh(command: RefreshCommand, background_tasks: BackgroundTasks, request: Request):
     """Control the refresh system"""
     global refresh_manager
+    if not _auth_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     
     if command.action == "start":
         if not refresh_manager:
@@ -558,9 +592,11 @@ async def control_refresh(command: RefreshCommand, background_tasks: BackgroundT
         raise HTTPException(status_code=400, detail="Invalid action")
 
 @app.post("/api/config")
-async def update_config(config: RefreshConfig):
+async def update_config(config: RefreshConfig, request: Request):
     """Update refresh configuration"""
     global refresh_manager
+    if not _auth_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     
     if not refresh_manager:
         refresh_manager = AutomatedRefreshManager(
@@ -577,6 +613,24 @@ async def update_config(config: RefreshConfig):
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@app.on_event("startup")
+async def startup_autostart_manager():
+    """Optionally auto-start the automated refresh manager on app startup."""
+    try:
+        enable = os.environ.get("AUTO_REFRESH_MANAGER", "false").lower() in ("true", "1", "yes")
+        interval = int(os.environ.get("DATA_REFRESH_INTERVAL", os.environ.get("REFRESH_INTERVAL", "3600")))
+        if enable:
+            global refresh_manager
+            if not refresh_manager:
+                refresh_manager = AutomatedRefreshManager(interval_seconds=interval)
+            else:
+                refresh_manager.interval_seconds = interval
+            if not refresh_manager.is_running:
+                asyncio.create_task(refresh_manager.run_continuous())
+    except Exception:
+        # Do not crash the app on startup issues
+        pass
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=5000, log_level="info")

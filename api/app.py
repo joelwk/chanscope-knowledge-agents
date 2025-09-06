@@ -28,6 +28,13 @@ from config.chanscope_config import ChanScopeConfig
 
 # Import API router from routes.py
 from .routes import router as api_router
+try:
+    # Access the refresh dashboard module to mount and control the manager
+    from . import refresh_dashboard as rd
+    refresh_app = rd.app
+except Exception:
+    rd = None
+    refresh_app = None
 
 # Set up logging
 setup_logging()
@@ -135,6 +142,10 @@ logger.info(f"Initialized ChanScopeDataManager for {environment} environment")
 
 # Include API router with proper prefix
 app.include_router(api_router, prefix="/api/v1", tags=["knowledge_agents"])
+
+# Mount the refresh dashboard (if available) under /refresh
+if refresh_app is not None:
+    app.mount("/refresh", refresh_app)
 
 # Define request models
 class QueryRequest(BaseModel):
@@ -461,11 +472,20 @@ async def initialize_background_data():
             )
             logger.info("Data preparation completed successfully")
             
-            # Create a task to periodically check data freshness if enabled
-            refresh_interval = int(os.environ.get('DATA_REFRESH_INTERVAL', '86400'))  # Default to daily
-            if os.environ.get('AUTO_REFRESH_DATA', 'false').lower() in ('true', '1', 'yes') and refresh_interval > 0:
-                logger.info(f"Setting up periodic data refresh every {refresh_interval} seconds")
-                asyncio.create_task(periodic_refresh(refresh_interval))
+            # Unify periodic refresh by using the AutomatedRefreshManager instead of a missing function
+            try:
+                enable_mgr = os.environ.get('AUTO_REFRESH_MANAGER', 'false').lower() in ('true', '1', 'yes')
+                if enable_mgr and rd is not None:
+                    refresh_interval = int(os.environ.get('DATA_REFRESH_INTERVAL', os.environ.get('REFRESH_INTERVAL', '86400')))
+                    if getattr(rd, 'refresh_manager', None) is None:
+                        rd.refresh_manager = rd.AutomatedRefreshManager(interval_seconds=refresh_interval)
+                    else:
+                        rd.refresh_manager.interval_seconds = refresh_interval
+                    if not rd.refresh_manager.is_running:
+                        logger.info(f"Starting AutomatedRefreshManager with interval {refresh_interval}s")
+                        asyncio.create_task(rd.refresh_manager.run_continuous())
+            except Exception as e:
+                logger.warning(f"Could not start AutomatedRefreshManager: {e}")
         else:
             await data_manager.state_manager.mark_operation_complete(
                 "background_initialization",

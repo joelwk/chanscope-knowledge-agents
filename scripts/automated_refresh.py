@@ -64,6 +64,7 @@ class AutomatedRefreshManager:
         self.job_history: List[RefreshJob] = []
         self.status_file = Path("data/refresh_status.json")
         self.metrics_file = Path("data/refresh_metrics.json")
+        self.current_row_count: int = 0
         self._setup_signal_handlers()
         
         # Create necessary directories
@@ -121,6 +122,7 @@ class AutomatedRefreshManager:
                 "success_rate": len(successful_jobs) / len(self.job_history) * 100 if self.job_history else 0,
                 "average_duration": sum(j.duration_seconds for j in successful_jobs) / len(successful_jobs) if successful_jobs else 0,
                 "average_rows_processed": sum(j.rows_processed for j in successful_jobs) / len(successful_jobs) if successful_jobs else 0,
+                "current_row_count": self.current_row_count,
                 "last_success": max((j.end_time for j in successful_jobs), default=None),
                 "last_failure": max((j.end_time for j in failed_jobs), default=None),
                 "last_updated": datetime.now().isoformat()
@@ -148,35 +150,44 @@ class AutomatedRefreshManager:
         
         self.current_job = job
         self._save_status()
-        
+
         try:
             logger.info(f"Starting refresh job {job_id}")
-            
+
             # Import and run the scheduled update
             from scheduled_update import ScheduledUpdater
             import argparse
-            
+
             # Create args for the updater
             args = argparse.Namespace(
-                env='replit',
+                env=None,
                 force_refresh=False,
                 filter_date=None,
                 skip_embeddings=False,
                 continuous=False,
                 interval=self.interval_seconds
             )
-            
+
             updater = ScheduledUpdater(args)
+            # Capture pre-refresh row count for delta metrics
+            try:
+                pre_status = await updater.check_data_status()
+                pre_rows = pre_status.get("complete_data", {}).get("row_count", 0)
+            except Exception:
+                pre_rows = 0
             success = await updater.run_data_refresh()
-            
+
             if success:
                 job.status = RefreshStatus.SUCCESS
                 logger.info(f"Refresh job {job_id} completed successfully")
-                
+
                 # Try to get row count
                 try:
                     status = await updater.check_data_status()
-                    job.rows_processed = status.get("complete_data", {}).get("rows", 0)
+                    post_rows = status.get("complete_data", {}).get("row_count", 0)
+                    # rows_processed reflects delta for this job
+                    job.rows_processed = max(0, int(post_rows) - int(pre_rows))
+                    self.current_row_count = int(post_rows)
                 except:
                     pass
             else:
@@ -267,7 +278,11 @@ class AutomatedRefreshManager:
             "successful_runs": 0,
             "failed_runs": 0,
             "success_rate": 0,
-            "average_duration": 0
+            "average_duration": 0,
+            "average_rows_processed": 0,
+            "current_row_count": 0,
+            "last_success": None,
+            "last_failure": None
         }
 
 async def main():

@@ -143,6 +143,19 @@ curl -X POST "http://localhost/api/v1/nl_query" \
 
 For detailed API routes and request bodies, see `api/README_REQUESTS.md`.
 
+## Refresh Dashboard
+- UI: open `http://localhost/refresh` to monitor status, current row count, and control auto-refresh.
+- API: the dashboard exposes endpoints under `/refresh/api` (e.g., `/refresh/api/status`).
+- CLI control: `python scripts/refresh_control.py status|start|stop|run-once [--interval SEC] [--base http://host/refresh/api]`.
+- Metrics shown include total runs, current row count, success rate, average duration, and average rows processed (delta per refresh).
+
+### Auto-Start & Security
+- Set `AUTO_REFRESH_MANAGER=true` to auto-start the background refresh loop on startup. Optional intervals: `DATA_REFRESH_INTERVAL` or `REFRESH_INTERVAL` (seconds; default 3600 when using manager auto-start).
+- Protect control endpoints with a shared secret by setting `REFRESH_CONTROL_TOKEN`. Then:
+  - CLI automatically sends the token from env or via `--token`.
+  - Dashboard UI supports `?token=YOUR_TOKEN` in the URL and forwards it to control requests.
+  - You can also send `Authorization: Bearer YOUR_TOKEN` or `X-Refresh-Token: YOUR_TOKEN`.
+
 ## S3 Ingestion Behavior
 - Paginates via `ListObjectsV2` and parses filename date ranges like `*_YYYY-MM-DD_YYYY-MM-DD_*.csv`.
 - Prefers the latest snapshot whose end date overlaps the requested window.
