@@ -103,7 +103,7 @@ language = "python3"
 command = ["python3", "-u"]
 
 [workflows]
-runButton = "Project"
+runButton = "Force a complete data refresh including stratification and embeddings"
 
 [[workflows.workflow]]
 name = "test"
