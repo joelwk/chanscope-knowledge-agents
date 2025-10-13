@@ -57,6 +57,37 @@ echo -e "${YELLOW}Starting background initialization tasks...${NC}"
         # Install without cache to keep disk usage low in Replit
         pip install --no-cache-dir --quiet --no-warn-script-location -r requirements.txt
         pip cache purge >/dev/null 2>&1 || true
+
+        # Remove corrupted scikit-learn metadata directories that trigger "~cikit-learn" warnings
+        CLEANED_SKLEARN=$(python3 - <<'PY'
+import os
+import site
+import shutil
+
+def prune(path: str) -> bool:
+    if not os.path.isdir(path):
+        return False
+    removed = False
+    for entry in os.listdir(path):
+        lower = entry.lower()
+        if lower.startswith("~cikit") and (lower.endswith(".dist-info") or lower.endswith(".egg-info")):
+            shutil.rmtree(os.path.join(path, entry), ignore_errors=True)
+            removed = True
+    return removed
+
+removed_any = False
+for candidate in site.getsitepackages() + [site.getusersitepackages()]:
+    if prune(candidate):
+        removed_any = True
+
+print("1" if removed_any else "0")
+PY
+)
+        if [ "$CLEANED_SKLEARN" = "1" ]; then
+            echo -e "${YELLOW}Detected corrupted scikit-learn metadata. Reinstalling clean copy...${NC}"
+            pip install --no-cache-dir --quiet --no-warn-script-location "scikit-learn>=1.7.0,<2.0.0"
+        fi
+
         echo -e "${GREEN}Dependencies installed successfully.${NC}"
     else
         echo -e "${RED}Warning: requirements.txt not found!${NC}"
