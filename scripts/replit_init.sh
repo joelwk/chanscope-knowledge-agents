@@ -158,20 +158,24 @@ else:
     # Configure scheduler if enabled
     ENABLE_DATA_SCHEDULER="${ENABLE_DATA_SCHEDULER:-false}"
     if [ "$ENABLE_DATA_SCHEDULER" = "true" ]; then
-        DATA_UPDATE_INTERVAL="${DATA_UPDATE_INTERVAL:-3600}"
-        echo -e "${YELLOW}Starting data scheduler with interval: ${DATA_UPDATE_INTERVAL}s${NC}"
+        if [[ "${AUTO_REFRESH_MANAGER,,}" == "true" ]]; then
+            echo -e "${YELLOW}Skipping legacy scheduler because AUTO_REFRESH_MANAGER is enabled.${NC}"
+        else
+            DATA_UPDATE_INTERVAL="${DATA_UPDATE_INTERVAL:-3600}"
+            echo -e "${YELLOW}Starting data scheduler with interval: ${DATA_UPDATE_INTERVAL}s${NC}"
 
-        # Clean up any existing scheduler
-        SCHEDULER_PID_FILE="$PWD/data/.scheduler_pid"
-        if [ -f "$SCHEDULER_PID_FILE" ]; then
-            rm -f "$SCHEDULER_PID_FILE"
+            # Clean up any existing scheduler
+            SCHEDULER_PID_FILE="$PWD/data/.scheduler_pid"
+            if [ -f "$SCHEDULER_PID_FILE" ]; then
+                rm -f "$SCHEDULER_PID_FILE"
+            fi
+
+            # Start scheduler
+            nohup python3 scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$PWD/logs/scheduler.log" 2>&1 &
+            SCHEDULER_PID=$!
+            echo $SCHEDULER_PID > "$SCHEDULER_PID_FILE"
+            echo -e "${GREEN}Data scheduler started with PID: $SCHEDULER_PID${NC}"
         fi
-
-        # Start scheduler
-        nohup python3 scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$PWD/logs/scheduler.log" 2>&1 &
-        SCHEDULER_PID=$!
-        echo $SCHEDULER_PID > "$SCHEDULER_PID_FILE"
-        echo -e "${GREEN}Data scheduler started with PID: $SCHEDULER_PID${NC}"
     fi
 
     # Mark completion

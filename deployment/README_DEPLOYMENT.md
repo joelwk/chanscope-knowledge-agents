@@ -140,7 +140,7 @@ Key environment variables used in the Docker setup:
 - `API_PORT`: Port on which the API will be exposed (default: 80)
 - `API_WORKERS`: Number of Gunicorn workers (default: 4)
 - `LOG_LEVEL`: Logging level (default: info)
-- `DATA_REFRESH_INTERVAL`: How often to refresh data (in hours, default: 1)
+- `DATA_REFRESH_INTERVAL`: How often to refresh data (in seconds, default: 3600) for the auto refresh manager (enabled by default)
 - `DATA_RETENTION_DAYS`: How many days of data to retain (default: 30)
 
 ### Testing Variables

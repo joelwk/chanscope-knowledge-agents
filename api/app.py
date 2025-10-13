@@ -16,6 +16,7 @@ from starlette.types import ASGIApp
 from pydantic import BaseModel
 from datetime import datetime
 from contextlib import asynccontextmanager
+import contextlib
 import asyncio
 # Import configuration utilities
 from config.env_loader import load_environment, detect_environment, is_replit_environment
@@ -63,34 +64,33 @@ async def lifespan(app: FastAPI):
     app.state.ready_for_health_checks = True
     logger.info("API ready for health checks")
     
-    # Yield control back to FastAPI to start server
-    # This allows the server to bind and respond to health checks immediately
-    yield
-    
-    # ---- Code below runs AFTER the server has started ----
-    logger.info("Server started, initiating background data processing if enabled.")
-    # Initialize data in the background - don't block API startup
+    background_task: Optional[asyncio.Task] = None
     try:
-        # Only initialize if specified in environment
+        logger.info("Server startup complete, evaluating background data initialization.")
         auto_check_data = os.environ.get('AUTO_CHECK_DATA', 'true').lower() in ('true', '1', 'yes')
         logger.info(f"AUTO_CHECK_DATA environment variable: {os.environ.get('AUTO_CHECK_DATA', 'not set')}")
         logger.info(f"AUTO_CHECK_DATA parsed value: {auto_check_data}")
         
         if auto_check_data:
-            logger.info("AUTO_CHECK_DATA is enabled, initiating data preparation in background")
-            # Create the task but don't await it - let it run fully in background
-            task = asyncio.create_task(initialize_background_data())
-            # Add a name to the task for easier debugging
-            task.set_name("background_data_init")
-            logger.info(f"Created background task: {task.get_name()}")
+            logger.info("AUTO_CHECK_DATA is enabled, launching background initialization task")
+            background_task = asyncio.create_task(initialize_background_data())
+            background_task.set_name("background_data_init")
+            app.state.background_data_task = background_task
+            logger.info(f"Created background task: {background_task.get_name()}")
         else:
             logger.info("AUTO_CHECK_DATA is disabled, skipping initial data preparation")
     except Exception as e:
         logger.error(f"Error during background data initialization startup: {e}", exc_info=True)
     
-    # ---- Cleanup on shutdown ----
-    logger.info("Shutting down Chanscope API...")
-    # You might add specific cleanup logic here if needed before the application exits.
+    # Yield control back to FastAPI to start handling requests
+    try:
+        yield
+    finally:
+        logger.info("Shutting down Chanscope API...")
+        if background_task and not background_task.done():
+            background_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await background_task
 
 # Health check middleware to ensure the root endpoint always responds
 class HealthCheckMiddleware(BaseHTTPMiddleware):
@@ -476,7 +476,13 @@ async def initialize_background_data():
             try:
                 enable_mgr = os.environ.get('AUTO_REFRESH_MANAGER', 'false').lower() in ('true', '1', 'yes')
                 if enable_mgr and rd is not None:
-                    refresh_interval = int(os.environ.get('DATA_REFRESH_INTERVAL', os.environ.get('REFRESH_INTERVAL', '86400')))
+                    refresh_interval = int(os.environ.get(
+                        'DATA_REFRESH_INTERVAL',
+                        os.environ.get(
+                            'DATA_UPDATE_INTERVAL',
+                            os.environ.get('REFRESH_INTERVAL', '3600')
+                        )
+                    ))
                     if getattr(rd, 'refresh_manager', None) is None:
                         rd.refresh_manager = rd.AutomatedRefreshManager(interval_seconds=refresh_interval)
                     else:

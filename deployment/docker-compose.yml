@@ -16,6 +16,9 @@ services:
       - DOCKER_ENV=true
       # Explicitly unset REPLIT_ENV to prevent conflicts
       - REPLIT_ENV=
+      # Auto-refresh manager configuration
+      - AUTO_REFRESH_MANAGER=${AUTO_REFRESH_MANAGER:-true}
+      - DATA_REFRESH_INTERVAL=${DATA_REFRESH_INTERVAL:-3600}
       # Add other environment variables here or use an env_file
     command: ["python3", "-m", "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "80"]
 

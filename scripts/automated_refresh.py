@@ -13,6 +13,7 @@ import sys
 import time
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import json
 import signal
 from pathlib import Path
@@ -26,15 +27,42 @@ root_path = Path(__file__).parent.parent
 sys.path.insert(0, str(root_path))
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('logs/automated_refresh.log')
-    ]
-)
-logger = logging.getLogger("automated_refresh")
+LOG_FILE = Path("logs/automated_refresh.log")
+
+def _configure_logger() -> logging.Logger:
+    """Ensure the automated refresh logger always writes to its own log file."""
+    logger = logging.getLogger("automated_refresh")
+    logger.setLevel(logging.INFO)
+
+    LOG_FILE.parent.mkdir(exist_ok=True)
+
+    file_handler_path = str(LOG_FILE.resolve())
+    has_dedicated_file_handler = any(
+        isinstance(handler, RotatingFileHandler) and getattr(handler, "baseFilename", "") == file_handler_path
+        for handler in logger.handlers
+    )
+
+    if not has_dedicated_file_handler:
+        file_handler = RotatingFileHandler(
+            file_handler_path,
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=5
+        )
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    root_has_handlers = bool(logging.getLogger().handlers)
+
+    if not root_has_handlers and not any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers):
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(stream_handler)
+
+    return logger
+
+# Configure logger (respects existing root config but guarantees dedicated file output)
+logger = _configure_logger()
 
 class RefreshStatus(Enum):
     IDLE = "idle"

@@ -24,10 +24,12 @@ FORCE_DATA_REFRESH = "false"
 SKIP_EMBEDDINGS = "false"
 PYTHONPATH = "${REPL_HOME}"
 PYTHONUNBUFFERED = "1"
+AUTO_REFRESH_MANAGER = "true"  # Auto-start refresh manager with the API
+DATA_REFRESH_INTERVAL = "3600"  # Seconds between automatic refresh runs
 
-# Data Scheduler Configuration
-ENABLE_DATA_SCHEDULER = "true" # Enable automatic data updates
-DATA_UPDATE_INTERVAL = "3600"  # Update interval in seconds (1 hour)
+# Legacy scheduler (disabled when using refresh manager; enable only if needed)
+ENABLE_DATA_SCHEDULER = "false"
+DATA_UPDATE_INTERVAL = "3600"
 DATA_RETENTION_DAYS = "5"     # Keep data for 14 days
 
 # Testing Configuration

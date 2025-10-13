@@ -619,7 +619,13 @@ async def startup_autostart_manager():
     """Optionally auto-start the automated refresh manager on app startup."""
     try:
         enable = os.environ.get("AUTO_REFRESH_MANAGER", "false").lower() in ("true", "1", "yes")
-        interval = int(os.environ.get("DATA_REFRESH_INTERVAL", os.environ.get("REFRESH_INTERVAL", "3600")))
+        interval = int(os.environ.get(
+            "DATA_REFRESH_INTERVAL",
+            os.environ.get(
+                "DATA_UPDATE_INTERVAL",
+                os.environ.get("REFRESH_INTERVAL", "3600")
+            )
+        ))
         if enable:
             global refresh_manager
             if not refresh_manager:

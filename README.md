@@ -150,7 +150,7 @@ For detailed API routes and request bodies, see `api/README_REQUESTS.md`.
 - Metrics shown include total runs, current row count, success rate, average duration, and average rows processed (delta per refresh).
 
 ### Auto-Start & Security
-- Set `AUTO_REFRESH_MANAGER=true` to auto-start the background refresh loop on startup. Optional intervals: `DATA_REFRESH_INTERVAL` or `REFRESH_INTERVAL` (seconds; default 3600 when using manager auto-start).
+- Deployments start the refresh manager automatically (set `AUTO_REFRESH_MANAGER=false` to opt out). Tune cadence with `DATA_REFRESH_INTERVAL` (seconds, default 3600) or the legacy `REFRESH_INTERVAL`.
 - Protect control endpoints with a shared secret by setting `REFRESH_CONTROL_TOKEN`. Then:
   - CLI automatically sends the token from env or via `--token`.
   - Dashboard UI supports `?token=YOUR_TOKEN` in the URL and forwards it to control requests.

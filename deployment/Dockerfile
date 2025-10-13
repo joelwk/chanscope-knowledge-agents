@@ -7,6 +7,8 @@ WORKDIR /app
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
+ENV AUTO_REFRESH_MANAGER true
+ENV DATA_REFRESH_INTERVAL 3600
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
