@@ -67,12 +67,17 @@ async def lifespan(app: FastAPI):
     background_task: Optional[asyncio.Task] = None
     try:
         logger.info("Server startup complete, evaluating background data initialization.")
-        # Check for deployment mode first - this bypasses AUTO_CHECK_DATA
+        # Check for deployment mode
         is_deployment = os.environ.get('API_PORT', '') == '5000'
         auto_check_data = os.environ.get('AUTO_CHECK_DATA', 'true').lower() in ('true', '1', 'yes')
-        if is_deployment:
-            logger.info("Running in deployment mode (API_PORT=5000), disabling AUTO_CHECK_DATA")
+        
+        # In deployment mode, allow AUTO_CHECK_DATA if explicitly set but default to false
+        if is_deployment and os.environ.get('AUTO_CHECK_DATA') is None:
+            logger.info("Running in deployment mode (API_PORT=5000) with no explicit AUTO_CHECK_DATA, defaulting to false")
             auto_check_data = False
+        elif is_deployment and auto_check_data:
+            logger.info("Running in deployment mode (API_PORT=5000) with AUTO_CHECK_DATA explicitly enabled")
+        
         logger.info(f"AUTO_CHECK_DATA environment variable: {os.environ.get('AUTO_CHECK_DATA', 'not set')}")
         logger.info(f"AUTO_CHECK_DATA parsed value: {auto_check_data}")
         
