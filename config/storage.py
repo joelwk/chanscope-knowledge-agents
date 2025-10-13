@@ -33,24 +33,28 @@ def patch_gcs_credentials():
     that occurs when using newer google-cloud-storage versions with replit-object-storage.
     """
     try:
-        import google.auth.credentials
-        
-        # Skip if already patched
-        creds = google.auth.credentials.Credentials()
-        if hasattr(creds, 'universe_domain'):
+        import google.auth.credentials as credentials_module
+
+        credentials_cls = credentials_module.Credentials
+
+        # Skip patch if the attribute already exists or patch already applied
+        if hasattr(credentials_cls, "universe_domain"):
             return
-            
+        if getattr(credentials_cls, "_universe_domain_patched", False):
+            return
+
         # Store original __init__ method
-        original_init = google.auth.credentials.Credentials.__init__
-        
-        # Create patched init method that adds the attribute
+        original_init = credentials_cls.__init__
+
+        # Create patched init method that adds the attribute when missing
         def patched_init(self, *args, **kwargs):
             original_init(self, *args, **kwargs)
             if not hasattr(self, 'universe_domain'):
                 self.universe_domain = 'googleapis.com'
         
         # Apply patch
-        google.auth.credentials.Credentials.__init__ = patched_init
+        credentials_cls.__init__ = patched_init
+        credentials_cls._universe_domain_patched = True
         logger.info("Applied patch for Google Cloud Storage credentials universe_domain attribute")
         
     except Exception as e:
