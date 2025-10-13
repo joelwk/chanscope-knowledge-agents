@@ -47,7 +47,7 @@ REPLIT_PIP_SKIP_UPM = "1"
 # Deployment Configuration
 # =============================================
 [deployment]
-run = ["bash", "scripts/deployment_startup.sh"]
+run = ["sh", "-c", "DATA_REFRESH_INTERVAL=2100 bash scripts/deployment_startup.sh"]
 deploymentTarget = "autoscale"
 
 # =============================================
