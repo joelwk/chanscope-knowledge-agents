@@ -70,10 +70,6 @@ externalPort = 80
 localPort = 8080
 externalPort = 443
 
-[[ports]]
-localPort = 43921
-externalPort = 3000
-
 # =============================================
 # Language Configuration
 # =============================================
