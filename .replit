@@ -66,6 +66,10 @@ consecutiveFailures = 3  # Less tolerant now that startup is fast
 localPort = 5000
 externalPort = 80
 
+[[ports]]
+localPort = 41415
+externalPort = 3000
+
 # =============================================
 # Language Configuration
 # =============================================
@@ -170,6 +174,10 @@ author = "agent"
 task = "workflow.run"
 args = "API Dashboard"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Main API"
+
 [[workflows.workflow]]
 name = "API Dashboard"
 author = "agent"
@@ -177,6 +185,18 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "bash scripts/replit_startup.sh && python api/refresh_dashboard.py"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow]]
+name = "Main API"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/deployment_startup.sh"
 waitForPort = 5000
 
 [workflows.workflow.metadata]

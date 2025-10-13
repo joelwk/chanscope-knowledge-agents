@@ -528,9 +528,10 @@ if __name__ == "__main__":
     
     # Ensure we're listening on the correct port for Replit deployments
     if is_replit_environment():
-        logger.info("Running in Replit environment, using port 80 and host 0.0.0.0")
-        port = 80
+        # Use API_PORT environment variable if set, otherwise default to 5000
+        port = int(os.getenv('API_PORT', '5000'))
         host = '0.0.0.0'
+        logger.info(f"Running in Replit environment, using port {port} and host {host}")
     
     logger.info(f"Starting server on {host}:{port}")
     
