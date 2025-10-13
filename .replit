@@ -66,6 +66,14 @@ consecutiveFailures = 3  # Less tolerant now that startup is fast
 localPort = 5000
 externalPort = 80
 
+[[ports]]
+localPort = 32923
+externalPort = 3000
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
+
 # =============================================
 # Language Configuration
 # =============================================
@@ -168,23 +176,11 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "API Dashboard"
+args = "Main API"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Main API"
-
-[[workflows.workflow]]
-name = "API Dashboard"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash scripts/replit_startup.sh && python api/refresh_dashboard.py"
-waitForPort = 5000
-
-[workflows.workflow.metadata]
-outputType = "webview"
+args = "Refresh Dashboard"
 
 [[workflows.workflow]]
 name = "Main API"
@@ -197,6 +193,18 @@ waitForPort = 5000
 
 [workflows.workflow.metadata]
 outputType = "webview"
+
+[[workflows.workflow]]
+name = "Refresh Dashboard"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd /home/runner/workspace && PORT=8080 python -m uvicorn api.refresh_dashboard:app --host 0.0.0.0 --port 8080"
+waitForPort = 8080
+
+[workflows.workflow.metadata]
+outputType = "console"
 
 [server]
 host = "0.0.0.0"

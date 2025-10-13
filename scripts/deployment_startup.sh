@@ -19,7 +19,7 @@ EOF
 source /tmp/deployment_env_override.sh
 
 # Run the initialization in background after a longer delay
-(sleep 60 && python scripts/replit_init.py 2>&1 | tee -a logs/init.log) &
+(sleep 60 && bash scripts/replit_init.sh 2>&1 | tee -a logs/init.log) &
 
 # Start the main API server on port 5000 (this is what health checks will hit)
 echo "Starting main API server on port 5000 with AUTO_CHECK_DATA=false..."
