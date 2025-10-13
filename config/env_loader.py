@@ -173,12 +173,20 @@ def _validate_critical_vars():
         'PATH_TEMP': 'Temporary files path'
     }
     
+    def _mask_sensitive(value: str) -> str:
+        """Mask sensitive tokens for logging."""
+        if not value:
+            return value
+        if len(value) <= 6:
+            return "***"
+        return f"{value[:2]}***{value[-2:]}"
+    
     for var, description in critical_vars.items():
         value = os.getenv(var)
         if value:
             # Log securely - only show first/last few chars for sensitive data
             if 'KEY' in var or 'SECRET' in var:
-                logger.info(f"{var} loaded: {value[:5]}...{value[-5:]}")
+                logger.info(f"{var} loaded: {_mask_sensitive(value)}")
             else:
                 logger.info(f"{var} loaded: {value}")
         else:

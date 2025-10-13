@@ -185,18 +185,17 @@ class ChanScopeConfig:
             }
     
     def __str__(self) -> str:
-        """String representation of the configuration."""
-        env_attrs = self.get_env_specific_attributes()
-        
-        return (
-            f"ChanScopeConfig(env={self.env}, "
-            f"root_data_path={self.root_data_path}, "
-            f"stratified_data_path={self.stratified_data_path}, "
-            f"temp_path={self.temp_path}, "
-            f"filter_date={self.filter_date}, "
-            f"sample_size={self.sample_size}, "
-            f"time_column={self.time_column}, "
-            f"embedding_batch_size={self.embedding_batch_size}, "
-            f"force_refresh={self.force_refresh}, "
-            f"env_specific={env_attrs})"
-        ) 
+        """Redacted string representation for safe logging."""
+        # Only include non-sensitive fields to keep logs safe
+        safe_fields = {
+            "env": self.env,
+            "root_data_path": str(self.root_data_path),
+            "stratified_data_path": str(self.stratified_data_path),
+            "temp_path": str(self.temp_path),
+            "filter_date": self.filter_date,
+            "sample_size": self.sample_size,
+            "time_column": self.time_column,
+            "embedding_batch_size": self.embedding_batch_size,
+            "force_refresh": self.force_refresh,
+        }
+        return f"ChanScopeConfig(safe={safe_fields})"
