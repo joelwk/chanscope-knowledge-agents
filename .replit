@@ -1,6 +1,6 @@
 modules = ["python-3.11", "postgresql-16"]
 hidden = [".pythonlibs"]
-run = "mkdir -p logs && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & SERVER_PID=$! && sleep 2 && bash scripts/replit_init.sh > logs/init.log 2>&1 & wait $SERVER_PID"
+run = "bash scripts/replit_init.sh && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info"
 entrypoint = "api/app.py"
 
 # =============================================
@@ -26,6 +26,7 @@ PYTHONPATH = "${REPL_HOME}"
 PYTHONUNBUFFERED = "1"
 AUTO_REFRESH_MANAGER = "true"  # Auto-start refresh manager with the API
 DATA_REFRESH_INTERVAL = "3600"  # Seconds between automatic refresh runs
+PIP_NO_CACHE_DIR = "1"
 
 # Legacy scheduler (disabled when using refresh manager; enable only if needed)
 ENABLE_DATA_SCHEDULER = "false"
@@ -45,7 +46,7 @@ REPLIT_DISABLE_PACKAGE_LAYER = "0"         # Keep caching enabled by default
 # Deployment Configuration
 # =============================================
 [deployment]
-run = "mkdir -p logs && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & SERVER_PID=$! && sleep 2 && bash scripts/replit_init.sh > logs/init.log 2>&1 & wait $SERVER_PID"
+run = "bash scripts/replit_init.sh && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info"
 deploymentTarget = "cloudrun"
 
 # =============================================
@@ -62,10 +63,6 @@ consecutiveFailures = 3  # Less tolerant now that startup is fast
 
 [[ports]]
 localPort = 80
-externalPort = 80
-
-[[ports]]
-localPort = 5000
 externalPort = 80
 
 # =============================================

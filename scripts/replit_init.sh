@@ -54,7 +54,9 @@ echo -e "${YELLOW}Starting background initialization tasks...${NC}"
     # Now do the heavy lifting
     echo -e "${YELLOW}Installing/updating project dependencies...${NC}"
     if [ -f "requirements.txt" ]; then
-        pip install -r requirements.txt --quiet --no-warn-script-location
+        # Install without cache to keep disk usage low in Replit
+        pip install --no-cache-dir --quiet --no-warn-script-location -r requirements.txt
+        pip cache purge >/dev/null 2>&1 || true
         echo -e "${GREEN}Dependencies installed successfully.${NC}"
     else
         echo -e "${RED}Warning: requirements.txt not found!${NC}"
