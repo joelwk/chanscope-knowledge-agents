@@ -76,6 +76,21 @@ PY
         rm -rf "$PWD/data/generated_data"/* 2>/dev/null || true
     fi
 
+    # Downcast persisted embeddings to float16 to keep footprint small
+    python3 - <<'PY'
+import numpy as np
+from pathlib import Path
+emb_path = Path("data/stratified/embeddings.npz")
+if emb_path.exists():
+    try:
+        with np.load(emb_path) as data:
+            embeddings = data["embeddings"]
+        if embeddings.dtype != np.float16:
+            np.savez_compressed(emb_path, embeddings=embeddings.astype(np.float16))
+    except Exception:
+        pass
+PY
+
     # Clear common cache directories
     rm -rf "$HOME/.cache/pip" "$HOME/.cache/huggingface" "$PWD/.cache" 2>/dev/null || true
 

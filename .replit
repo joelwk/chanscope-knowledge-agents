@@ -40,7 +40,8 @@ USE_MOCK_EMBEDDINGS = "false"
 
 # Package caching safety (prevent deployment dependency issues)
 REPLIT_KEEP_PACKAGE_DEV_DEPENDENCIES = "1"
-REPLIT_DISABLE_PACKAGE_LAYER = "0"         # Keep caching enabled by default
+REPLIT_DISABLE_PACKAGE_LAYER = "1"         # Disable package layer to prevent .upm store growth
+REPLIT_PIP_SKIP_UPM = "1"
 
 # =============================================
 # Deployment Configuration
