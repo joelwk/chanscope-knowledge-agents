@@ -23,4 +23,4 @@ source /tmp/deployment_env_override.sh
 
 # Start the main API server on port 5000 (this is what health checks will hit)
 echo "Starting main API server on port 5000 with AUTO_CHECK_DATA=false..."
-cd /home/runner/workspace && AUTO_CHECK_DATA=false API_PORT=5000 python -m api.app
+cd /home/runner/workspace && AUTO_CHECK_DATA=true API_PORT=5000 python -m api.app
