@@ -47,7 +47,7 @@ REPLIT_PIP_SKIP_UPM = "1"
 # Deployment Configuration
 # =============================================
 [deployment]
-run = ["bash", "scripts/replit_startup.sh", "&&", "python", "api/refresh_dashboard.py"]
+run = ["bash", "scripts/deployment_startup.sh"]
 deploymentTarget = "autoscale"
 
 # =============================================
@@ -65,10 +65,6 @@ consecutiveFailures = 3  # Less tolerant now that startup is fast
 [[ports]]
 localPort = 5000
 externalPort = 80
-
-[[ports]]
-localPort = 38891
-externalPort = 3000
 
 # =============================================
 # Language Configuration
