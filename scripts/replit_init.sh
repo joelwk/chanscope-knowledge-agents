@@ -51,6 +51,34 @@ echo -e "${YELLOW}Starting background initialization tasks...${NC}"
     echo -e "${YELLOW}Waiting 10 seconds for server stabilization...${NC}"
     sleep 10
 
+    # Keep disk usage under control before heavy install steps
+    echo -e "${YELLOW}Pruning cached artifacts to avoid disk quota issues...${NC}"
+
+    # Trim the Replit UPM store so package writes succeed even on small disks
+    UPM_STORE="${HOME}/workspace/.upm/store.json"
+    if [ -f "$UPM_STORE" ]; then
+        python3 - <<'PY'
+import json
+import os
+store_path = os.path.expanduser("~/workspace/.upm/store.json")
+try:
+    os.makedirs(os.path.dirname(store_path), exist_ok=True)
+    minimal = {"packages": {}, "meta": {}}
+    with open(store_path, "w", encoding="utf-8") as fh:
+        json.dump(minimal, fh)
+except Exception:
+    pass
+PY
+    fi
+
+    # Remove old generated data to free space (Retains source datasets)
+    if [ -d "$PWD/data/generated_data" ]; then
+        rm -rf "$PWD/data/generated_data"/* 2>/dev/null || true
+    fi
+
+    # Clear common cache directories
+    rm -rf "$HOME/.cache/pip" "$HOME/.cache/huggingface" "$PWD/.cache" 2>/dev/null || true
+
     # Now do the heavy lifting
     echo -e "${YELLOW}Installing/updating project dependencies...${NC}"
     if [ -f "requirements.txt" ]; then
