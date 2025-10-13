@@ -63,8 +63,16 @@ consecutiveSuccesses = 1
 consecutiveFailures = 3  # Less tolerant now that startup is fast
 
 [[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
 localPort = 8080
 externalPort = 443
+
+[[ports]]
+localPort = 43921
+externalPort = 3000
 
 # =============================================
 # Language Configuration
