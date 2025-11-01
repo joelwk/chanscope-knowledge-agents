@@ -10,9 +10,13 @@ import logging
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
+from api.middleware.request_id import RequestIDMiddleware
 from pydantic import BaseModel
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -27,8 +31,10 @@ from config.settings import Config
 from knowledge_agents.data_processing.chanscope_manager import ChanScopeDataManager
 from config.chanscope_config import ChanScopeConfig
 
-# Import API router from routes.py
-from .routes import router as api_router
+# Import API routers from routers module
+from api.routers import health_router, data_router, embeddings_router, admin_router, query_router
+# Keep old routes import temporarily for compatibility during migration
+# routes.py router removed - all endpoints migrated to domain-specific routers
 try:
     # Access the refresh dashboard module to mount and control the manager
     from . import refresh_dashboard as rd
@@ -131,14 +137,47 @@ app = FastAPI(
 # and always returns a health check response
 app.add_middleware(HealthCheckMiddleware)
 
+# Add request ID middleware for tracing
+app.add_middleware(RequestIDMiddleware)
+
+# Configure CORS with environment-based origins
+def get_cors_origins() -> list:
+    """Get CORS origins from environment, with safe defaults."""
+    cors_origins_env = os.getenv("CORS_ORIGINS", "*")
+    
+    # In production/deployment, be more restrictive by default
+    is_production = os.environ.get("FASTAPI_ENV", "development").lower() == "production"
+    is_deployment = os.environ.get("API_PORT", "") == "5000"
+    
+    if cors_origins_env == "*":
+        # Allow all in development/Replit (preserve current behavior)
+        if is_replit_environment() or not (is_production or is_deployment):
+            return ["*"]
+        else:
+            # In production, default to empty list (no CORS) unless explicitly set
+            logger.warning("CORS_ORIGINS not set in production, defaulting to [] for security")
+            return []
+    else:
+        # Parse comma-separated list
+        if "," in cors_origins_env:
+            origins_list = cors_origins_env.split(",")
+        else:
+            origins_list = [cors_origins_env]
+        return [origin.strip() for origin in origins_list]
+
+cors_origins = get_cors_origins()
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins if isinstance(cors_origins, list) else ["*"],
+    allow_credentials=True if "*" not in (cors_origins if isinstance(cors_origins, list) else ["*"]) else True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add GZip compression middleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Create configuration and data manager
 chanscope_config = ChanScopeConfig.from_env()
@@ -150,8 +189,126 @@ logger.info(f"Detected environment: {environment}")
 data_manager = ChanScopeDataManager.create_for_environment(chanscope_config)
 logger.info(f"Initialized ChanScopeDataManager for {environment} environment")
 
-# Include API router with proper prefix
-app.include_router(api_router, prefix="/api/v1", tags=["knowledge_agents"])
+# Include API routers with proper prefix
+app.include_router(health_router, prefix="/api/v1", tags=["health"])
+app.include_router(data_router, prefix="/api/v1", tags=["data"])
+app.include_router(embeddings_router, prefix="/api/v1", tags=["embeddings"])
+app.include_router(admin_router, prefix="/api/v1", tags=["admin"])
+app.include_router(query_router, prefix="/api/v1", tags=["query"])
+# Old routes.py router removed - all endpoints migrated to domain-specific routers
+
+# Global exception handlers for standardized error responses
+from api.errors import APIError, ProcessingError, ValidationError, ConfigurationError
+from api.exceptions import ErrorResponse
+
+@app.exception_handler(APIError)
+async def api_error_handler(request: Request, exc: APIError):
+    """Handle APIError exceptions with standardized response format."""
+    logger.error(f"API Error: {exc.error_code} - {exc.message}", exc_info=exc.original_error)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.message,
+            "error_code": exc.error_code,
+            "status_code": exc.status_code,
+            "additional_info": exc.details if exc.details else None
+        }
+    )
+
+@app.exception_handler(ProcessingError)
+async def processing_error_handler(request: Request, exc: ProcessingError):
+    """Handle ProcessingError exceptions with standardized response format."""
+    logger.error(f"Processing Error: {exc.operation} - {exc.message}", exc_info=exc.original_error)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.message,
+            "error_code": "PROCESSING_ERROR",
+            "status_code": exc.status_code,
+            "additional_info": {
+                "operation": exc.operation,
+                "resource": exc.resource
+            } if exc.operation or exc.resource else None
+        }
+    )
+
+@app.exception_handler(ValidationError)
+async def validation_error_handler(request: Request, exc: ValidationError):
+    """Handle ValidationError exceptions with standardized response format."""
+    logger.error(f"Validation Error: {exc.field} - {exc.message}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.message,
+            "error_code": exc.error_code,
+            "status_code": exc.status_code,
+            "additional_info": {
+                "field": exc.field,
+                "value": str(exc.value) if exc.value is not None else None
+            } if exc.field else None
+        }
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTPException with standardized response format."""
+    detail = exc.detail
+    if isinstance(detail, dict):
+        # Already formatted, use as-is
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "detail": detail.get("message", str(detail)),
+                "error_code": detail.get("error_code", "HTTP_ERROR"),
+                "status_code": exc.status_code,
+                "additional_info": detail
+            }
+        )
+    else:
+        # Simple string detail
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "detail": str(detail),
+                "error_code": "HTTP_ERROR",
+                "status_code": exc.status_code,
+                "additional_info": None
+            }
+        )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle Pydantic validation errors."""
+    errors = exc.errors()
+    logger.error(f"Request validation error: {errors}")
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Validation error",
+            "error_code": "VALIDATION_ERROR",
+            "status_code": 422,
+            "additional_info": {
+                "errors": errors
+            }
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle all other exceptions with standardized error response."""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "error_code": "INTERNAL_SERVER_ERROR",
+            "status_code": 500,
+            "additional_info": {
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)
+            } if os.environ.get("FASTAPI_DEBUG", "false").lower() == "true" else None
+        }
+    )
 
 # Mount the refresh dashboard (if available) under /refresh
 if refresh_app is not None:
@@ -165,14 +322,7 @@ class QueryRequest(BaseModel):
     force_refresh: bool = False
     skip_embeddings: bool = False
 
-class QueryResponse(BaseModel):
-    """Query response model."""
-    status: str = "completed"
-    query: str
-    top_k: int
-    chunks: list = []
-    summary: str = ""
-    metadata: Dict[str, Any]
+# QueryResponse moved to api.models - import from there if needed
 
 # Dependency for data readiness
 async def ensure_data_ready(

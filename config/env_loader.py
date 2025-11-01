@@ -124,15 +124,32 @@ def load_environment_section(env_path):
             # Parse the section content and set environment variables
             for line in section_content.splitlines():
                 line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    key = key.strip()
-                    value = value.strip()
-                    
-                    # Only set if not already set or override is needed
-                    if key not in os.environ or section != "local":  # Always override with non-local sections
-                        os.environ[key] = value
-                        logger.debug(f"Set environment variable from [{section}] section: {key}")
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                existing_value = os.environ.get(key)
+
+                # Decide whether to apply this value based on the active section.
+                if section == "docker":
+                    should_set = True  # Docker runs rely entirely on .env
+                elif section == "replit":
+                    # Replit secrets (already populated env vars) take priority.
+                    should_set = existing_value in (None, "")
+                else:  # local or any other
+                    should_set = existing_value is None
+
+                if not value and existing_value not in (None, ""):
+                    # Do not overwrite populated values with empty strings.
+                    should_set = False
+
+                if should_set:
+                    os.environ[key] = value
+                    logger.debug(f"Set environment variable from [{section}] section: {key}")
+                else:
+                    logger.debug(f"Preserved existing environment variable for {key}")
         else:
             logger.warning(f"Could not find [{section}] section in .env file")
             

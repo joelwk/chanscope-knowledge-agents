@@ -415,7 +415,7 @@ def extend_app(app: FastAPI) -> FastAPI:
                         logger.warning(f"Failed to clean up marker file: {e}")
                 
                 # Schedule periodic cleanup of old results
-                from .routes import _cleanup_old_results
+                from .routers.shared import cleanup_old_results as _cleanup_old_results
                 
                 async def run_periodic_cleanup():
                     """Run the cleanup task periodically."""
@@ -597,7 +597,8 @@ def get_app() -> FastAPI:
         @app.get("/health_replit")
         async def health_replit():
             """Health check endpoint specifically for Replit."""
-            from .routes import health_check_replit
+            # Import from health router instead of routes
+            from .routers.health import health_check_replit
             return await health_check_replit()
     elif is_docker_environment():
         logger.info("Configuring app for Docker environment")

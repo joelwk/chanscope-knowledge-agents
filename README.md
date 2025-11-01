@@ -78,34 +78,24 @@ Chanscope's architecture follows a biologically-inspired pattern with distinct y
 
 Environment detection comes from `config/env_loader.detect_environment()` and is used consistently across the codebase.
 
-## Setup
+## Quick Start
 
-### Docker (Local)
+### Local Development
 ```bash
-docker-compose -f deployment/docker-compose.yml build --no-cache
-docker-compose -f deployment/docker-compose.yml up -d
-
-# Verify environment detection (should print: docker)
-docker exec $(docker ps -q) python -c "from config.env_loader import detect_environment; print(detect_environment())"
+# Run the API locally
+python -m uvicorn api.app:app --host 0.0.0.0 --port 80
 ```
 
-### Replit
-1) Fork to your Replit account and set Secrets:
-```
-OPENAI_API_KEY=your_key
-AWS_ACCESS_KEY_ID=your_key
-AWS_SECRET_ACCESS_KEY=your_key
-S3_BUCKET=your_bucket
-```
-2) Click Run (Replit starts `uvicorn` and runs `scripts/replit_init.sh`).
-3) Optional verification:
-```bash
-bash scripts/replit_setup.sh            # lightweight app verification
-python scripts/process_data.py --check  # consolidated, non‑invasive data/storage check
-```
-Notes:
-- `--check` does not write to PostgreSQL, KV, or Object Storage; safe for empty resources.
-- NL→SQL is only available when PostgreSQL is configured (e.g., Replit).
+### Deployment
+
+For comprehensive deployment instructions covering Docker and Replit environments, see [`deployment/DEPLOYMENT.md`](deployment/DEPLOYMENT.md).
+
+**Quick Links**:
+- [Docker Deployment](deployment/DEPLOYMENT.md#docker-deployment)
+- [Replit Deployment](deployment/DEPLOYMENT.md#replit-deployment)
+- [Environment Configuration](deployment/DEPLOYMENT.md#environment-configuration)
+
+**Note**: NL→SQL queries (`/api/v1/nl_query`) require PostgreSQL and are only available in Replit environments.
 
 ## Data Processing CLI
 ```bash
@@ -144,17 +134,14 @@ curl -X POST "http://localhost/api/v1/nl_query" \
 For detailed API routes and request bodies, see `api/README_REQUESTS.md`.
 
 ## Refresh Dashboard
-- UI: open `http://localhost/refresh` to monitor status, current row count, and control auto-refresh.
-- API: the dashboard exposes endpoints under `/refresh/api` (e.g., `/refresh/api/status`).
-- CLI control: `python scripts/refresh_control.py status|start|stop|run-once [--interval SEC] [--base http://host/refresh/api]`.
-- Metrics shown include total runs, current row count, success rate, average duration, and average rows processed (delta per refresh).
 
-### Auto-Start & Security
-- Deployments start the refresh manager automatically (set `AUTO_REFRESH_MANAGER=false` to opt out). Tune cadence with `DATA_REFRESH_INTERVAL` (seconds, default 3600) or the legacy `REFRESH_INTERVAL`.
-- Protect control endpoints with a shared secret by setting `REFRESH_CONTROL_TOKEN`. Then:
-  - CLI automatically sends the token from env or via `--token`.
-  - Dashboard UI supports `?token=YOUR_TOKEN` in the URL and forwards it to control requests.
-  - You can also send `Authorization: Bearer YOUR_TOKEN` or `X-Refresh-Token: YOUR_TOKEN`.
+The Knowledge Agent includes a web-based refresh dashboard for monitoring and controlling automated data refreshes.
+
+- **UI**: Open `http://localhost/refresh` to monitor status, current row count, and control auto-refresh
+- **API**: Dashboard exposes endpoints under `/refresh/api` (e.g., `/refresh/api/status`)
+- **CLI**: `python scripts/refresh_control.py status|start|stop|run-once [--interval SEC] [--base http://host/refresh/api]`
+
+For detailed dashboard usage and configuration, see [`deployment/DEPLOYMENT.md#refresh-dashboard`](deployment/DEPLOYMENT.md#refresh-dashboard).
 
 ## S3 Ingestion Behavior
 - Paginates via `ListObjectsV2` and parses filename date ranges like `*_YYYY-MM-DD_YYYY-MM-DD_*.csv`.
@@ -166,22 +153,11 @@ For detailed API routes and request bodies, see `api/README_REQUESTS.md`.
 - Replit: Object Storage locks ensure single‑instance processing across restarts.
 - Docker/Local: File‑based locks with stale lock cleanup.
 
-## Maintenance: Wipe Utilities
-Use with extreme caution.
-```bash
-# Development (Replit): wipe KV, Object Storage, PostgreSQL, and files
-python scripts/wipe_all_data.py --yes
+## Documentation
 
-# Production DB by full DSN
-python scripts/wipe_all_data.py --yes --database-url "postgres://user:pass@host:5432/db"
-
-# Production DB by discrete params
-python scripts/wipe_all_data.py --yes --pg-host host --pg-user user --pg-password pass
-
-# Skip scopes
-python scripts/wipe_all_data.py --yes --no-kv --no-objects
-python scripts/wipe_all_data.py --yes --no-files
-```
+- **[Deployment Guide](deployment/DEPLOYMENT.md)**: Comprehensive deployment instructions for Docker and Replit
+- **[API Reference](api/README_REQUESTS.md)**: Complete API endpoint documentation with examples
+- **[Testing Guide](tests/README_TESTING.md)**: Testing instructions and guidance
 
 ## Testing
 - Tests cover ingestion, embeddings, API endpoints, and the end‑to‑end pipeline.
