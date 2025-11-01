@@ -26,7 +26,7 @@ export API_PORT="${TARGET_PORT}"
 export PORT="${TARGET_PORT}"
 
 # Run the initialization in background after a short delay
-INIT_DELAY="${INIT_DELAY:-10}"
+INIT_DELAY="${INIT_DELAY:-5}"
 echo "Scheduling background initialization after ${INIT_DELAY}s delay..."
 (sleep "${INIT_DELAY}" && bash scripts/replit_init.sh 2>&1 | tee -a logs/init.log) &
 
@@ -37,4 +37,4 @@ cd "${PROJECT_ROOT}" && \
   AUTO_CHECK_DATA=true \
   AUTO_REFRESH_MANAGER=true \
   DATA_REFRESH_INTERVAL=${DATA_REFRESH_INTERVAL:-3600} \
-  python -m api.app
+  uvicorn api.app:app --host 0.0.0.0 --port "${TARGET_PORT}" --log-level info
