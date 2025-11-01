@@ -1,16 +1,37 @@
 # Chanscope Retrieval
 
-Multi-provider LLM microservice and data pipeline for practical information intelligence over social data (4chan, X). Provides a clean API, robust ingestion/stratification/embedding workflow, and optional natural-language-to-SQL queries when a database is available.
+Multi-provider LLM microservice and data pipeline for practical information intelligence over social data (4chan, X). It provides a clean API, a robust ingestion/stratification/embedding workflow, and optional natural-language-to-SQL queries when a database is available.
 
-## Features
+## Highlights
+- Natural language to SQL (NL→SQL) queries when PostgreSQL is available (default in Replit).
+- Ingestion → stratification → embedding generation with environment-aware storage.
+- Multi‑provider LLM support: OpenAI (required), Grok (optional), Venice (optional).
+- FastAPI API with background processing and task management.
 
-- **Natural language to SQL (NL→SQL)** queries when PostgreSQL is available (default in Replit)
-- **Data pipeline** with ingestion → stratification → embedding generation
-- **Multi-provider LLM support**: OpenAI (required), Grok (optional), Venice (optional)
-- **FastAPI** with background processing and task management
-- **Environment-aware storage** backends for Docker, Local, and Replit deployments
+## What’s New
+- Smarter S3 selection with pagination and filename date-range parsing. Prefers the latest snapshot file that overlaps your retention window and falls back to LastModified when needed. Implemented in `knowledge_agents/data_processing/cloud_handler.py`.
+- Interactive NL Query improvements in `scripts/nl_query.py`:
+  - Accepts base host, `/api`, `/api/v1`, or full `/api/v1/nl_query` and normalizes
+  - Better error messages and dynamic table rendering
+  - Respects `API_BASE_URL`; adds `tabulate` dependency
+  - Note: The `/api/v1/nl_query` endpoint requires PostgreSQL (e.g., Replit)
+- Data wipe utility now supports production and object storage:
+  - `scripts/wipe_all_data.py --yes [--database-url ... | --pg-host ... --pg-user ... --pg-password ...]`
+  - Optional skips: `--no-kv`, `--no-objects`, `--no-files`
+  - Clears PostgreSQL tables, Replit KV, Replit Object Storage artifacts, and file-based artifacts
+- Consolidated environment checks into Python: use `python scripts/process_data.py --check`. `scripts/replit_setup.sh` now does lightweight app verification only. Removed `scripts/check_replit_db.py`.
+
+## Architecture (Concise)
+- Core orchestrator: `ChanScopeDataManager` controls ingestion, stratified sampling, and embedding generation.
+- Storage backends by environment:
+  - Replit: PostgreSQL (complete data), Replit Key‑Value (stratified sample), Replit Object Storage (embeddings), Object Storage (process locks).
+  - Docker/Local: File‑based CSV/NPZ/JSON with file locks.
+- API: FastAPI app (`api.app`) with health, data ops, and NL→SQL endpoints (NL→SQL requires PostgreSQL).
+- Scheduling: Optional updates via `scripts/scheduled_update.py` with interval control.
 
 ## System Architecture
+
+Chanscope's architecture follows a biologically-inspired pattern with distinct yet interconnected processing stages:
 
 ```
 ┌─────────────────┐         ┌──────────────────────────┐         ┌─────────────────┐
@@ -43,131 +64,114 @@ Multi-provider LLM microservice and data pipeline for practical information inte
     └─────────────┘
 ```
 
-## Storage Backends
+## Storage & Environments
+- Docker/Local (file‑based):
+  - Complete data: `data/complete_data.csv`
+  - Stratified sample: `data/stratified/stratified_sample.csv`
+  - Embeddings: `data/stratified/embeddings.npz`
+  - Locks: file-based
+- Replit (database‑backed):
+  - Complete data: PostgreSQL tables (`complete_data`, `metadata`)
+  - Stratified sample: Replit Key‑Value store
+  - Embeddings: Replit Object Storage (.npz)
+  - Locks: Object Storage
 
-### Docker/Local (File-based)
-- Complete data: `data/complete_data.csv`
-- Stratified sample: `data/stratified/stratified_sample.csv`
-- Embeddings: `data/stratified/embeddings.npz`
-- Locks: file-based
-
-### Replit (Database-backed)
-- Complete data: PostgreSQL tables
-- Stratified sample: Replit Key-Value store
-- Embeddings: Replit Object Storage
-- Locks: Object Storage
+Environment detection comes from `config/env_loader.detect_environment()` and is used consistently across the codebase.
 
 ## Quick Start
 
-### Docker Setup
+### Local Development
 ```bash
-docker-compose -f deployment/docker-compose.yml build --no-cache
-docker-compose -f deployment/docker-compose.yml up -d
-```
-
-### Replit Setup
-1. Fork to your Replit account
-2. Set Secrets:
-   ```
-   OPENAI_API_KEY=your_key
-   AWS_ACCESS_KEY_ID=your_key
-   AWS_SECRET_ACCESS_KEY=your_key
-   S3_BUCKET=your_bucket
-   ```
-3. Click Run
-
-### Local Setup
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run API
+# Run the API locally
 python -m uvicorn api.app:app --host 0.0.0.0 --port 80
 ```
 
-## Data Processing
+### Deployment
 
+For comprehensive deployment instructions covering Docker and Replit environments, see [`deployment/DEPLOYMENT.md`](deployment/DEPLOYMENT.md).
+
+**Quick Links**:
+- [Docker Deployment](deployment/DEPLOYMENT.md#docker-deployment)
+- [Replit Deployment](deployment/DEPLOYMENT.md#replit-deployment)
+- [Environment Configuration](deployment/DEPLOYMENT.md#environment-configuration)
+
+**Note**: NL→SQL queries (`/api/v1/nl_query`) require PostgreSQL and are only available in Replit environments.
+
+## Data Processing CLI
 ```bash
-# Process all stages
+# Process all stages (ingestion, stratification, embeddings)
 python scripts/process_data.py
 
-# Check status
+# Status only (non‑invasive)
 python scripts/process_data.py --check
+Wipe dev (Replit development) completely:
 
-# Force refresh
+# Force refresh all data
 python scripts/process_data.py --force-refresh
 
-# Regenerate components
+# Regenerate from existing data
 python scripts/process_data.py --regenerate --stratified-only
 python scripts/process_data.py --regenerate --embeddings-only
+
+# Bypass process locks (use with caution)
+python scripts/process_data.py --ignore-lock
 ```
 
-## API Usage
-
+## API Quick Start
 ```bash
-# Natural Language Query (requires PostgreSQL)
+# Run the API locally (if not using Replit)
+python -m uvicorn api.app:app --host 0.0.0.0 --port 80
+
+# Example NL→SQL (requires PostgreSQL)
 curl -X POST "http://localhost/api/v1/nl_query" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "Show posts about Bitcoin from last week",
     "limit": 20
   }'
-
-# Standard Query
-curl -X POST "http://localhost/api/v1/query" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "Investment opportunities in renewable energy"
-  }'
-
-# Background Processing
-curl -X POST "http://localhost/api/v1/query" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "Bitcoin Strategic Reserve",
-    "use_background": true,
-    "task_id": "bitcoin_analysis_123"
-  }'
 ```
 
-## Key Components
+For detailed API routes and request bodies, see `api/README_REQUESTS.md`.
 
-- **ChanScopeDataManager**: Central orchestrator for data operations
-- **StorageFactory**: Environment-aware storage backend selection
-- **KnowledgeAgent**: Singleton LLM service for embeddings and completions
-- **LLMSQLGenerator**: Natural language to SQL conversion
-- **FastAPI Application**: RESTful API with background task support
+## Refresh Dashboard
 
-## Environment Variables
+The Knowledge Agent includes a web-based refresh dashboard for monitoring and controlling automated data refreshes.
 
-See `.env.template` for complete list. Key variables:
-- `OPENAI_API_KEY`: Required for embeddings and completions
-- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`: S3 access
-- `DATA_RETENTION_DAYS`: Data retention period (default: 30)
-- `GROK_API_KEY`, `VENICE_API_KEY`: Optional providers
+- **UI**: Open `http://localhost/refresh` to monitor status, current row count, and control auto-refresh
+- **API**: Dashboard exposes endpoints under `/refresh/api` (e.g., `/refresh/api/status`)
+- **CLI**: `python scripts/refresh_control.py status|start|stop|run-once [--interval SEC] [--base http://host/refresh/api]`
 
-## Data Wipe Utility
+For detailed dashboard usage and configuration, see [`deployment/DEPLOYMENT.md#refresh-dashboard`](deployment/DEPLOYMENT.md#refresh-dashboard).
 
-```bash
-# Development
-python scripts/wipe_all_data.py --yes
+## S3 Ingestion Behavior
+- Paginates via `ListObjectsV2` and parses filename date ranges like `*_YYYY-MM-DD_YYYY-MM-DD_*.csv`.
+- Prefers the latest snapshot whose end date overlaps the requested window.
+- Applies board filters from `SELECT_BOARD`.
+- Falls back to LastModified filtering if date ranges are absent.
 
-# Production with database URL
-python scripts/wipe_all_data.py --yes --database-url "postgres://..."
-
-# Selective wipe
-python scripts/wipe_all_data.py --yes --no-kv --no-objects
-```
+## Process Locks
+- Replit: Object Storage locks ensure single‑instance processing across restarts.
+- Docker/Local: File‑based locks with stale lock cleanup.
 
 ## Documentation
 
-- [Deployment Guide](deployment/README_DEPLOYMENT.md)
-- [API Reference](api/README_REQUESTS.md)
-- [Testing Guide](tests/README_TESTING.md)
-- [Implementation Details](docs/chanscope_implementation.md)
+- **[Deployment Guide](deployment/DEPLOYMENT.md)**: Comprehensive deployment instructions for Docker and Replit
+- **[API Reference](api/README_REQUESTS.md)**: Complete API endpoint documentation with examples
+- **[Testing Guide](tests/README_TESTING.md)**: Testing instructions and guidance
+
+## Testing
+- Tests cover ingestion, embeddings, API endpoints, and the end‑to‑end pipeline.
+- See `tests/README_TESTING.md` for running guidance.
+
+## Supported Models
+- OpenAI (required): completions and embeddings
+- Grok (optional): completions and chunking
+- Venice (optional): completions and chunking
 
 ## References
+- Data Gathering Lambda: https://github.com/joelwk/chanscope-lambda
+- Original Chanscope R&D: https://github.com/joelwk/chanscope
+- R&D Sandbox: https://github.com/joelwk/knowledge-agents
+- Providers: OpenAI, Grok (x.ai), Venice
 
-- [Data Collection Lambda](https://github.com/joelwk/chanscope-lambda)
-- [Original Chanscope R&D](https://github.com/joelwk/chanscope)
-- [Knowledge Agents Sandbox](https://github.com/joelwk/knowledge-agents)
+---

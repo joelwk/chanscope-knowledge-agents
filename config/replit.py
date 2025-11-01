@@ -37,6 +37,9 @@ class PostgresDB:
         self.pghost = os.environ.get('PGHOST', '')
         self.pguser = os.environ.get('PGUSER', '')
         self.pgpassword = os.environ.get('PGPASSWORD', '')
+        self.pgdatabase = os.environ.get('PGDATABASE', '')
+        self.pgport = os.environ.get('PGPORT', '')
+        self.pgsslmode = os.environ.get('PGSSLMODE', 'require')
 
         # For KeyValue store (separate from PostgreSQL)
         self.kv_connection_url = os.environ.get('REPLIT_DB_URL', '')
@@ -47,7 +50,8 @@ class PostgresDB:
         else:
             logger.warning("PostgreSQL DATABASE_URL is not set")
 
-        if all([self.pghost, self.pguser, self.pgpassword]):
+        individual_params = [self.pghost, self.pguser, self.pgpassword, self.pgdatabase]
+        if all(individual_params):
             logger.info("PostgreSQL individual connection parameters are available")
         else:
             logger.warning("Some PostgreSQL connection parameters are missing")
@@ -64,12 +68,18 @@ class PostgresDB:
             if self.database_url:
                 connection = psycopg2.connect(self.database_url)
             else:
-                # Fall back to individual parameters
-                connection = psycopg2.connect(
-                    host=self.pghost,
-                    user=self.pguser,
-                    password=self.pgpassword
-                )
+                # Fall back to individual parameters with SSL requirement for Neon-hosted databases
+                connect_kwargs = {
+                    "host": self.pghost,
+                    "user": self.pguser,
+                    "password": self.pgpassword,
+                    "dbname": self.pgdatabase or None,
+                    "port": self.pgport or None,
+                    "sslmode": self.pgsslmode or "require",
+                }
+                # Remove None values to let psycopg2 apply defaults only when provided
+                connect_kwargs = {k: v for k, v in connect_kwargs.items() if v}
+                connection = psycopg2.connect(**connect_kwargs)
             yield connection
         except Exception as e:
             logger.error(f"Database connection error: {e}")

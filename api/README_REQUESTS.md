@@ -21,13 +21,9 @@ The Knowledge Agent API provides a comprehensive set of endpoints for querying a
 
 ## Base URLs
 
-The API can be accessed through the following base URLs:
-
-- **Local Development**: `http://localhost:80/api`
-- **Docker Deployment**: `http://localhost:80/api`
-- **Replit Deployment**: `https://chanscope-knowledge-agents.replit.app/api`
-
 API version 1 endpoints are available under the `/api/v1` path.
+
+**Note**: For deployment-specific base URLs and configuration, see [`deployment/DEPLOYMENT.md`](../deployment/DEPLOYMENT.md).
 
 ## Health Check Endpoints
 
@@ -676,4 +672,415 @@ The LLM-based approach allows for more complex queries:
 #### Errors
 
 - 400: Invalid query format or couldn't parse natural language
-- 500: Database error or other server-side issue 
+- 500: Database error or other server-side issue
+
+> **Note**: This endpoint requires PostgreSQL and is only available in Replit environments. See [`deployment/DEPLOYMENT.md`](../deployment/DEPLOYMENT.md) for deployment information.
+
+## Creative Use Cases
+
+This section demonstrates advanced usage patterns and creative examples that showcase the API's capabilities.
+
+### 1. Natural Language Database Queries with Complex Filters
+
+#### Real-Time Market Monitoring
+
+Query posts about specific topics within narrow time windows:
+
+```bash
+curl -X POST "http://localhost/api/v1/nl_query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Show posts about Bitcoin from the last 3 hours containing mentions of ETFs",
+    "limit": 50,
+    "format_for_llm": true
+  }'
+```
+
+#### Multi-Dimensional Content Analysis
+
+Combine multiple filters for precise data extraction:
+
+```bash
+curl -X POST "http://localhost/api/v1/nl_query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Find threads from biz board by author john about crypto regulations from last week",
+    "limit": 100
+  }'
+```
+
+#### Trend Analysis Queries
+
+Understand what people are discussing about specific topics:
+
+```bash
+curl -X POST "http://localhost/api/v1/nl_query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What are people saying about AI regulation this month?",
+    "limit": 200
+  }'
+```
+
+#### Time-Series Data Extraction
+
+Extract data for specific time periods with content filters:
+
+```bash
+curl -X POST "http://localhost/api/v1/nl_query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Show posts from yesterday containing machine learning discussions",
+    "limit": 150
+  }'
+```
+
+### 2. Batch Processing Workflows
+
+#### Parallel Query Processing
+
+Process multiple related queries simultaneously:
+
+```bash
+curl -X POST "http://localhost/api/v1/batch_process" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queries": [
+      "Investment opportunities in renewable energy",
+      "Cryptocurrency market trends",
+      "AI developments in finance",
+      "Regulatory changes affecting tech companies"
+    ],
+    "force_refresh": false,
+    "chunk_batch_size": 5,
+    "summary_batch_size": 3,
+    "max_workers": 4
+  }'
+```
+
+#### Custom Task Tracking
+
+Use custom task IDs for tracking specific workflows:
+
+```bash
+# Submit queries with custom task IDs
+curl -X POST "http://localhost/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Market sentiment analysis",
+    "task_id": "market_analysis_1",
+    "use_background": false
+  }'
+
+# Check status later
+curl -X GET "http://localhost/api/v1/batch_status/market_analysis_2024_01_15"
+```
+
+#### Batch Status Monitoring Pattern
+
+Monitor multiple batch jobs:
+
+```bash
+# Submit batch
+BATCH_ID=$(curl -X POST "http://localhost/api/v1/batch_process" \
+  -H "Content-Type: application/json" \
+  -d '{"queries": ["query1", "query2", "query3"]}' | jq -r '.batch_id')
+
+# Poll for completion
+while true; do
+  STATUS=$(curl -s "http://localhost/api/v1/batch_status/$BATCH_ID" | jq -r '.status')
+  if [ "$STATUS" = "completed" ]; then
+    echo "Batch completed!"
+    curl -s "http://localhost/api/v1/batch_status/$BATCH_ID" | jq '.result'
+    break
+  fi
+  sleep 5
+done
+```
+
+### 3. Background Task Management
+
+#### Asynchronous Query Processing
+
+Submit long-running queries for background processing:
+
+```bash
+# Submit query for background processing
+curl -X POST "http://localhost/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Comprehensive analysis of financial market trends",
+    "use_background": true
+  }'
+
+# Response: {"status": "processing", "task_id": "query_1234567890_abcd"}
+```
+
+#### Status Polling Pattern
+
+Implement efficient status polling:
+
+```bash
+TASK_ID="query_1234567890_abcd"
+
+# Poll with exponential backoff
+DELAY=2
+MAX_DELAY=30
+while true; do
+  RESPONSE=$(curl -s "http://localhost/api/v1/batch_status/$TASK_ID")
+  STATUS=$(echo $RESPONSE | jq -r '.status')
+  
+  case $STATUS in
+    "completed")
+      echo "Query completed!"
+      echo $RESPONSE | jq '.result'
+      break
+      ;;
+    "failed")
+      echo "Query failed!"
+      echo $RESPONSE | jq '.error'
+      break
+      ;;
+    "expired")
+      echo "Query expired"
+      break
+      ;;
+    *)
+      echo "Status: $STATUS. Waiting ${DELAY}s..."
+      sleep $DELAY
+      DELAY=$((DELAY < MAX_DELAY ? DELAY * 2 : MAX_DELAY))
+      ;;
+  esac
+done
+```
+
+#### Task Result Retrieval
+
+Retrieve results with metadata:
+
+```bash
+# Get task status with full result
+curl -X GET "http://localhost/api/v1/batch_status/query_1234567890_abcd" | jq '{
+  status: .status,
+  chunks_count: (.result.chunks | length),
+  summary: .result.summary,
+  processing_time: .result.metadata.processing_time_ms
+}'
+```
+
+### 4. Multi-Provider Query Strategies
+
+#### Provider-Specific Queries
+
+Use different providers for different operations:
+
+```bash
+# Use OpenAI for embeddings, Grok for summaries
+curl -X POST "http://localhost/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Market analysis",
+    "embedding_provider": "openai",
+    "chunk_provider": "venice",
+    "summary_provider": "grok"
+  }'
+```
+
+#### Provider Health Monitoring
+
+Monitor provider availability before processing:
+
+```bash
+# Check all providers
+curl -X GET "http://localhost/api/v1/health/all"
+
+# Check specific provider
+curl -X GET "http://localhost/api/v1/health/provider/openai"
+curl -X GET "http://localhost/api/v1/health/provider/grok"
+curl -X GET "http://localhost/api/v1/health/provider/venice"
+```
+
+### 5. Refresh Dashboard Integration
+
+#### Automated Refresh Control
+
+Programmatically control the refresh dashboard:
+
+```bash
+# Start auto-refresh with custom interval
+curl -X POST "http://localhost/refresh/api/config" \
+  -H "Content-Type: application/json" \
+  -H "X-Refresh-Token: your_token" \
+  -d '{
+    "interval_seconds": 7200,
+    "max_retries": 3
+  }'
+
+# Trigger refresh
+curl -X POST "http://localhost/refresh/api/control" \
+  -H "Content-Type: application/json" \
+  -H "X-Refresh-Token: your_token" \
+  -d '{"action": "start"}'
+```
+
+#### Metrics Monitoring
+
+Monitor refresh performance:
+
+```bash
+# Get current metrics
+curl -X GET "http://localhost/refresh/api/metrics" | jq '{
+  total_runs: .total_runs,
+  current_rows: .current_row_count,
+  success_rate: .success_rate,
+  avg_duration: .average_duration
+}'
+
+# Get status
+curl -X GET "http://localhost/refresh/api/status" | jq '{
+  is_running: .is_running,
+  current_job: .current_job,
+  next_run: .next_run
+}'
+```
+
+### 6. Comprehensive Health Monitoring
+
+#### Health Check Workflow
+
+Implement comprehensive health monitoring:
+
+```bash
+# Check all systems
+HEALTH_CHECKS=(
+  "/api/v1/health"
+  "/api/v1/health/s3"
+  "/api/v1/health/cache"
+  "/api/v1/health/embeddings"
+  "/api/v1/health/all"
+)
+
+for endpoint in "${HEALTH_CHECKS[@]}"; do
+  echo "Checking $endpoint..."
+  curl -s "http://localhost$endpoint" | jq '.status'
+done
+```
+
+#### Cache Performance Monitoring
+
+Monitor cache effectiveness:
+
+```bash
+curl -X GET "http://localhost/api/v1/health/cache" | jq '{
+  hit_ratio: .metrics.hit_ratio,
+  total_requests: .metrics.total_requests,
+  errors: .metrics.errors
+}'
+```
+
+#### Embedding Health Monitoring
+
+Monitor embedding coverage and quality:
+
+```bash
+curl -X GET "http://localhost/api/v1/health/embeddings" | jq '{
+  status: .status,
+  coverage: .metrics.coverage_percentage,
+  total_records: .metrics.total_records,
+  issues: .issues
+}'
+```
+
+### 7. Advanced Query Patterns
+
+#### Source-Specific Analysis
+
+Analyze data from specific sources:
+
+```bash
+# Filter to specific board
+curl -X POST "http://localhost/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Financial market trends",
+    "select_board": "biz"
+  }'
+```
+
+#### Temporal Analysis
+
+Analyze data within specific time ranges:
+
+```bash
+# Query with date filter
+curl -X POST "http://localhost/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Cryptocurrency discussions",
+    "filter_date": "2024-01-15"
+  }'
+```
+
+#### Recent Data Processing
+
+Process queries using only recent data:
+
+```bash
+# Process recent query (last 6-12 hours)
+curl -X GET "http://localhost/api/v1/process_recent_query?select_board=biz&use_background=true"
+```
+
+### 8. Error Handling Patterns
+
+#### Comprehensive Error Handling
+
+Handle various error scenarios:
+
+```bash
+# Submit query with error handling
+RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "http://localhost/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "test query"}')
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | head -n-1)
+
+case $HTTP_CODE in
+  200|201)
+    echo "Success: $BODY" | jq '.'
+    ;;
+  400)
+    echo "Bad Request: $BODY" | jq '.detail'
+    ;;
+  500)
+    echo "Server Error: $BODY" | jq '.detail'
+    ;;
+  *)
+    echo "Unexpected status: $HTTP_CODE"
+    ;;
+esac
+```
+
+#### Task Expiration Handling
+
+Handle expired task results:
+
+```bash
+STATUS=$(curl -s "http://localhost/api/v1/batch_status/$TASK_ID" | jq -r '.status')
+
+if [ "$STATUS" = "expired" ]; then
+  echo "Task expired. Check batch_history.json for historical records."
+  # Optionally, resubmit the query
+fi
+```
+
+## Best Practices
+
+1. **Use Background Processing**: For long-running queries, use `use_background: true` to avoid timeouts
+2. **Monitor Task Status**: Implement polling with exponential backoff for background tasks
+3. **Set Appropriate Limits**: Use `limit` parameter in NL queries to prevent large result sets
+4. **Handle Errors Gracefully**: Implement comprehensive error handling for all API calls
+5. **Monitor Health**: Regularly check health endpoints to ensure system availability
+6. **Use Custom Task IDs**: For tracking workflows, use custom task IDs
+7. **Cache When Appropriate**: Leverage the built-in cache for frequently accessed queries
+8. **Monitor Embeddings**: Regularly check embedding health to ensure data quality 

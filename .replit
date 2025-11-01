@@ -1,6 +1,6 @@
 modules = ["python-3.11", "postgresql-16"]
 hidden = [".pythonlibs"]
-run = "mkdir -p logs && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & SERVER_PID=$! && sleep 2 && bash scripts/replit_init.sh > logs/init.log 2>&1 & wait $SERVER_PID"
+run = "bash scripts/replit_init.sh && python -m uvicorn api.app:app --host 0.0.0.0 --port 8080 --log-level info"
 entrypoint = "api/app.py"
 
 # =============================================
@@ -16,7 +16,7 @@ packages = ["arrow-cpp", "cargo", "glibcLocales", "libiconv", "libxcrypt", "liby
 [env]
 REPLIT_ENV = "replit"
 DEPLOYMENT_ENV = "replit"
-API_PORT = "80"
+API_PORT = "5000"
 API_HOST = "0.0.0.0"
 LOG_LEVEL = "INFO"
 AUTO_CHECK_DATA = "false"    # Don't auto-check data on startup
@@ -24,10 +24,13 @@ FORCE_DATA_REFRESH = "false"
 SKIP_EMBEDDINGS = "false"
 PYTHONPATH = "${REPL_HOME}"
 PYTHONUNBUFFERED = "1"
+AUTO_REFRESH_MANAGER = "true"  # Auto-start refresh manager with the API
+DATA_REFRESH_INTERVAL = "3600"  # Seconds between automatic refresh runs
+PIP_NO_CACHE_DIR = "1"
 
-# Data Scheduler Configuration
-ENABLE_DATA_SCHEDULER = "true" # Enable automatic data updates
-DATA_UPDATE_INTERVAL = "3600"  # Update interval in seconds (1 hour)
+# Legacy scheduler (disabled when using refresh manager; enable only if needed)
+ENABLE_DATA_SCHEDULER = "false"
+DATA_UPDATE_INTERVAL = "3600"
 DATA_RETENTION_DAYS = "5"     # Keep data for 14 days
 
 # Testing Configuration
@@ -37,21 +40,22 @@ USE_MOCK_EMBEDDINGS = "false"
 
 # Package caching safety (prevent deployment dependency issues)
 REPLIT_KEEP_PACKAGE_DEV_DEPENDENCIES = "1"
-REPLIT_DISABLE_PACKAGE_LAYER = "0"         # Keep caching enabled by default
+REPLIT_DISABLE_PACKAGE_LAYER = "1"         # Disable package layer to prevent .upm store growth
+REPLIT_PIP_SKIP_UPM = "1"
 
 # =============================================
 # Deployment Configuration
 # =============================================
 [deployment]
-run = "mkdir -p logs && python -m uvicorn api.app:app --host 0.0.0.0 --port 80 --log-level info & SERVER_PID=$! && sleep 2 && bash scripts/replit_init.sh > logs/init.log 2>&1 & wait $SERVER_PID"
-deploymentTarget = "cloudrun"
+run = ["bash", "scripts/deployment_startup.sh"]
+deploymentTarget = "autoscale"
 
 # =============================================
 # Health Check Configuration
 # =============================================
 [deployment.healthCheck]
 path = "/"               # Root path for fastest possible health check
-port = 80
+port = 8080
 initialDelay = 10        # Reduced - server should start quickly now
 timeout = 5              # Standard timeout
 period = 10              # Check every 10 seconds
@@ -59,8 +63,12 @@ consecutiveSuccesses = 1
 consecutiveFailures = 3  # Less tolerant now that startup is fast
 
 [[ports]]
-localPort = 80
+localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
 
 # =============================================
 # Language Configuration
@@ -97,7 +105,7 @@ language = "python3"
 command = ["python3", "-u"]
 
 [workflows]
-runButton = "Force a complete data refresh including stratification and embeddings"
+runButton = "Project"
 
 [[workflows.workflow]]
 name = "test"
@@ -144,9 +152,59 @@ mode = "sequential"
 task = "shell.exec"
 args = "python scripts/interactive_nl_query.py"
 
+[[workflows.workflow]]
+name = "Deploy"
+mode = "sequential"
+author = 38779469
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/replit_init.sh && python -m uvicorn api.app:app --host 0.0.0.0 --port 8080 --log-level info"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python scripts/refresh_control.py start"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Main API"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Refresh Dashboard"
+
+[[workflows.workflow]]
+name = "Main API"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/deployment_startup.sh"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow]]
+name = "Refresh Dashboard"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd /home/runner/workspace && PORT=8080 python -m uvicorn api.refresh_dashboard:app --host 0.0.0.0 --port 8080"
+waitForPort = 8080
+
+[workflows.workflow.metadata]
+outputType = "console"
+
 [server]
 host = "0.0.0.0"
-port = 80
+port = 8080
 
 # Commands for Replit interface
 [commands.test]
@@ -155,7 +213,7 @@ command = "bash scripts/test.sh replit"
 
 [commands.run-api]
 description = "Run the API server"
-command = "python -m uvicorn api.app:app --host 0.0.0.0 --port 80"
+command = "python -m uvicorn api.app:app --host 0.0.0.0 --port 8080"
 
 [commands.update-data]
 description = "Run manual data update"

@@ -33,24 +33,28 @@ def patch_gcs_credentials():
     that occurs when using newer google-cloud-storage versions with replit-object-storage.
     """
     try:
-        import google.auth.credentials
-        
-        # Skip if already patched
-        creds = google.auth.credentials.Credentials()
-        if hasattr(creds, 'universe_domain'):
+        import google.auth.credentials as credentials_module
+
+        credentials_cls = credentials_module.Credentials
+
+        # Skip patch if the attribute already exists or patch already applied
+        if hasattr(credentials_cls, "universe_domain"):
             return
-            
+        if getattr(credentials_cls, "_universe_domain_patched", False):
+            return
+
         # Store original __init__ method
-        original_init = google.auth.credentials.Credentials.__init__
-        
-        # Create patched init method that adds the attribute
+        original_init = credentials_cls.__init__
+
+        # Create patched init method that adds the attribute when missing
         def patched_init(self, *args, **kwargs):
             original_init(self, *args, **kwargs)
             if not hasattr(self, 'universe_domain'):
                 self.universe_domain = 'googleapis.com'
         
         # Apply patch
-        google.auth.credentials.Credentials.__init__ = patched_init
+        credentials_cls.__init__ = patched_init
+        credentials_cls._universe_domain_patched = True
         logger.info("Applied patch for Google Cloud Storage credentials universe_domain attribute")
         
     except Exception as e:
@@ -288,8 +292,14 @@ class FileEmbeddingStorage(EmbeddingStorage):
             # Ensure directory exists
             self.embeddings_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # Downcast to float16 to minimize disk usage while preserving shape
+            embeddings_to_store = embeddings
+            if embeddings.dtype != np.float16:
+                embeddings_to_store = embeddings.astype(np.float16)
+                logger.info("Downcasting embeddings to float16 for compact file storage")
+            
             # Save embeddings
-            np.savez_compressed(self.embeddings_path, embeddings=embeddings)
+            np.savez_compressed(self.embeddings_path, embeddings=embeddings_to_store)
             
             # Save thread ID map
             with open(self.thread_id_map_path, 'w') as f:
@@ -342,6 +352,12 @@ class FileEmbeddingStorage(EmbeddingStorage):
             if embeddings is None:
                 logger.error("Failed to load embeddings from either .npz or .npy format")
                 return None, None
+            
+            # Ensure embeddings are float32 for downstream compatibility
+            if embeddings.dtype != np.float32:
+                original_dtype = embeddings.dtype
+                embeddings = embeddings.astype(np.float32)
+                logger.info(f"Converted embeddings to float32 from {original_dtype}")
             
             # Load thread ID map
             with open(self.thread_id_map_path, 'r') as f:
@@ -920,6 +936,11 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
             
             logger.info(f"Validated embeddings with shape {embeddings.shape} for storage")
             
+            embeddings_to_store = embeddings
+            if embeddings.dtype != np.float16:
+                embeddings_to_store = embeddings.astype(np.float16)
+                logger.info("Downcasting embeddings to float16 before uploading to Object Storage")
+            
             # Initialize client with patched method
             object_client = self._init_object_client()
             
@@ -934,6 +955,7 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
             thread_map_with_meta = {
                 'thread_ids': clean_thread_map,
                 'embedding_shape': embeddings.shape,
+                'embedding_dtype': str(embeddings_to_store.dtype),
                 'timestamp': datetime.now().isoformat(),
                 'format_version': '1.0'
             }
@@ -952,7 +974,7 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
             temp_file = "/tmp/embeddings.npy"
             try:
                 logger.info(f"Saving embeddings with shape {embeddings.shape} to temporary file: {temp_file}")
-                np.save(temp_file, embeddings)
+                np.save(temp_file, embeddings_to_store)
                 logger.info(f"Successfully saved embeddings to temporary file")
             except Exception as e:
                 logger.error(f"Failed to save embeddings to temporary file: {e}")
@@ -1087,6 +1109,11 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
                 logger.info(f"Removed temporary file: {temp_file}")
             except Exception as e:
                 logger.warning(f"Failed to remove temporary file {temp_file}: {e}")
+            
+            if embeddings is not None and embeddings.dtype != np.float32:
+                original_dtype = embeddings.dtype
+                embeddings = embeddings.astype(np.float32)
+                logger.info(f"Converted embeddings to float32 from {original_dtype}")
             
             logger.info(f"Retrieved embeddings with shape {embeddings.shape} from Object Storage")
             return embeddings, thread_id_map
@@ -1231,4 +1258,4 @@ class StorageFactory:
                 'stratified_sample': FileStratifiedSampleStorage(config),
                 'embeddings': FileEmbeddingStorage(config),
                 'state': FileStateManager(config)
-            } 
+            }

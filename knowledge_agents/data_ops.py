@@ -485,11 +485,15 @@ class DataOperations:
         try:
             # Import inference_ops to clear caches when embeddings are updated
             from knowledge_agents.inference_ops import _clear_caches
-            
-            # Initialize Object Storage
-            from config.storage import ReplitObjectEmbeddingStorage
-            embedding_storage = ReplitObjectEmbeddingStorage(self.config)
-            
+            # Initialize embedding storage using environment-aware factory
+            embedding_storage = self.embedding_storage
+            if embedding_storage is None:
+                from config.storage import StorageFactory
+                embedding_storage = StorageFactory.create(self.config).get('embeddings')
+                if embedding_storage is None:
+                    logger.error("Failed to initialize embedding storage")
+                    return
+
             logger.info(f"Starting embedding update (force_refresh={force_refresh})")
             
             # Check incremental embeddings setting

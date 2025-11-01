@@ -51,10 +51,86 @@ echo -e "${YELLOW}Starting background initialization tasks...${NC}"
     echo -e "${YELLOW}Waiting 10 seconds for server stabilization...${NC}"
     sleep 10
 
+    # Keep disk usage under control before heavy install steps
+    echo -e "${YELLOW}Pruning cached artifacts to avoid disk quota issues...${NC}"
+
+    # Trim the Replit UPM store so package writes succeed even on small disks
+    UPM_STORE="${HOME}/workspace/.upm/store.json"
+    if [ -f "$UPM_STORE" ]; then
+        python3 - <<'PY'
+import json
+import os
+store_path = os.path.expanduser("~/workspace/.upm/store.json")
+try:
+    os.makedirs(os.path.dirname(store_path), exist_ok=True)
+    minimal = {"packages": {}, "meta": {}}
+    with open(store_path, "w", encoding="utf-8") as fh:
+        json.dump(minimal, fh)
+except Exception:
+    pass
+PY
+    fi
+
+    # Remove old generated data to free space (Retains source datasets)
+    if [ -d "$PWD/data/generated_data" ]; then
+        rm -rf "$PWD/data/generated_data"/* 2>/dev/null || true
+    fi
+
+    # Downcast persisted embeddings to float16 to keep footprint small
+    python3 - <<'PY'
+import numpy as np
+from pathlib import Path
+emb_path = Path("data/stratified/embeddings.npz")
+if emb_path.exists():
+    try:
+        with np.load(emb_path) as data:
+            embeddings = data["embeddings"]
+        if embeddings.dtype != np.float16:
+            np.savez_compressed(emb_path, embeddings=embeddings.astype(np.float16))
+    except Exception:
+        pass
+PY
+
+    # Clear common cache directories
+    rm -rf "$HOME/.cache/pip" "$HOME/.cache/huggingface" "$PWD/.cache" 2>/dev/null || true
+
     # Now do the heavy lifting
     echo -e "${YELLOW}Installing/updating project dependencies...${NC}"
     if [ -f "requirements.txt" ]; then
-        pip install -r requirements.txt --quiet --no-warn-script-location
+        # Install without cache to keep disk usage low in Replit
+        pip install --no-cache-dir --quiet --no-warn-script-location -r requirements.txt
+        pip cache purge >/dev/null 2>&1 || true
+
+        # Remove corrupted scikit-learn metadata directories that trigger "~cikit-learn" warnings
+        CLEANED_SKLEARN=$(python3 - <<'PY'
+import os
+import site
+import shutil
+
+def prune(path: str) -> bool:
+    if not os.path.isdir(path):
+        return False
+    removed = False
+    for entry in os.listdir(path):
+        lower = entry.lower()
+        if lower.startswith("~cikit") and (lower.endswith(".dist-info") or lower.endswith(".egg-info")):
+            shutil.rmtree(os.path.join(path, entry), ignore_errors=True)
+            removed = True
+    return removed
+
+removed_any = False
+for candidate in site.getsitepackages() + [site.getusersitepackages()]:
+    if prune(candidate):
+        removed_any = True
+
+print("1" if removed_any else "0")
+PY
+)
+        if [ "$CLEANED_SKLEARN" = "1" ]; then
+            echo -e "${YELLOW}Detected corrupted scikit-learn metadata. Reinstalling clean copy...${NC}"
+            pip install --no-cache-dir --quiet --no-warn-script-location "scikit-learn>=1.7.0,<2.0.0"
+        fi
+
         echo -e "${GREEN}Dependencies installed successfully.${NC}"
     else
         echo -e "${RED}Warning: requirements.txt not found!${NC}"
@@ -158,20 +234,24 @@ else:
     # Configure scheduler if enabled
     ENABLE_DATA_SCHEDULER="${ENABLE_DATA_SCHEDULER:-false}"
     if [ "$ENABLE_DATA_SCHEDULER" = "true" ]; then
-        DATA_UPDATE_INTERVAL="${DATA_UPDATE_INTERVAL:-3600}"
-        echo -e "${YELLOW}Starting data scheduler with interval: ${DATA_UPDATE_INTERVAL}s${NC}"
+        if [[ "${AUTO_REFRESH_MANAGER,,}" == "true" ]]; then
+            echo -e "${YELLOW}Skipping legacy scheduler because AUTO_REFRESH_MANAGER is enabled.${NC}"
+        else
+            DATA_UPDATE_INTERVAL="${DATA_UPDATE_INTERVAL:-3600}"
+            echo -e "${YELLOW}Starting data scheduler with interval: ${DATA_UPDATE_INTERVAL}s${NC}"
 
-        # Clean up any existing scheduler
-        SCHEDULER_PID_FILE="$PWD/data/.scheduler_pid"
-        if [ -f "$SCHEDULER_PID_FILE" ]; then
-            rm -f "$SCHEDULER_PID_FILE"
+            # Clean up any existing scheduler
+            SCHEDULER_PID_FILE="$PWD/data/.scheduler_pid"
+            if [ -f "$SCHEDULER_PID_FILE" ]; then
+                rm -f "$SCHEDULER_PID_FILE"
+            fi
+
+            # Start scheduler
+            nohup python3 scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$PWD/logs/scheduler.log" 2>&1 &
+            SCHEDULER_PID=$!
+            echo $SCHEDULER_PID > "$SCHEDULER_PID_FILE"
+            echo -e "${GREEN}Data scheduler started with PID: $SCHEDULER_PID${NC}"
         fi
-
-        # Start scheduler
-        nohup python3 scripts/scheduled_update.py refresh --continuous --interval=$DATA_UPDATE_INTERVAL > "$PWD/logs/scheduler.log" 2>&1 &
-        SCHEDULER_PID=$!
-        echo $SCHEDULER_PID > "$SCHEDULER_PID_FILE"
-        echo -e "${GREEN}Data scheduler started with PID: $SCHEDULER_PID${NC}"
     fi
 
     # Mark completion

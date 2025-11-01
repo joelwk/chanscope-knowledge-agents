@@ -26,7 +26,7 @@ class S3Handler:
         self.bucket_name = aws_settings['s3_bucket'].strip()
         self.bucket_prefix = aws_settings['s3_bucket_prefix'].strip()
         self.local_path = Path(paths['root_data_path']).resolve()
-        self.region_name = aws_settings['aws_default_region'].strip()
+        self.region_name = aws_settings['aws_default_region'].strip() or 'us-east-1'
         self.aws_access_key_id = aws_settings['aws_access_key_id'].strip()
         self.aws_secret_access_key = aws_settings['aws_secret_access_key'].strip()
 
@@ -34,7 +34,15 @@ class S3Handler:
         select_board = processing_settings.get('select_board')
         self.select_board = select_board.strip() if select_board else None
 
-        self.s3 = self._create_s3_client()
+        if self.is_configured:
+            self.s3 = self._create_s3_client()
+        else:
+            self.s3 = None
+            logger.warning(
+                "Skipping S3 client initialization because required AWS settings are missing. "
+                "Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, S3_BUCKET, "
+                "and S3_BUCKET_PREFIX to enable cloud synchronization."
+            )
 
     @property
     def is_configured(self) -> bool:

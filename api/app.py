@@ -10,12 +10,17 @@ import logging
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
+from api.middleware.request_id import RequestIDMiddleware
 from pydantic import BaseModel
 from datetime import datetime
 from contextlib import asynccontextmanager
+import contextlib
 import asyncio
 # Import configuration utilities
 from config.env_loader import load_environment, detect_environment, is_replit_environment
@@ -26,8 +31,17 @@ from config.settings import Config
 from knowledge_agents.data_processing.chanscope_manager import ChanScopeDataManager
 from config.chanscope_config import ChanScopeConfig
 
-# Import API router from routes.py
-from .routes import router as api_router
+# Import API routers from routers module
+from api.routers import health_router, data_router, embeddings_router, admin_router, query_router
+# Keep old routes import temporarily for compatibility during migration
+# routes.py router removed - all endpoints migrated to domain-specific routers
+try:
+    # Access the refresh dashboard module to mount and control the manager
+    from . import refresh_dashboard as rd
+    refresh_app = rd.app
+except Exception:
+    rd = None
+    refresh_app = None
 
 # Set up logging
 setup_logging()
@@ -56,34 +70,43 @@ async def lifespan(app: FastAPI):
     app.state.ready_for_health_checks = True
     logger.info("API ready for health checks")
     
-    # Yield control back to FastAPI to start server
-    # This allows the server to bind and respond to health checks immediately
-    yield
-    
-    # ---- Code below runs AFTER the server has started ----
-    logger.info("Server started, initiating background data processing if enabled.")
-    # Initialize data in the background - don't block API startup
+    background_task: Optional[asyncio.Task] = None
     try:
-        # Only initialize if specified in environment
+        logger.info("Server startup complete, evaluating background data initialization.")
+        # Check for deployment mode
+        is_deployment = os.environ.get('API_PORT', '') == '5000'
         auto_check_data = os.environ.get('AUTO_CHECK_DATA', 'true').lower() in ('true', '1', 'yes')
+        
+        # In deployment mode, allow AUTO_CHECK_DATA if explicitly set but default to false
+        if is_deployment and os.environ.get('AUTO_CHECK_DATA') is None:
+            logger.info("Running in deployment mode (API_PORT=5000) with no explicit AUTO_CHECK_DATA, defaulting to false")
+            auto_check_data = False
+        elif is_deployment and auto_check_data:
+            logger.info("Running in deployment mode (API_PORT=5000) with AUTO_CHECK_DATA explicitly enabled")
+        
         logger.info(f"AUTO_CHECK_DATA environment variable: {os.environ.get('AUTO_CHECK_DATA', 'not set')}")
         logger.info(f"AUTO_CHECK_DATA parsed value: {auto_check_data}")
         
         if auto_check_data:
-            logger.info("AUTO_CHECK_DATA is enabled, initiating data preparation in background")
-            # Create the task but don't await it - let it run fully in background
-            task = asyncio.create_task(initialize_background_data())
-            # Add a name to the task for easier debugging
-            task.set_name("background_data_init")
-            logger.info(f"Created background task: {task.get_name()}")
+            logger.info("AUTO_CHECK_DATA is enabled, launching background initialization task")
+            background_task = asyncio.create_task(initialize_background_data())
+            background_task.set_name("background_data_init")
+            app.state.background_data_task = background_task
+            logger.info(f"Created background task: {background_task.get_name()}")
         else:
             logger.info("AUTO_CHECK_DATA is disabled, skipping initial data preparation")
     except Exception as e:
         logger.error(f"Error during background data initialization startup: {e}", exc_info=True)
     
-    # ---- Cleanup on shutdown ----
-    logger.info("Shutting down Chanscope API...")
-    # You might add specific cleanup logic here if needed before the application exits.
+    # Yield control back to FastAPI to start handling requests
+    try:
+        yield
+    finally:
+        logger.info("Shutting down Chanscope API...")
+        if background_task and not background_task.done():
+            background_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await background_task
 
 # Health check middleware to ensure the root endpoint always responds
 class HealthCheckMiddleware(BaseHTTPMiddleware):
@@ -114,14 +137,47 @@ app = FastAPI(
 # and always returns a health check response
 app.add_middleware(HealthCheckMiddleware)
 
+# Add request ID middleware for tracing
+app.add_middleware(RequestIDMiddleware)
+
+# Configure CORS with environment-based origins
+def get_cors_origins() -> list:
+    """Get CORS origins from environment, with safe defaults."""
+    cors_origins_env = os.getenv("CORS_ORIGINS", "*")
+    
+    # In production/deployment, be more restrictive by default
+    is_production = os.environ.get("FASTAPI_ENV", "development").lower() == "production"
+    is_deployment = os.environ.get("API_PORT", "") == "5000"
+    
+    if cors_origins_env == "*":
+        # Allow all in development/Replit (preserve current behavior)
+        if is_replit_environment() or not (is_production or is_deployment):
+            return ["*"]
+        else:
+            # In production, default to empty list (no CORS) unless explicitly set
+            logger.warning("CORS_ORIGINS not set in production, defaulting to [] for security")
+            return []
+    else:
+        # Parse comma-separated list
+        if "," in cors_origins_env:
+            origins_list = cors_origins_env.split(",")
+        else:
+            origins_list = [cors_origins_env]
+        return [origin.strip() for origin in origins_list]
+
+cors_origins = get_cors_origins()
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins if isinstance(cors_origins, list) else ["*"],
+    allow_credentials=True if "*" not in (cors_origins if isinstance(cors_origins, list) else ["*"]) else True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add GZip compression middleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Create configuration and data manager
 chanscope_config = ChanScopeConfig.from_env()
@@ -133,8 +189,130 @@ logger.info(f"Detected environment: {environment}")
 data_manager = ChanScopeDataManager.create_for_environment(chanscope_config)
 logger.info(f"Initialized ChanScopeDataManager for {environment} environment")
 
-# Include API router with proper prefix
-app.include_router(api_router, prefix="/api/v1", tags=["knowledge_agents"])
+# Include API routers with proper prefix
+app.include_router(health_router, prefix="/api/v1", tags=["health"])
+app.include_router(data_router, prefix="/api/v1", tags=["data"])
+app.include_router(embeddings_router, prefix="/api/v1", tags=["embeddings"])
+app.include_router(admin_router, prefix="/api/v1", tags=["admin"])
+app.include_router(query_router, prefix="/api/v1", tags=["query"])
+# Old routes.py router removed - all endpoints migrated to domain-specific routers
+
+# Global exception handlers for standardized error responses
+from api.errors import APIError, ProcessingError, ValidationError, ConfigurationError
+from api.exceptions import ErrorResponse
+
+@app.exception_handler(APIError)
+async def api_error_handler(request: Request, exc: APIError):
+    """Handle APIError exceptions with standardized response format."""
+    logger.error(f"API Error: {exc.error_code} - {exc.message}", exc_info=exc.original_error)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.message,
+            "error_code": exc.error_code,
+            "status_code": exc.status_code,
+            "additional_info": exc.details if exc.details else None
+        }
+    )
+
+@app.exception_handler(ProcessingError)
+async def processing_error_handler(request: Request, exc: ProcessingError):
+    """Handle ProcessingError exceptions with standardized response format."""
+    logger.error(f"Processing Error: {exc.operation} - {exc.message}", exc_info=exc.original_error)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.message,
+            "error_code": "PROCESSING_ERROR",
+            "status_code": exc.status_code,
+            "additional_info": {
+                "operation": exc.operation,
+                "resource": exc.resource
+            } if exc.operation or exc.resource else None
+        }
+    )
+
+@app.exception_handler(ValidationError)
+async def validation_error_handler(request: Request, exc: ValidationError):
+    """Handle ValidationError exceptions with standardized response format."""
+    logger.error(f"Validation Error: {exc.field} - {exc.message}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.message,
+            "error_code": exc.error_code,
+            "status_code": exc.status_code,
+            "additional_info": {
+                "field": exc.field,
+                "value": str(exc.value) if exc.value is not None else None
+            } if exc.field else None
+        }
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTPException with standardized response format."""
+    detail = exc.detail
+    if isinstance(detail, dict):
+        # Already formatted, use as-is
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "detail": detail.get("message", str(detail)),
+                "error_code": detail.get("error_code", "HTTP_ERROR"),
+                "status_code": exc.status_code,
+                "additional_info": detail
+            }
+        )
+    else:
+        # Simple string detail
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "detail": str(detail),
+                "error_code": "HTTP_ERROR",
+                "status_code": exc.status_code,
+                "additional_info": None
+            }
+        )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle Pydantic validation errors."""
+    errors = exc.errors()
+    logger.error(f"Request validation error: {errors}")
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Validation error",
+            "error_code": "VALIDATION_ERROR",
+            "status_code": 422,
+            "additional_info": {
+                "errors": errors
+            }
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle all other exceptions with standardized error response."""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "error_code": "INTERNAL_SERVER_ERROR",
+            "status_code": 500,
+            "additional_info": {
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)
+            } if os.environ.get("FASTAPI_DEBUG", "false").lower() == "true" else None
+        }
+    )
+
+# Mount the refresh dashboard (if available) under /refresh
+if refresh_app is not None:
+    app.mount("/refresh", refresh_app)
 
 # Define request models
 class QueryRequest(BaseModel):
@@ -144,14 +322,7 @@ class QueryRequest(BaseModel):
     force_refresh: bool = False
     skip_embeddings: bool = False
 
-class QueryResponse(BaseModel):
-    """Query response model."""
-    status: str = "completed"
-    query: str
-    top_k: int
-    chunks: list = []
-    summary: str = ""
-    metadata: Dict[str, Any]
+# QueryResponse moved to api.models - import from there if needed
 
 # Dependency for data readiness
 async def ensure_data_ready(
@@ -461,11 +632,26 @@ async def initialize_background_data():
             )
             logger.info("Data preparation completed successfully")
             
-            # Create a task to periodically check data freshness if enabled
-            refresh_interval = int(os.environ.get('DATA_REFRESH_INTERVAL', '86400'))  # Default to daily
-            if os.environ.get('AUTO_REFRESH_DATA', 'false').lower() in ('true', '1', 'yes') and refresh_interval > 0:
-                logger.info(f"Setting up periodic data refresh every {refresh_interval} seconds")
-                asyncio.create_task(periodic_refresh(refresh_interval))
+            # Unify periodic refresh by using the AutomatedRefreshManager instead of a missing function
+            try:
+                enable_mgr = os.environ.get('AUTO_REFRESH_MANAGER', 'false').lower() in ('true', '1', 'yes')
+                if enable_mgr and rd is not None:
+                    refresh_interval = int(os.environ.get(
+                        'DATA_REFRESH_INTERVAL',
+                        os.environ.get(
+                            'DATA_UPDATE_INTERVAL',
+                            os.environ.get('REFRESH_INTERVAL', '3600')
+                        )
+                    ))
+                    if getattr(rd, 'refresh_manager', None) is None:
+                        rd.refresh_manager = rd.AutomatedRefreshManager(interval_seconds=refresh_interval)
+                    else:
+                        rd.refresh_manager.interval_seconds = refresh_interval
+                    if not rd.refresh_manager.is_running:
+                        logger.info(f"Starting AutomatedRefreshManager with interval {refresh_interval}s")
+                        asyncio.create_task(rd.refresh_manager.run_continuous())
+            except Exception as e:
+                logger.warning(f"Could not start AutomatedRefreshManager: {e}")
         else:
             await data_manager.state_manager.mark_operation_complete(
                 "background_initialization",
@@ -502,9 +688,10 @@ if __name__ == "__main__":
     
     # Ensure we're listening on the correct port for Replit deployments
     if is_replit_environment():
-        logger.info("Running in Replit environment, using port 80 and host 0.0.0.0")
-        port = 80
+        # Use API_PORT environment variable if set, otherwise default to 5000
+        port = int(os.getenv('API_PORT', '5000'))
         host = '0.0.0.0'
+        logger.info(f"Running in Replit environment, using port {port} and host {host}")
     
     logger.info(f"Starting server on {host}:{port}")
     

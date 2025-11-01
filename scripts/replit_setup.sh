@@ -61,6 +61,10 @@ AUTO_PROCESS_DATA_ON_INIT=false
 FORCE_DATA_REFRESH=false
 SKIP_EMBEDDINGS=false
 
+# Automated refresh manager (enabled by default)
+AUTO_REFRESH_MANAGER=true
+DATA_REFRESH_INTERVAL=3600
+
 # Scheduler (disabled by default)
 ENABLE_DATA_SCHEDULER=false
 DATA_UPDATE_INTERVAL=3600
@@ -160,4 +164,3 @@ echo "   1. Ensure all secrets are set in Replit Deployment config"
 echo "   2. Click Deploy in Replit"
 echo "   3. Monitor deployment logs for any issues"
 echo "   4. Use /trigger-data-processing endpoint after deployment to initialize data" 
-
