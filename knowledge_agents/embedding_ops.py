@@ -259,16 +259,18 @@ async def load_embeddings(
         Tuple of (embeddings array, metadata dict), or (None, None) if loading fails
     """
     try:
-        # Import Object Storage client
-        from replit.object_storage import Client
-        from config.storage import ReplitObjectEmbeddingStorage
         from config.chanscope_config import ChanScopeConfig
+        from config.storage import StorageFactory
 
-        # Initialize storage
+        # Initialize storage using environment-aware factory so Docker stays file-backed.
         config = ChanScopeConfig.from_env()
-        embedding_storage = ReplitObjectEmbeddingStorage(config)
+        storage = StorageFactory.create(config, env_type=config.env)
+        embedding_storage = storage.get('embeddings')
 
-        # Get embeddings and thread map from Object Storage
+        if embedding_storage is None:
+            logger.error("Embedding storage implementation is unavailable")
+            return None, None
+
         embeddings_array, _ = await embedding_storage.get_embeddings()
 
         if embeddings_array is None:
@@ -299,16 +301,18 @@ async def load_thread_id_map(file_path: Union[str, Path]) -> Optional[Dict[str, 
         Dictionary mapping thread IDs to embedding indices, or None if loading fails
     """
     try:
-        # Import Object Storage client
-        from replit.object_storage import Client
-        from config.storage import ReplitObjectEmbeddingStorage
         from config.chanscope_config import ChanScopeConfig
+        from config.storage import StorageFactory
 
-        # Initialize storage
+        # Initialize storage using environment-aware factory so Docker uses local files.
         config = ChanScopeConfig.from_env()
-        embedding_storage = ReplitObjectEmbeddingStorage(config)
+        storage = StorageFactory.create(config, env_type=config.env)
+        embedding_storage = storage.get('embeddings')
 
-        # Get embeddings and thread map from Object Storage
+        if embedding_storage is None:
+            logger.error("Embedding storage implementation is unavailable")
+            return None
+
         _, thread_id_map = await embedding_storage.get_embeddings()
 
         if thread_id_map is None:

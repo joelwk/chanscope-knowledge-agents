@@ -472,75 +472,68 @@ async def _fetch_embeddings_for_threads(thread_ids: List[str]) -> Dict[str, List
         Dictionary mapping thread IDs to their embeddings
     """
     try:
-        # Import Object Storage client
-        try:
-            from replit.object_storage import Client
-            from config.storage import ReplitObjectEmbeddingStorage
-            from config.chanscope_config import ChanScopeConfig
-        except ImportError as e:
-            logging.warning(f"Could not import Object Storage modules: {e}")
-            return {}
-        
-        # Initialize storage
-        try:
-            config = ChanScopeConfig.from_env()
-            embedding_storage = ReplitObjectEmbeddingStorage(config)
-        except Exception as e:
-            logging.warning(f"Could not initialize Object Storage: {e}")
-            return {}
-        
-        # Get embeddings and thread map from Object Storage
-        try:
-            # Directly use the embedding_storage's get_embeddings method
-            # This avoids any circular imports with embedding_ops
-            embeddings_array, thread_id_map = await embedding_storage.get_embeddings()
-            
-            if embeddings_array is None or thread_id_map is None:
-                logging.warning("Could not load embeddings or thread ID map from Object Storage")
-                return {}
-                
-            # Convert thread IDs to strings for consistent comparison
-            thread_id_map = {str(k).strip(): v for k, v in thread_id_map.items()}
-            thread_ids = [str(tid).strip() for tid in thread_ids]
-            
-            # Create mapping of thread IDs to embeddings
-            embeddings_dict = {}
-            missing_ids = []
-            invalid_indices = []
-            
-            for thread_id in thread_ids:
-                if thread_id in thread_id_map:
-                    idx = thread_id_map[thread_id]
-                    if idx < len(embeddings_array):
-                        embeddings_dict[thread_id] = embeddings_array[idx].tolist()
-                    else:
-                        invalid_indices.append(idx)
-                else:
-                    missing_ids.append(thread_id)
-            
-            # Log debugging information
-            if missing_ids and len(missing_ids) < 10:
-                logging.debug(f"Missing thread IDs: {missing_ids}")
-            elif missing_ids:
-                logging.debug(f"Missing {len(missing_ids)} thread IDs out of {len(thread_ids)}")
-                
-            if invalid_indices:
-                logging.warning(f"Found {len(invalid_indices)} invalid indices in thread map")
-                
-            if embeddings_dict:
-                logging.info(f"Successfully retrieved {len(embeddings_dict)} embeddings out of {len(thread_ids)} requested")
-            else:
-                logging.warning("No embeddings found for the requested thread IDs")
-                    
-            return embeddings_dict
-        except Exception as e:
-            logging.error(f"Error retrieving embeddings from storage: {e}")
-            logging.debug(traceback.format_exc())
-            return {}
-            
+        from config.chanscope_config import ChanScopeConfig
+        from config.storage import StorageFactory
+    except ImportError as e:
+        logging.warning(f"Could not import storage configuration modules: {e}")
+        return {}
+
+    try:
+        config = ChanScopeConfig.from_env()
+        storage = StorageFactory.create(config, env_type=config.env)
+        embedding_storage = storage.get('embeddings')
     except Exception as e:
-        logging.error(f"Error fetching embeddings: {e}")
-        logging.error(traceback.format_exc())
+        logging.warning(f"Could not initialize embedding storage: {e}")
+        return {}
+
+    if embedding_storage is None:
+        logging.warning("Embedding storage implementation is unavailable")
+        return {}
+
+    try:
+        embeddings_array, thread_id_map = await embedding_storage.get_embeddings()
+        
+        if embeddings_array is None or thread_id_map is None:
+            logging.warning("Could not load embeddings or thread ID map from storage")
+            return {}
+            
+        # Convert thread IDs to strings for consistent comparison
+        thread_id_map = {str(k).strip(): v for k, v in thread_id_map.items()}
+        thread_ids = [str(tid).strip() for tid in thread_ids]
+        
+        # Create mapping of thread IDs to embeddings
+        embeddings_dict: Dict[str, List[float]] = {}
+        missing_ids: List[str] = []
+        invalid_indices: List[int] = []
+        
+        for thread_id in thread_ids:
+            if thread_id in thread_id_map:
+                idx = thread_id_map[thread_id]
+                if idx < len(embeddings_array):
+                    embeddings_dict[thread_id] = embeddings_array[idx].tolist()
+                else:
+                    invalid_indices.append(idx)
+            else:
+                missing_ids.append(thread_id)
+        
+        # Log debugging information
+        if missing_ids and len(missing_ids) < 10:
+            logging.debug(f"Missing thread IDs: {missing_ids}")
+        elif missing_ids:
+            logging.debug(f"Missing {len(missing_ids)} thread IDs out of {len(thread_ids)}")
+        
+        if invalid_indices:
+            logging.warning(f"Found {len(invalid_indices)} invalid indices in thread map")
+        
+        if embeddings_dict:
+            logging.info(f"Successfully retrieved {len(embeddings_dict)} embeddings out of {len(thread_ids)} requested")
+        else:
+            logging.warning("No embeddings found for the requested thread IDs")
+        
+        return embeddings_dict
+    except Exception as e:
+        logging.error(f"Error retrieving embeddings from storage: {e}")
+        logging.debug(traceback.format_exc())
         return {}
 
 async def save_embeddings_to_numpy(
@@ -768,4 +761,3 @@ async def clean_logs(log_dir: Union[str, Path] = None) -> bool:
         logger.error(f"Error cleaning logs: {e}")
         logger.error(traceback.format_exc())
         return False
-

@@ -768,8 +768,8 @@ curl -X POST "http://localhost/api/v1/query" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "Market sentiment analysis",
-    "task_id": "market_analysis_2024_01_15",
-    "use_background": true
+    "task_id": "market_analysis_1",
+    "use_background": false
   }'
 
 # Check status later

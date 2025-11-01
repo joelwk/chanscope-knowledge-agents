@@ -1,0 +1,431 @@
+---
+alwaysApply: false
+---
+## Knowledge Agents API quick reference
+
+- **Base router prefix**: `/api/v1` (all routes from domain-specific routers in `api/routers/` are mounted under this)
+- **App-level utility endpoints** (from `api/app.py`) live at `/` and some `/api/v1/*` paths as noted.
+- **Refresh dashboard**: Mounted at `/refresh` (from `api/refresh_dashboard.py`)
+- **Auth**: none
+- **Content type**: `application/json`
+- **Middleware**: RequestIDMiddleware adds `X-Request-ID` header to all responses
+
+### Conventions
+
+- **Task IDs**: format `prefix_<unix_timestamp>_<8-hex>`, e.g., `query_1713200000_deadbeef`
+- **Background vs synchronous**: many endpoints can run in background and return `{"status":"processing","task_id":...}`; use `/api/v1/batch_status/{task_id}` to poll
+- **Environment notes**:
+  - NL-to-SQL endpoints are enabled only in Replit; Docker/local returns `400 ENVIRONMENT_RESTRICTION`
+  - Storage behavior differs by environment but API surfaces a consistent contract
+
+## Health and diagnostics
+
+### GET `/api/v1/` 
+Returns API documentation pointer with endpoint paths.
+- Response: `{"documentation": {...}}` (includes links to all API endpoints)
+
+### GET `/` (app-level)
+Ultra-light health.
+- Response: `{"status": "ok", "ready": true}`
+
+### GET `/healthz` (app-level)
+- Response includes timestamp.
+
+### GET `/api/v1/health`
+Fast, minimal health.
+- Response: `{"status": "ok", "timestamp": "...", "environment": "..."}`
+
+### GET `/api/v1/healthz`
+- Response: `{"status": "ok", "ready": true}`
+
+### GET `/api/v1/health_replit`
+Extended Replit info (URLs, ports, paths, system, etc.).
+
+### GET `/api/v1/health/connections`
+Checks external providers (e.g., OpenAI).
+
+### GET `/api/v1/health/s3`
+S3 connectivity and latency.
+
+### GET `/api/v1/health/provider/{provider}`
+Provider-specific health. `provider` in `{"openai","grok","venice"}`.
+
+### GET `/api/v1/health/all`
+Health for all configured providers.
+
+### GET `/api/v1/health/cache`
+In-memory cache stats.
+
+### GET `/api/v1/health/embeddings`
+Embedding coverage/quality metrics.
+
+### GET `/api/v1/api_health`
+Simple ok/ready status.
+
+### GET `/api/v1/debug/routes`
+Lists all registered routes.
+
+### GET|POST|OPTIONS `/api/v1/debug/request`
+Echoes request details (headers, query params, and JSON body if POST).
+
+### GET `/api/v1/metrics`
+Exposes cache stats and basic process metrics (not included in OpenAPI schema).
+- Response includes cache hit/miss ratios, process memory usage, etc.
+
+## Query processing
+
+### POST `/api/v1/query`
+Run a single retrieval-and-summarization query.
+
+- Body (QueryRequest; key fields shown):
+  - **query**: string (required)
+  - task_id: string (4–64, `[a-zA-Z0-9_-]+`); if omitted, server generates one
+  - use_background: boolean (default true). If true, returns immediately with task id
+  - skip_batching: boolean (default false)
+  - skip_cache: boolean (default false)
+  - force_refresh: boolean (default false)
+  - skip_embeddings: boolean (default false)
+  - character_slug: string (optional)
+  - filter_date: optional string (format: YYYY-MM-DD HH:MM:SS+00:00)
+  - select_board: optional string (e.g., "biz", "pol")
+  - sample_size: optional int
+  - embedding_batch_size: optional int
+  - chunk_batch_size: optional int
+  - summary_batch_size: optional int
+  - max_workers: optional int
+  - embedding_provider: optional string ("openai", "grok", "venice")
+  - chunk_provider: optional string ("openai", "grok", "venice")
+  - summary_provider: optional string ("openai", "grok", "venice")
+
+Example (sync):
+```json
+{
+  "query": "Summarize latest AI regulatory developments",
+  "use_background": false,
+  "force_refresh": false,
+  "skip_embeddings": true
+}
+```
+
+Note: `use_background` defaults to `true`, so explicitly set to `false` for synchronous processing.
+
+- Sync response:
+```json
+{
+  "status": "completed",
+  "task_id": "query_1713200000_deadbeef",
+  "chunks": [...],
+  "summary": "...",
+  "metadata": {
+    "processing_time_ms": 1234.56,
+    "saved_files": {
+      "json": "data/generated_data/...",
+      "embeddings": "data/generated_data/embeddings/..."
+    },
+    "storage_type": "filesystem"
+  }
+}
+```
+
+- Background response:
+```json
+{
+  "status": "processing",
+  "task_id": "query_1713200000_deadbeef",
+  "message": "Query processing started in background"
+}
+```
+
+### POST `/api/v1/batch_process`
+Optimized batch of multiple queries.
+
+- Body (BatchQueryRequest; key fields):
+  - **queries**: array of strings (required)
+  - config: optional QueryRequest object (shared config for all queries)
+  - chunk_batch_size: optional int
+  - summary_batch_size: optional int
+  - max_workers: optional int
+  - force_refresh: boolean (default false)
+  - skip_embeddings: boolean (default false)
+  - skip_cache: boolean (default false)
+  - character_slug: optional string
+  - task_id: optional string (4–64, `[a-zA-Z0-9_-]+`)
+
+Example:
+```json
+{
+  "queries": [
+    "Impact of bitcoin ETF announcements in last 24h",
+    "Regulatory actions on AI in last week"
+  ],
+  "skip_embeddings": true
+}
+```
+
+- Response:
+```json
+{
+  "batch_id": "batch_1713200000_beadfeed",
+  "results": [
+    {"chunks":[...], "summary":"...", "metadata": {...}},
+    {"chunks":[...], "summary":"...", "metadata": {...}}
+  ],
+  "metadata": {
+    "total_time_ms": 2500.0,
+    "avg_time_per_query_ms": 1250.0,
+    "queries_processed": 2,
+    "saved_results": [
+      {
+        "result_id": "batch_..._item_0",
+        "query": "Impact of bitcoin ETF announcements in last 24h",
+        "saved": true,
+        "file_paths": {"json": "data/generated_data/..."}
+      }
+    ],
+    "timestamp": "..."
+  }
+}
+```
+
+### GET `/api/v1/batch_status/{task_id}`
+Check status for a single-query task or a batch item.
+
+- Responses:
+  - If still tracked:
+    ```json
+    { "status": "processing" | "queued" | "completed" | "failed", ... }
+    ```
+  - Completed result:
+    ```json
+    { "status": "completed", "result": { "id": "...", "chunks": [...], "summary": "...", "metadata": {...} } }
+    ```
+
+### GET `/api/v1/process_recent_query`
+Run a recency-biased query using last 6-12 hours by default.
+
+- Query params:
+  - select_board: optional string (`"biz"` | `"pol"` | null)
+  - task_id: optional string (4–64, `[a-zA-Z0-9_-]+`)
+  - use_background: boolean (default false)
+  - filter_date: optional string (ISO-like; fallback if default window fails)
+  - force_refresh: boolean (default false)
+- Returns same structure as `/api/v1/query` (uses batch processing internally).
+
+## Embedding management
+
+### POST `/api/v1/trigger_embedding_generation`
+Starts background embedding generation if stratified sample is present.
+
+- Response:
+```json
+{
+  "status": "started" | "already_running" | "needs_stratification",
+  "message": "...",
+  "task_id": "embedding_generation" | null
+}
+```
+
+### GET `/api/v1/embedding_status`
+- Response:
+```json
+{
+  "status": "not_started" | "running" | "completed" | "failed",
+  "message": "...",
+  "progress": 0,
+  "start_time": "...",
+  "end_time": null,
+  "total_rows": 0
+}
+```
+
+## Stratification and data preparation
+
+### POST `/api/v1/stratify`
+Runs stratified sampling on complete dataset.
+
+- Response:
+```json
+{
+  "status": "success",
+  "message": "Stratification completed successfully",
+  "data": {
+    "stratified_rows": 12345,
+    "stratified_file": "path/to/stratified_sample.csv"
+  }
+}
+```
+
+### POST `/api/v1/data/stratify`
+Runs stratified sampling on complete dataset (same as `/api/v1/stratify`).
+
+- Response:
+```json
+{
+  "status": "success",
+  "message": "Stratification completed successfully",
+  "timestamp": "...",
+  "total_records": 12345,
+  "stratified_records": 10000,
+  "sample_size": 10000,
+  "stratification_details": {...}
+}
+```
+
+### POST `/api/v1/data/prepare`
+Placeholder endpoint (not yet implemented).
+- Returns: `{"status": "not_implemented", "message": "Data preparation endpoint not yet implemented"}`
+
+## Natural language to SQL (Replit only)
+
+### Models
+
+- Request `NLQueryRequest`:
+  - **query**: string
+  - limit: int (default 100)
+  - provider: string (ignored; static providers used)
+  - format_for_llm: boolean (default true)
+
+- Response `NLQueryResponse`:
+  - status: "success"
+  - query: string
+  - description: object (parsed intent)
+  - sql: string
+  - record_count: int
+  - data: array of objects (datetime fields isoformatted; long content truncated)
+  - execution_time_ms: number
+  - metadata: object (includes providers used and file paths if saved)
+
+### POST `/api/v1/nl_query`
+Generates SQL via LLM and runs it against `complete_data` in Postgres (Replit-only).
+
+Example request:
+```json
+{
+  "query": "Find 5 rows from the last 12 hours containing tariff",
+  "limit": 5,
+  "format_for_llm": true
+}
+```
+
+Example response (abridged):
+```json
+{
+  "status": "success",
+  "query": "Find 5 rows from the last 12 hours containing tariff",
+  "description": { "original_query": "...", "filters": ["Time: Last 12 hours","Limit: 5","Content: Contains 'tariff'"] },
+  "sql": "SELECT * FROM complete_data WHERE posted_date_time >= $1 AND content ILIKE $2 ORDER BY posted_date_time DESC LIMIT $3",
+  "record_count": 5,
+  "data": [{ "id": 123, "content": "...", "posted_date_time": "2025-04-14T13:31:41+00:00", "thread_id": "1764..." }],
+  "execution_time_ms": 190.2,
+  "metadata": {
+    "processing_time_ms": 190.2,
+    "sql_generation_method": "llm",
+    "providers_used": { "enhancer": "openai", "generator": "venice" },
+    "saved_files": { "json": "data/generated_data/..." },
+    "task_id": "nlquery_1713200000_deadbeef",
+    "storage_type": "object_storage"
+  }
+}
+```
+
+- If not Replit: `400` with
+```json
+{
+  "error": "ENVIRONMENT_RESTRICTION",
+  "message": "Natural language queries are only available in the Replit environment where PostgreSQL is properly configured.",
+  "environment": "docker",
+  "possible_solution": "This feature requires a PostgreSQL database with the complete_data table. Please check the documentation for setup instructions."
+}
+```
+
+- Note: This endpoint is only available in Replit environment where PostgreSQL is configured.
+
+## Admin
+
+### POST `/api/v1/admin/cleanup`
+Cleans memory cache and old on-disk generated files.
+
+- Query param: `force` (boolean, default false). If true, delete all generated JSON and embeddings regardless of age.
+- Response:
+```json
+{
+  "status": "success",
+  "memory_cleanup": { "items_before": 10, "items_removed": 10, "items_remaining": 0 },
+  "disk_cleanup": { "files_removed": 3, "retention_period_hours": 24, "force_applied": false },
+  "duration_ms": 123.45
+}
+```
+
+## App-level data initialization helpers
+
+### GET `/trigger-data-processing`
+Starts background data prep task; returns start acknowledgment.
+
+### GET `/api/v1/force-initialization`
+Forces background initialization regardless of `AUTO_CHECK_DATA`.
+
+### GET `/api/v1/initialization-status`
+Reports env vars and file existence for `complete_data`, `stratified_sample`, `embeddings`, and `thread_id_map`.
+
+- Response:
+```json
+{
+  "environment_variables": {
+    "AUTO_CHECK_DATA": "...",
+    "FORCE_DATA_REFRESH": "...",
+    "SKIP_EMBEDDINGS": "..."
+  },
+  "data_files": {
+    "complete_data": {"path": "...", "exists": true},
+    "stratified_sample": {"path": "...", "exists": true},
+    "embeddings": {"path": "...", "exists": true},
+    "thread_id_map": {"path": "...", "exists": true}
+  },
+  "ready": true,
+  "time": "..."
+}
+```
+
+## Refresh Dashboard
+
+The refresh dashboard is mounted at `/refresh` and provides a web interface for monitoring and controlling automated data refreshes.
+
+### Endpoints
+
+- `GET /refresh/` - Web dashboard UI
+- `GET /refresh/api/status` - Get refresh status
+- `GET /refresh/api/metrics` - Get refresh performance metrics
+- `POST /refresh/api/control` - Control refresh (start/stop/refresh_once)
+- `POST /refresh/api/config` - Update refresh configuration
+- `GET /refresh/health` - Health check
+
+- Authentication: Uses `REFRESH_CONTROL_TOKEN` or `DASHBOARD_CONTROL_TOKEN` env var if set (header `X-Refresh-Token` or query param `token`)
+
+## Errors
+
+- Validation errors (e.g., invalid task IDs) return structured details with appropriate HTTP status.
+- Error responses follow format:
+```json
+{
+  "detail": "Error message",
+  "error_code": "ERROR_CODE",
+  "status_code": 400,
+  "additional_info": {...}
+}
+```
+- Provider/storage failures return error JSON with `message`, `error_code` (when applicable), and `details`.
+
+## Polling flow example
+
+1) POST `/api/v1/query` with `{"query":"...", "use_background":true}` → get `task_id`
+2) Poll GET `/api/v1/batch_status/{task_id}` until `status:"completed"`
+3) Read `result.chunks`, `result.summary`, and `result.metadata`
+
+## Notes
+
+- All router endpoints are mounted under `/api/v1` prefix
+- Domain-specific routers: `health.py`, `query.py`, `data.py`, `embeddings.py`, `admin.py`
+- Request ID middleware adds `X-Request-ID` header to all responses for tracing
+- Cache system: In-memory cache with configurable TTL (default 1 hour)
+- Background tasks: Managed via FastAPI BackgroundTasks and shared task registry
+- Task IDs: Format `prefix_<unix_timestamp>_<8-hex>` (e.g., `query_1713200000_deadbeef`)
