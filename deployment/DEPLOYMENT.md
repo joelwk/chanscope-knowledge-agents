@@ -831,6 +831,17 @@ The Knowledge Agent includes a web-based refresh dashboard for monitoring and co
 - **Docker**: `http://localhost/refresh`
 - **Replit**: `https://your-app.replit.app/refresh`
 
+### Quick Deployment Script
+
+Use the unified helper to launch the dashboard with production defaults:
+
+```bash
+bash deployment/deploy_frontend.sh --env=docker            # mirrors docker-compose production stack
+bash deployment/deploy_frontend.sh --env=local --port=8080 # run locally on port 8080
+```
+
+The script verifies `libstdc++.so.6`, prepares dependencies (local mode), and reuses the same FastAPI app served in production.
+
 ### Dashboard Features
 
 - **System Status**: Real-time status of refresh operations

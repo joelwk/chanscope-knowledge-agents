@@ -13,6 +13,7 @@ ENV DATA_REFRESH_INTERVAL 3600
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the container
