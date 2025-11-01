@@ -1,8 +1,11 @@
 #!/bin/bash
 # Deployment startup script for production
-# This script starts the main API server on port 5000 for health checks
+# This script starts the main API server and refresh dashboard for deployments.
 
-echo "Starting Replit deployment startup..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+echo "Starting Replit deployment startup from ${PROJECT_ROOT}..."
 
 # Create essential directories
 mkdir -p data temp_files data/stratified logs
@@ -11,22 +14,27 @@ mkdir -p data temp_files data/stratified logs
 cat > /tmp/deployment_env_override.sh << 'EOF'
 export AUTO_CHECK_DATA="false"
 export AUTO_PROCESS_DATA_ON_INIT="false"
-export API_PORT="5000"
 export INIT_WAIT_TIME="20"
 EOF
 
 # Source the override file
 source /tmp/deployment_env_override.sh
 
-# Run the initialization in background after a longer delay
-(sleep 60 && bash scripts/replit_init.sh 2>&1 | tee -a logs/init.log) &
+# Determine the serving port: prefer $PORT (Autoscale), fall back to $API_PORT, then 8080
+TARGET_PORT="${PORT:-${API_PORT:-8080}}"
+export API_PORT="${TARGET_PORT}"
+export PORT="${TARGET_PORT}"
 
-# Start the main API server on port 5000 (this is what health checks will hit)
+# Run the initialization in background after a short delay
+INIT_DELAY="${INIT_DELAY:-10}"
+echo "Scheduling background initialization after ${INIT_DELAY}s delay..."
+(sleep "${INIT_DELAY}" && bash scripts/replit_init.sh 2>&1 | tee -a logs/init.log) &
+
+# Start the main API server (health checks hit this port)
 # Enable automatic refresh manager with configurable interval (default 3600 seconds = 1 hour)
-echo "Starting main API server on port 5000 with automatic database refresh..."
-cd /home/runner/workspace && \
+echo "Starting main API server on port ${TARGET_PORT} with automatic database refresh..."
+cd "${PROJECT_ROOT}" && \
   AUTO_CHECK_DATA=true \
   AUTO_REFRESH_MANAGER=true \
   DATA_REFRESH_INTERVAL=${DATA_REFRESH_INTERVAL:-3600} \
-  API_PORT=5000 \
   python -m api.app
