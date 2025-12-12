@@ -16,6 +16,7 @@ WARNING: This operation is irreversible. All data will be permanently lost.
 import os
 import sys
 import logging
+import importlib
 from pathlib import Path
 import argparse
 import contextlib
@@ -34,7 +35,11 @@ logger = logging.getLogger("data_wipe")
 
 # Import environment loading utilities
 from config.env_loader import load_environment, is_replit_environment, is_docker_environment
+from scripts.utils.runtime_fixes import ensure_libstdcxx
 load_environment()
+
+# Ensure libstdc++ is available before heavy native imports (pandas/psycopg2)
+ensure_libstdcxx()
 
 def confirm_wipe(non_interactive: bool = False) -> bool:
     """Ask for user confirmation before proceeding with data wipe."""
