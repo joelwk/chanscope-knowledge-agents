@@ -1,5 +1,6 @@
 """Model operations and API interactions module."""
 import os
+import re
 import yaml
 import logging
 import asyncio
@@ -414,6 +415,8 @@ class KnowledgeAgent:
                     self._clients = self._initialize_clients()
                     # Add a cache for models that don't support temperature
                     self._models_without_temperature = set()
+                    # Cache unsupported params per model to avoid repeated 400s
+                    self._unsupported_params_by_model: Dict[str, set] = {}
                     self._initialized = True
                     logger.info("Initialized KnowledgeAgent singleton")
                     
@@ -698,6 +701,58 @@ class KnowledgeAgent:
                 return 'deepseek-r1-671b'
             raise ValueError(f"No model available for provider {provider}")
 
+    def _get_unsupported_params_for_model(self, model: str) -> set:
+        """Get cached unsupported params for a model.
+        
+        Used to avoid repeated 400s for the same (model, param) combination by
+        filtering parameters before making API calls.
+        """
+        if not model:
+            return set()
+
+        unsupported = set(self._unsupported_params_by_model.get(model, set()))
+
+        # If we've learned temperature is unsupported, assume related penalties are too.
+        if model in self._models_without_temperature:
+            unsupported.update({"temperature", "presence_penalty", "frequency_penalty"})
+
+        # Heuristic: GPT-5 Chat Completions rejects presence/frequency penalties.
+        # (Still handled dynamically via error parsing if this changes.)
+        if model.startswith("gpt-5"):
+            unsupported.update({"presence_penalty", "frequency_penalty"})
+
+        return unsupported
+
+    def _mark_unsupported_params_for_model(self, model: str, params: List[str]) -> None:
+        """Record params that are unsupported for a given model."""
+        if not model or model == "unknown":
+            return
+
+        unsupported = self._unsupported_params_by_model.setdefault(model, set())
+        for param in params:
+            unsupported.add(param)
+            if param == "temperature":
+                self._models_without_temperature.add(model)
+
+    @staticmethod
+    def _extract_unsupported_param_name(error: Exception) -> Optional[str]:
+        """Extract the unsupported parameter name from an API error, if present."""
+        body = getattr(error, "body", None)
+        if isinstance(body, dict):
+            err = body.get("error", body)
+            if isinstance(err, dict):
+                if err.get("code") == "unsupported_parameter" and err.get("param"):
+                    return err["param"]
+
+        error_str = str(error)
+        if "unsupported parameter" not in error_str.lower():
+            return None
+
+        match = re.search(r"Unsupported parameter:\s*['\"]([^'\"]+)['\"]", error_str)
+        if match:
+            return match.group(1)
+        return None
+
     def _prepare_model_params(self, provider: ModelProvider, base_params: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare model parameters according to provider requirements.
         
@@ -713,31 +768,35 @@ class KnowledgeAgent:
         """
         model = base_params.get("model", "")
         request_params = base_params.copy()
-        
-        # Skip adding additional parameters if this model doesn't support them
-        if model in self._models_without_temperature:
-            return request_params
-            
+
+        unsupported = self._get_unsupported_params_for_model(model)
+
         # Provider-specific parameter configurations
         if provider == ModelProvider.GROK:
             # Grok only supports temperature, not presence/frequency penalty
-            request_params.update({
-                "temperature": request_params.get("temperature", 0.3)
-            })
+            request_params.pop("presence_penalty", None)
+            request_params.pop("frequency_penalty", None)
+            if "temperature" not in unsupported:
+                request_params.setdefault("temperature", 0.3)
         elif provider == ModelProvider.OPENAI:
-            # OpenAI supports all parameters
-            request_params.update({
-                "temperature": request_params.get("temperature", 0.3),
-                "presence_penalty": request_params.get("presence_penalty", 0.2),
-                "frequency_penalty": request_params.get("frequency_penalty", 0.2)
-            })
+            if "temperature" not in unsupported:
+                request_params.setdefault("temperature", 0.3)
+            if "presence_penalty" not in unsupported:
+                request_params.setdefault("presence_penalty", 0.2)
+            if "frequency_penalty" not in unsupported:
+                request_params.setdefault("frequency_penalty", 0.2)
         elif provider == ModelProvider.VENICE:
             # Venice parameters
-            request_params.update({
-                "temperature": request_params.get("temperature", 0.3),
-                "presence_penalty": request_params.get("presence_penalty", 0.2),
-                "frequency_penalty": request_params.get("frequency_penalty", 0.2)
-            })
+            if "temperature" not in unsupported:
+                request_params.setdefault("temperature", 0.3)
+            if "presence_penalty" not in unsupported:
+                request_params.setdefault("presence_penalty", 0.2)
+            if "frequency_penalty" not in unsupported:
+                request_params.setdefault("frequency_penalty", 0.2)
+
+        # Remove any cached-unsupported params that may have been set upstream.
+        for param in unsupported:
+            request_params.pop(param, None)
             
         return request_params
         
@@ -757,35 +816,46 @@ class KnowledgeAgent:
         Raises:
             Exception: If the error is not related to parameters
         """
-        try:
-            return await client.chat.completions.create(**request_params)
-        except Exception as e:
-            error_str = str(e)
-            model = request_params.get("model", "unknown")
-            
-            # Handle temperature-related errors
-            if "temperature" in error_str and ("unsupported" in error_str or "not supported" in error_str):
-                logger.warning(f"Temperature not supported by model {model}, retrying without temperature parameters")
-                # Remember this model doesn't support temperature for future requests
-                self._models_without_temperature.add(model)
-                # Remove temperature-related parameters
-                for param in ["temperature", "presence_penalty", "frequency_penalty"]:
-                    if param in request_params:
-                        del request_params[param]
-                # Retry without temperature parameters
+        for _attempt in range(3):
+            try:
                 return await client.chat.completions.create(**request_params)
-            # Handle other parameter-related errors
-            elif any(x in error_str.lower() for x in ["not supported", "invalid argument", "presencepenalty", "frequencypenalty"]):
-                logger.warning(f"Parameter not supported by model {model}: {error_str}, retrying with basic parameters")
-                # Strip out all optional parameters
-                basic_params = {
-                    "model": model,
-                    "messages": request_params["messages"]
-                }
-                # Retry with only basic parameters
-                return await client.chat.completions.create(**basic_params)
-            else:
-                # If it's not a parameter-related error, re-raise
+            except Exception as e:
+                error_str = str(e)
+                model = request_params.get("model", "unknown")
+
+                unsupported_param = self._extract_unsupported_param_name(e)
+                if unsupported_param:
+                    if unsupported_param == "temperature":
+                        params_to_remove = ["temperature", "presence_penalty", "frequency_penalty"]
+                    elif unsupported_param in {"presence_penalty", "frequency_penalty"}:
+                        params_to_remove = ["presence_penalty", "frequency_penalty"]
+                    else:
+                        params_to_remove = [unsupported_param]
+
+                    removed_any = False
+                    for param in params_to_remove:
+                        if param in request_params:
+                            removed_any = True
+                            request_params.pop(param, None)
+
+                    self._mark_unsupported_params_for_model(model, params_to_remove)
+
+                    if removed_any:
+                        logger.warning(
+                            f"Parameter not supported by model {model}: {unsupported_param}, "
+                            f"retrying without {', '.join(params_to_remove)}"
+                        )
+                        continue
+
+                # Fallback for other parameter-related errors where we can't identify the param.
+                if any(x in error_str.lower() for x in ["not supported", "invalid argument", "unsupported parameter"]):
+                    logger.warning(f"Parameter-related error for model {model}: {error_str}, retrying with basic parameters")
+                    basic_params = {
+                        "model": model,
+                        "messages": request_params["messages"]
+                    }
+                    return await client.chat.completions.create(**basic_params)
+
                 raise
 
     async def generate_summary(
