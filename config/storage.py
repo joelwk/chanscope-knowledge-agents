@@ -25,6 +25,29 @@ from config.settings import Config
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Replit dependency placeholders (allow imports/mocking without hard failures)
+PostgresDB = None
+KeyValueStore = None
+DatabaseConnectionError = Exception
+db = None
+
+try:
+    from config.replit import (
+        PostgresDB as _PostgresDB,
+        KeyValueStore as _KeyValueStore,
+        DatabaseConnectionError as _DatabaseConnectionError,
+    )
+    PostgresDB = _PostgresDB
+    KeyValueStore = _KeyValueStore
+    DatabaseConnectionError = _DatabaseConnectionError
+    try:
+        from replit import db as _db  # Optional; used for tests/mocking
+        db = _db
+    except Exception:
+        db = None
+except Exception as exc:
+    logger.warning("Replit dependencies unavailable: %s", exc)
+
 # Patch for Google Cloud Storage credentials to fix the universe_domain issue
 def patch_gcs_credentials():
     """Apply a global patch to Google Cloud Storage credentials to add universe_domain attribute.
@@ -478,17 +501,31 @@ class FileStateManager(StateManager):
             logger.error(f"Error checking operation status: {e}")
             return False
 
-# Replit implementations (use our existing classes from replit.py)
-if os.environ.get('REPLIT_ENV', 'false').lower() in ('true', 'replit', '1', 'yes'):
-    from config.replit import PostgresDB, KeyValueStore, DatabaseConnectionError
+# Replit implementations (use our existing classes from replit.py when available)
+if PostgresDB is None:
+    class PostgresDB:  # type: ignore[override]
+        def __init__(self, *args, **kwargs):
+            raise ImportError("PostgresDB unavailable; install replit/psycopg2 dependencies")
+
+if KeyValueStore is None:
+    class KeyValueStore:  # type: ignore[override]
+        def __init__(self):
+            self._state = {}
+
+        def update_processing_state(self, state):
+            self._state["processing_state"] = state
+
+        def get_processing_state(self):
+            return self._state.get("processing_state")
 
 class ReplitCompleteDataStorage(CompleteDataStorage):
     """Replit PostgreSQL implementation of complete dataset storage."""
     
     def __init__(self, config):
         """Initialize with configuration."""
-        from config.replit import PostgresDB
         self.config = config
+        if PostgresDB is None:
+            raise ImportError("PostgresDB unavailable; install replit/psycopg2 dependencies")
         self.db = PostgresDB()
         
         # Get chunk settings from config
@@ -1152,7 +1189,8 @@ class ReplitStateManager(StateManager):
     
     def __init__(self, config):
         self.config = config
-        from config.replit import KeyValueStore
+        if KeyValueStore is None:
+            raise ImportError("KeyValueStore unavailable; install replit dependencies")
         self.kv_store = KeyValueStore()
     
     async def update_state(self, state: Dict[str, Any]) -> None:
@@ -1241,7 +1279,7 @@ class StorageFactory:
         """
         if env_type is None:
             # Use the centralized detection function
-            env_type = detect_environment()
+            env_type = getattr(config, "env", None) or detect_environment()
         
         logger.info(f"Creating storage implementations for environment: {env_type}")
         
