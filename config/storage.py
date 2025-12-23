@@ -1273,22 +1273,19 @@ class ReplitStateManager(StateManager):
     def __init__(self, config):
         self.config = config
         test_mode = os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes")
-        if KeyValueStore is None:
-            if not test_mode:
-                raise ImportError("KeyValueStore unavailable; install replit dependencies")
-            logger.warning("KeyValueStore unavailable; using in-memory state store for tests")
+        if test_mode:
+            logger.info("TEST_MODE enabled; using in-memory state store for ReplitStateManager")
             self.kv_store = _InMemoryStateStore()
-        else:
-            try:
-                self.kv_store = KeyValueStore()
-            except Exception as e:
-                if not test_mode:
-                    raise
-                logger.warning(
-                    "Failed to initialize KeyValueStore (%s); using in-memory state store for tests",
-                    e,
-                )
-                self.kv_store = _InMemoryStateStore()
+            return
+
+        if KeyValueStore is None:
+            raise ImportError("KeyValueStore unavailable; install replit dependencies")
+
+        try:
+            self.kv_store = KeyValueStore()
+        except Exception as e:
+            logger.error("Failed to initialize KeyValueStore: %s", e)
+            raise
     
     async def update_state(self, state: Dict[str, Any]) -> None:
         """Update state in Key-Value store."""
