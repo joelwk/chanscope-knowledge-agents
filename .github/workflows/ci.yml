@@ -33,7 +33,7 @@ jobs:
           AUTO_CHECK_DATA: "true"
           FORCE_DATA_REFRESH: "false"
           PYTHONUNBUFFERED: "1"
-        run: bash scripts/run_tests.sh --env=local --no-logs
+        run: bash scripts/run_tests.sh --env=local
 
       - name: Upload test artifacts
         if: always()

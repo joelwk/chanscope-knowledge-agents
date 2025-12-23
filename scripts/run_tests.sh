@@ -26,6 +26,7 @@ SHOW_LOGS="true"
 USE_MOCK_DATA="true"
 USE_MOCK_EMBEDDINGS="true"
 PYTHON_BIN=""
+LOG_TAIL_LINES=200
 
 # Resolve Python interpreter for local/replit tests (keeps CI/pip in sync)
 resolve_python_bin() {
@@ -59,6 +60,7 @@ show_usage() {
     echo "  --no-mock-embeddings    Use real embeddings instead of mock embeddings (local/Replit only)"
     echo "  --clean                 Clean test volumes before running tests (Docker only)"
     echo "  --no-logs               Don't show logs during test execution"
+    echo "  --log-tail-lines=<n>    Number of log lines to print on failure when using --no-logs (default: $LOG_TAIL_LINES)"
     echo "  --debug                 Enable debug mode with verbose output"
     echo "  --env=<environment>     Specify environment: local, docker, or replit"
     echo "  --help                  Show this help message"
@@ -120,6 +122,10 @@ parse_args() {
                 export SHOW_LOGS="false"
                 shift
                 ;;
+            --log-tail-lines=*)
+                LOG_TAIL_LINES="${1#*=}"
+                shift
+                ;;
             --debug)
                 export DEBUG_MODE="true"
                 shift
@@ -139,6 +145,19 @@ parse_args() {
                 ;;
         esac
     done
+}
+
+# Print tail of log file on failure when running silently
+print_log_tail_on_failure() {
+    local exit_code=$1
+    local log_file=$2
+    local lines=${3:-$LOG_TAIL_LINES}
+
+    if [ "$SHOW_LOGS" = "false" ] && [ "$exit_code" -ne 0 ] && [ -f "$log_file" ]; then
+        echo -e "${YELLOW}--- Last ${lines} lines of log (${log_file}) ---${NC}"
+        tail -n "$lines" "$log_file" || true
+        echo -e "${YELLOW}--- End log excerpt ---${NC}"
+    fi
 }
 
 # Auto-detect environment if not specified
@@ -300,6 +319,7 @@ run_docker_tests() {
     else
         echo -e "${RED}❌ Some tests failed with exit code: $EXIT_CODE${NC}"
         echo -e "${YELLOW}Check the logs for details: $LOG_FILE${NC}"
+        print_log_tail_on_failure "$EXIT_CODE" "$LOG_FILE"
     fi
 
     return $EXIT_CODE
@@ -357,6 +377,7 @@ run_local_tests() {
     else
         echo -e "${RED}❌ Some tests failed with exit code: $EXIT_CODE${NC}"
         echo -e "${YELLOW}Check the logs for details: $LOG_FILE${NC}"
+        print_log_tail_on_failure "$EXIT_CODE" "$LOG_FILE"
     fi
 
     return $EXIT_CODE
@@ -428,6 +449,7 @@ run_replit_tests() {
     else
         echo -e "${RED}❌ Some tests failed with exit code: $EXIT_CODE${NC}"
         echo -e "${YELLOW}Check the logs for details: $LOG_FILE${NC}"
+        print_log_tail_on_failure "$EXIT_CODE" "$LOG_FILE"
     fi
 
     return $EXIT_CODE
