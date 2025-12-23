@@ -3,13 +3,9 @@ from typing import Optional
 from config.settings import Config
 import random
 import logging
-from dotenv import load_dotenv
 from config.config_utils import parse_filter_date
 
 logger = logging.getLogger(__name__)
-
-# Load environment variables
-load_dotenv()
 
 class Sampler:
     """Class to handle data sampling operations."""

@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Import after path setup
 from knowledge_agents.data_processing.chanscope_manager import ChanScopeDataManager
 from config.chanscope_config import ChanScopeConfig
+from scripts.utils.runtime_fixes import ensure_libstdcxx
 from scripts.utils.processing_lock import ProcessLockManager
 
 
@@ -33,6 +34,9 @@ async def process_data(force_refresh: bool = False, skip_embeddings: bool = Fals
         force_refresh: Whether to force refresh all data
         skip_embeddings: Whether to skip embedding generation
     """
+    # Make sure native deps (pandas/numpy) can load even on minimal Replit images
+    ensure_libstdcxx()
+
     print(f"Starting data processing (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})...")
     print("Text validation will be applied at each stage to ensure high-quality data")
     

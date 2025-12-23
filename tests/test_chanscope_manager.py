@@ -55,86 +55,90 @@ SAMPLE_THREAD_MAP = {
     'thread3': 2
 }
 
-class MockCompleteDataStorage(AsyncMock, CompleteDataStorage):
+class MockCompleteDataStorage:
     """Mock implementation of CompleteDataStorage for testing."""
-    
-    async def store_data(self, df):
-        return True
-    
-    async def get_data(self, filter_date=None):
-        return SAMPLE_DF
-    
-    async def is_data_fresh(self):
-        return True
-    
-    async def get_row_count(self):
-        return len(SAMPLE_DF)
 
-class MockStratifiedSampleStorage(AsyncMock, StratifiedSampleStorage):
+    def __init__(self):
+        self.store_data = AsyncMock(return_value=True)
+        self.get_data = AsyncMock(return_value=SAMPLE_DF)
+        self.is_data_fresh = AsyncMock(return_value=True)
+        self.get_row_count = AsyncMock(return_value=len(SAMPLE_DF))
+
+class MockStratifiedSampleStorage:
     """Mock implementation of StratifiedSampleStorage for testing."""
-    
+
     def __init__(self, sample_exists=True):
-        super().__init__()
         self._sample_exists = sample_exists
-    
-    async def store_sample(self, df):
-        return True
-    
-    async def get_sample(self):
+        self.store_sample = AsyncMock(side_effect=self._store_sample)
+        self.get_sample = AsyncMock(side_effect=self._get_sample)
+        self.sample_exists = AsyncMock(side_effect=self._sample_exists_fn)
+
+    async def _get_sample(self):
         if self._sample_exists:
             return SAMPLE_DF
         return None
-    
-    async def sample_exists(self):
+
+    async def _store_sample(self, df):
+        self._sample_exists = True
+        return True
+
+    async def _sample_exists_fn(self):
         return self._sample_exists
 
-class MockEmbeddingStorage(AsyncMock, EmbeddingStorage):
+class MockEmbeddingStorage:
     """Mock implementation of EmbeddingStorage for testing."""
-    
+
     def __init__(self, embeddings_exist=True):
-        super().__init__()
         self._embeddings_exist = embeddings_exist
-    
-    async def store_embeddings(self, embeddings, thread_id_map):
-        return True
-    
-    async def get_embeddings(self):
+        self.store_embeddings = AsyncMock(side_effect=self._store_embeddings)
+        self.get_embeddings = AsyncMock(side_effect=self._get_embeddings)
+        self.embeddings_exist = AsyncMock(side_effect=self._embeddings_exist_fn)
+
+    async def _get_embeddings(self):
         if self._embeddings_exist:
             return SAMPLE_EMBEDDINGS, SAMPLE_THREAD_MAP
         return None, None
-    
-    async def embeddings_exist(self):
+
+    async def _store_embeddings(self, embeddings, thread_id_map):
+        self._embeddings_exist = True
+        return True
+
+    async def _embeddings_exist_fn(self):
         return self._embeddings_exist
 
-class MockStateManager(AsyncMock, StateManager):
+class MockStateManager:
     """Mock implementation of StateManager for testing."""
-    
+
     def __init__(self):
-        super().__init__()
         self.state = {}
         self.operations = {}
-    
-    async def update_state(self, state):
+        self.update_state = AsyncMock(side_effect=self._update_state)
+        self.get_state = AsyncMock(side_effect=self._get_state)
+        self.mark_operation_start = AsyncMock(side_effect=self._mark_operation_start)
+        self.mark_operation_complete = AsyncMock(side_effect=self._mark_operation_complete)
+        self.is_operation_in_progress = AsyncMock(side_effect=self._is_operation_in_progress)
+
+    async def _update_state(self, state):
         self.state.update(state)
-    
-    async def get_state(self):
+
+    async def _get_state(self):
         return self.state
-    
-    async def mark_operation_start(self, operation):
+
+    async def _mark_operation_start(self, operation):
         self.operations[operation] = {
             'status': 'running',
             'start_time': datetime.now().isoformat()
         }
-    
-    async def mark_operation_complete(self, operation, result=None):
+
+    async def _mark_operation_complete(self, operation, result=None):
         if operation in self.operations:
             self.operations[operation].update({
                 'status': 'completed',
                 'end_time': datetime.now().isoformat(),
                 'result': result
             })
-    
-    async def is_operation_in_progress(self, operation):
+
+    async def _is_operation_in_progress(self, operation):
         return operation in self.operations and self.operations[operation].get('status') == 'running'
 
 @pytest.fixture
@@ -210,8 +214,8 @@ async def test_ensure_data_ready_force_refresh_empty(config, mock_storage_empty)
     embedding_storage.store_embeddings.assert_called()
     
     # Verify state manager was updated
-    state_manager.mark_operation_start.assert_called_with("ensure_data_ready")
-    state_manager.mark_operation_complete.assert_called()
+    state_manager.mark_operation_start.assert_any_call("ensure_data_ready")
+    state_manager.mark_operation_complete.assert_any_call("ensure_data_ready", "success")
 
 @pytest.mark.asyncio
 async def test_ensure_data_ready_force_refresh_false_with_data(config, mock_storage_with_data):
@@ -255,8 +259,8 @@ async def test_ensure_data_ready_force_refresh_false_with_data(config, mock_stor
     embedding_storage.store_embeddings.assert_not_called()
     
     # Verify state manager was updated
-    state_manager.mark_operation_start.assert_called_with("ensure_data_ready")
-    state_manager.mark_operation_complete.assert_called()
+    state_manager.mark_operation_start.assert_any_call("ensure_data_ready")
+    state_manager.mark_operation_complete.assert_any_call("ensure_data_ready", "success")
 
 @pytest.mark.asyncio
 async def test_ensure_data_ready_force_refresh_false_no_data(config, mock_storage_empty):
@@ -300,8 +304,8 @@ async def test_ensure_data_ready_force_refresh_false_no_data(config, mock_storag
     embedding_storage.store_embeddings.assert_called()
     
     # Verify state manager was updated
-    state_manager.mark_operation_start.assert_called_with("ensure_data_ready")
-    state_manager.mark_operation_complete.assert_called()
+    state_manager.mark_operation_start.assert_any_call("ensure_data_ready")
+    state_manager.mark_operation_complete.assert_any_call("ensure_data_ready", "success")
 
 @pytest.mark.asyncio
 async def test_factory_method():

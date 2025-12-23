@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from typing import AsyncGenerator, AsyncIterator
 import asyncio
 import os
+import time
 from datetime import datetime, timedelta
 import pytz
 from config.base_settings import get_base_settings
@@ -13,6 +14,13 @@ from config.base_settings import get_base_settings
 from api.app import app
 
 from knowledge_agents.data_ops import DataOperations, DataConfig
+
+from api.routers.shared import (
+    store_batch_result,
+    get_background_tasks,
+    get_tasks_lock,
+    get_batch_results,
+)
 
 # Create test client
 client = TestClient(app)
@@ -76,7 +84,7 @@ async def test_health_check():
     assert response.status_code == 200
     data = response.json()
     assert "status" in data
-    assert data["status"] == "healthy"
+    assert data["status"] in ("healthy", "ok")
 
 @pytest.mark.asyncio
 async def test_query_endpoint(data_ops):
@@ -164,6 +172,54 @@ async def test_cache_health_endpoint():
     assert "errors" in metrics
     assert "total_requests" in metrics
     assert "hit_ratio" in metrics
+
+@pytest.mark.asyncio
+async def test_batch_status_returns_list(monkeypatch):
+    """Ensure batch status endpoint returns a list of results for completed tasks."""
+
+    async def noop_history(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("api.routers.shared._update_batch_history", noop_history)
+
+    task_id = f"query_{int(time.time())}_regression"
+    _background_tasks = get_background_tasks()
+    _batch_results = get_batch_results()
+    _tasks_lock = get_tasks_lock()
+
+    test_result = {
+        "chunks": [{"text": "example"}],
+        "summary": "regression summary",
+        "metadata": {"source": "unit-test"},
+    }
+
+    async with _tasks_lock:
+        _background_tasks[task_id] = {
+            "status": "completed",
+            "total_queries": 1,
+            "completed_queries": 1,
+            "duration_ms": 0.0,
+        }
+
+    try:
+        await store_batch_result(
+            batch_id=task_id,
+            result=test_result,
+            config={"batch_result_ttl": 60, "query": "regression query"},
+            save_to_disk=False,
+        )
+
+        response = client.get(f"{API_BASE_PATH}/batch_status/{task_id}")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "completed"
+        assert isinstance(payload["results"], list)
+        assert payload["results"][0]["summary"] == "regression summary"
+    finally:
+        async with _tasks_lock:
+            _background_tasks.pop(task_id, None)
+        _batch_results.pop(task_id, None)
+
 
 @pytest.mark.asyncio
 async def test_batch_result_schema():

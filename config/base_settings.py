@@ -109,6 +109,16 @@ def get_base_settings() -> Dict[str, Any]:
         datetime.now(pytz.UTC) - timedelta(days=retention_days)
     ).isoformat()
 
+    max_workers_env = os.getenv('MAX_WORKERS', '').strip()
+    if max_workers_env:
+        try:
+            max_workers = int(max_workers_env)
+        except (ValueError, TypeError):
+            max_workers = os.cpu_count() or 4
+            logging.warning("Invalid MAX_WORKERS value, using default of %s", max_workers)
+    else:
+        max_workers = os.cpu_count() or 4
+
     _settings_cache = {
         'api': {
             'host': os.getenv('API_HOST', '0.0.0.0').strip(),
@@ -161,7 +171,7 @@ def get_base_settings() -> Dict[str, Any]:
             'contraction_mapping_enabled': os.getenv('CONTRACTION_MAPPING_ENABLED', 'false').lower() == 'true',
             'non_alpha_numeric_enabled': os.getenv('NON_ALPHA_NUMERIC_ENABLED', 'false').lower() == 'true',
             'max_tokens': int(os.getenv('MAX_TOKENS', '4096')),
-            'max_workers': int(os.getenv('MAX_WORKERS')),
+            'max_workers': max_workers,
             'cache_enabled': os.getenv('CACHE_ENABLED', 'true').lower() == 'true',
             'retention_days': retention_days,
             'filter_date': os.getenv('FILTER_DATE', filter_date),

@@ -734,11 +734,18 @@ async def get_batch_status(task_id: str) -> BatchStatusResponse:
         if task_id in _background_tasks:
             task_status = _background_tasks[task_id]
             logger.debug(f"Task {task_id} found in _background_tasks: {task_status}")
+            raw_results = task_status.get("results")
+            if raw_results is None:
+                normalized_results = []
+            elif isinstance(raw_results, list):
+                normalized_results = raw_results
+            else:
+                normalized_results = [raw_results]
             response = {
                 "status": task_status["status"],
                 "total": task_status.get("total_queries"),
                 "completed": task_status.get("completed_queries"),
-                "results": task_status.get("results", []),
+                "results": normalized_results,
                 "errors": task_status.get("errors", []),
                 "duration_ms": task_status.get("duration_ms")
             }

@@ -12,11 +12,8 @@ The Chanscope Retrieval testing framework is designed to work across multiple en
 
 The test scripts are organized as follows:
 
-- `run_tests.sh`: The main test runner that detects the environment and calls the appropriate environment-specific script
-- `local_tests.sh`: Contains local-specific test configuration and setup
-- `docker_tests.sh`: Contains Docker-specific test configuration and setup
-- `replit_tests.sh`: Contains Replit-specific test configuration and setup
-- `test_and_deploy.sh`: For running tests and then deploying if tests pass
+- `run_tests.sh`: Unified test runner with environment detection (local, Docker, Replit)
+- `test_and_deploy.sh`: Runs tests and then deploys if tests pass
 
 ## Test Categories
 
@@ -62,8 +59,8 @@ scripts/run_tests.sh --embedding
 # Run only API endpoint tests
 scripts/run_tests.sh --endpoints
 
-# Run only Chanscope Retrieval approach tests
-scripts/run_tests.sh --Chanscope Retrieval-approach
+# Run only Chanscope approach validation tests
+scripts/run_tests.sh --chanscope-approach
 ```
 
 ### Additional Options
@@ -120,29 +117,29 @@ Test results are saved in the `test_results` directory, including:
 
 ## Docker-Based Testing
 
-The primary script for running Docker-based tests is `scripts/docker_tests.sh`. This script has been enhanced to support the Chanscope Retrieval approach for data management and testing.
+The primary script for running Docker-based tests is `scripts/run_tests.sh --env=docker`. This script has been enhanced to support the Chanscope approach for data management and testing.
 
 ### Basic Usage
 
 ```bash
 # Run all tests with default settings
-./scripts/docker_tests.sh
+./scripts/run_tests.sh --env=docker
 
 # Run only embedding tests
-./scripts/docker_tests.sh --embedding
+./scripts/run_tests.sh --env=docker --embedding
 
 # Run tests with data refresh forced
-./scripts/docker_tests.sh --force-refresh
+./scripts/run_tests.sh --env=docker --force-refresh
 
 # See all available options
-./scripts/docker_tests.sh --help
+./scripts/run_tests.sh --help
 ```
 
 ### Key Features
 
-The Docker testing script supports several features that align with the Chanscope Retrieval approach:
+The Docker testing script supports several features that align with the Chanscope approach:
 
-1. **Automatic Data Checking**: By default, the script checks if the data is up-to-date according to the Chanscope Retrieval approach rules and refreshes it only if needed (when data is missing, embeddings are missing, or data is older than specified retention period).
+1. **Automatic Data Checking**: By default, the script checks if the data is up-to-date according to the Chanscope approach rules and refreshes it only if needed (when data is missing, embeddings are missing, or data is older than specified retention period).
 
 2. **Force Refresh Option**: Use `--force-refresh` to explicitly force data regeneration regardless of current status.
 
@@ -153,19 +150,19 @@ The Docker testing script supports several features that align with the Chanscop
    - `--data-ingestion`: Test only the data ingestion process
    - `--embedding`: Test only the embedding generation functionality
    - `--endpoints`: Test only the API endpoints
-   - `--Chanscope Retrieval-approach`: Test the complete Chanscope Retrieval approach pipeline
+   - `--chanscope-approach`: Test the complete Chanscope approach pipeline
 
 ### Advanced Options
 
 ```bash
-# Use the setup.sh script for testing (follows Chanscope Retrieval approach)
-./scripts/docker_tests.sh --use-setup
+# Use the setup.sh script for testing (follows Chanscope approach)
+./scripts/run_tests.sh --env=docker --use-setup
 
 # Disable automatic data checking (use existing data as is)
-./scripts/docker_tests.sh --no-auto-check-data
+./scripts/run_tests.sh --env=docker --no-auto-check-data
 
 # Combine multiple options
-./scripts/docker_tests.sh --embedding --force-refresh --use-setup
+./scripts/run_tests.sh --env=docker --embedding --force-refresh --use-setup
 ```
 
 ## Troubleshooting

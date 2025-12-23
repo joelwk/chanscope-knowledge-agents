@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Optional, AsyncGenerator, List, Dict, Any, Tuple
 from datetime import datetime
 import pandas as pd
-import boto3
+try:
+    import boto3
+    _BOTO3_IMPORT_ERROR = None
+except Exception as exc:  # pragma: no cover - defensive for env-specific deps
+    boto3 = None
+    _BOTO3_IMPORT_ERROR = exc
 from dateutil import tz
 from config.settings import Config
 from config.config_utils import parse_filter_date
@@ -19,6 +24,7 @@ class S3Handler:
     """Handler for S3 operations using configuration settings."""
 
     def __init__(self, local_data_path: str = '.'):
+        self._boto3_available = boto3 is not None
         aws_settings = Config.get_aws_settings()
         processing_settings = Config.get_processing_settings()
         paths = Config.get_paths()
@@ -38,16 +44,23 @@ class S3Handler:
             self.s3 = self._create_s3_client()
         else:
             self.s3 = None
-            logger.warning(
-                "Skipping S3 client initialization because required AWS settings are missing. "
-                "Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, S3_BUCKET, "
-                "and S3_BUCKET_PREFIX to enable cloud synchronization."
-            )
+            if not self._boto3_available:
+                logger.warning(
+                    "Skipping S3 client initialization because boto3 failed to import: %s",
+                    _BOTO3_IMPORT_ERROR,
+                )
+            else:
+                logger.warning(
+                    "Skipping S3 client initialization because required AWS settings are missing. "
+                    "Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, S3_BUCKET, "
+                    "and S3_BUCKET_PREFIX to enable cloud synchronization."
+                )
 
     @property
     def is_configured(self) -> bool:
         """Check if S3 is properly configured with valid credentials."""
         return bool(
+            self._boto3_available and
             self.aws_access_key_id and
             self.aws_secret_access_key and
             self.region_name and
@@ -57,6 +70,8 @@ class S3Handler:
 
     def _create_s3_client(self):
         """Create and return an S3 client with credentials from Config."""
+        if not self._boto3_available:
+            raise ImportError(f"boto3 is required for S3 operations: {_BOTO3_IMPORT_ERROR}")
         try:
             session = boto3.Session(
                 aws_access_key_id=self.aws_access_key_id,

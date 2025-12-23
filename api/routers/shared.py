@@ -213,7 +213,14 @@ async def _store_batch_result(
 
         # Also store results in background tasks for redundancy
         if batch_id in _background_tasks:
-            _background_tasks[batch_id]['results'] = result
+            existing_results = _background_tasks[batch_id].get('results')
+            if isinstance(existing_results, list):
+                updated_results = existing_results + [result]
+            elif existing_results is None:
+                updated_results = [result]
+            else:
+                updated_results = [existing_results, result]
+            _background_tasks[batch_id]['results'] = updated_results
 
         # Store in memory cache
         _batch_results[batch_id] = result_obj

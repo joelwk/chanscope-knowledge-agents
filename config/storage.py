@@ -25,6 +25,68 @@ from config.settings import Config
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# In-memory Object Storage fallback for tests or missing replit deps
+class _InMemoryObjectClient:
+    _store: Dict[str, Union[str, bytes]] = {}
+
+    def upload_from_text(self, key: str, text: str) -> None:
+        self._store[key] = text
+
+    def upload_from_bytes(self, key: str, data: bytes) -> None:
+        self._store[key] = data
+
+    def download_as_text(self, key: str) -> str:
+        value = self._store[key]
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return value
+
+    def download_as_bytes(self, key: str) -> bytes:
+        value = self._store[key]
+        if isinstance(value, str):
+            return value.encode("utf-8")
+        return value
+
+    def list(self):
+        from types import SimpleNamespace
+        return [SimpleNamespace(name=key) for key in self._store.keys()]
+
+
+class _InMemoryStateStore:
+    """Minimal in-memory state store for tests."""
+
+    def __init__(self):
+        self._state: Optional[Dict[str, Any]] = None
+
+    def update_processing_state(self, state: Dict[str, Any]) -> None:
+        self._state = dict(state) if state is not None else None
+
+    def get_processing_state(self) -> Optional[Dict[str, Any]]:
+        return self._state
+
+# Replit dependency placeholders (allow imports/mocking without hard failures)
+PostgresDB = None
+KeyValueStore = None
+DatabaseConnectionError = Exception
+db = None
+
+try:
+    from config.replit import (
+        PostgresDB as _PostgresDB,
+        KeyValueStore as _KeyValueStore,
+        DatabaseConnectionError as _DatabaseConnectionError,
+    )
+    PostgresDB = _PostgresDB
+    KeyValueStore = _KeyValueStore
+    DatabaseConnectionError = _DatabaseConnectionError
+    try:
+        from replit import db as _db  # Optional; used for tests/mocking
+        db = _db
+    except Exception:
+        db = None
+except Exception as exc:
+    logger.warning("Replit dependencies unavailable: %s", exc)
+
 # Patch for Google Cloud Storage credentials to fix the universe_domain issue
 def patch_gcs_credentials():
     """Apply a global patch to Google Cloud Storage credentials to add universe_domain attribute.
@@ -304,6 +366,14 @@ class FileEmbeddingStorage(EmbeddingStorage):
             # Save thread ID map
             with open(self.thread_id_map_path, 'w') as f:
                 json.dump(thread_id_map, f)
+
+            # Save embedding status for compatibility with downstream checks
+            status_path = Path(self.config.stratified_data_path) / "embedding_status.csv"
+            status_df = pd.DataFrame({
+                "thread_id": list(thread_id_map.keys()),
+                "has_embedding": [True] * len(thread_id_map)
+            })
+            status_df.to_csv(status_path, index=False)
             
             logger.info(f"Stored embeddings with shape {embeddings.shape} and {len(thread_id_map)} thread IDs")
             return True
@@ -478,17 +548,57 @@ class FileStateManager(StateManager):
             logger.error(f"Error checking operation status: {e}")
             return False
 
-# Replit implementations (use our existing classes from replit.py)
-if os.environ.get('REPLIT_ENV', 'false').lower() in ('true', 'replit', '1', 'yes'):
-    from config.replit import PostgresDB, KeyValueStore, DatabaseConnectionError
+# Replit implementations (use our existing classes from replit.py when available)
+if PostgresDB is None:
+    class PostgresDB:  # type: ignore[override]
+        def __init__(self, *args, **kwargs):
+            if os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes"):
+                self._data = pd.DataFrame()
+            else:
+                raise ImportError("PostgresDB unavailable; install replit/psycopg2 dependencies")
+
+        def initialize_schema(self):
+            return None
+
+        def sync_data_from_dataframe(self, df: pd.DataFrame) -> int:
+            if df is None:
+                return 0
+            if self._data.empty:
+                self._data = df.copy()
+            else:
+                self._data = pd.concat([self._data, df.copy()], ignore_index=True)
+            return len(df)
+
+        def get_complete_data(self, filter_date: Optional[str] = None) -> pd.DataFrame:
+            if self._data is None:
+                return pd.DataFrame()
+            return self._data.copy()
+
+        def check_data_needs_update(self):
+            return False, None
+
+        def get_row_count(self) -> int:
+            return len(self._data) if hasattr(self, "_data") and self._data is not None else 0
+
+if KeyValueStore is None:
+    class KeyValueStore:  # type: ignore[override]
+        def __init__(self):
+            self._state = {}
+
+        def update_processing_state(self, state):
+            self._state["processing_state"] = state
+
+        def get_processing_state(self):
+            return self._state.get("processing_state")
 
 class ReplitCompleteDataStorage(CompleteDataStorage):
     """Replit PostgreSQL implementation of complete dataset storage."""
     
     def __init__(self, config):
         """Initialize with configuration."""
-        from config.replit import PostgresDB
         self.config = config
+        if PostgresDB is None:
+            raise ImportError("PostgresDB unavailable; install replit/psycopg2 dependencies")
         self.db = PostgresDB()
         
         # Get chunk settings from config
@@ -688,6 +798,9 @@ class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
         Returns:
             Object Storage client instance or None if initialization fails
         """
+        test_mode = os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes")
+        if test_mode:
+            return _InMemoryObjectClient()
         try:
             # Apply credential patch if needed before client initialization
             patch_gcs_credentials()
@@ -710,6 +823,8 @@ class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
         except Exception as e:
             logger.error(f"Failed to initialize Object Storage client: {e}")
             logger.error(traceback.format_exc())
+            if test_mode:
+                return _InMemoryObjectClient()
             return None
     
     async def store_sample(self, df: pd.DataFrame) -> bool:
@@ -885,6 +1000,9 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
         Returns:
             Object Storage client instance or None if initialization fails
         """
+        test_mode = os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes")
+        if test_mode:
+            return _InMemoryObjectClient()
         try:
             # Apply credential patch if needed before client initialization
             patch_gcs_credentials()
@@ -907,6 +1025,8 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
         except Exception as e:
             logger.error(f"Failed to initialize Object Storage client: {e}")
             logger.error(traceback.format_exc())
+            if test_mode:
+                return _InMemoryObjectClient()
             return None
     
     async def store_embeddings(self, embeddings: np.ndarray, thread_id_map: Dict[str, int]) -> bool:
@@ -1152,8 +1272,20 @@ class ReplitStateManager(StateManager):
     
     def __init__(self, config):
         self.config = config
-        from config.replit import KeyValueStore
-        self.kv_store = KeyValueStore()
+        test_mode = os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes")
+        if test_mode:
+            logger.info("TEST_MODE enabled; using in-memory state store for ReplitStateManager")
+            self.kv_store = _InMemoryStateStore()
+            return
+
+        if KeyValueStore is None:
+            raise ImportError("KeyValueStore unavailable; install replit dependencies")
+
+        try:
+            self.kv_store = KeyValueStore()
+        except Exception as e:
+            logger.error("Failed to initialize KeyValueStore: %s", e)
+            raise
     
     async def update_state(self, state: Dict[str, Any]) -> None:
         """Update state in Key-Value store."""
@@ -1218,6 +1350,10 @@ class ReplitStateManager(StateManager):
             logger.error(f"Error checking operation status: {e}")
             return False
 
+# Backwards-compatible alias for tests and external imports
+class ReplitEmbeddingStorage(ReplitObjectEmbeddingStorage):
+    pass
+
 class StorageFactory:
     """Factory for creating storage implementations based on environment."""
     
@@ -1241,7 +1377,7 @@ class StorageFactory:
         """
         if env_type is None:
             # Use the centralized detection function
-            env_type = detect_environment()
+            env_type = getattr(config, "env", None) or detect_environment()
         
         logger.info(f"Creating storage implementations for environment: {env_type}")
         
@@ -1249,7 +1385,7 @@ class StorageFactory:
             return {
                 'complete_data': ReplitCompleteDataStorage(config),
                 'stratified_sample': ReplitStratifiedSampleStorage(config),
-                'embeddings': ReplitObjectEmbeddingStorage(config),
+                'embeddings': ReplitEmbeddingStorage(config),
                 'state': ReplitStateManager(config)
             }
         else:

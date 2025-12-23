@@ -25,6 +25,24 @@ CLEAN_VOLUMES="false"
 SHOW_LOGS="true"
 USE_MOCK_DATA="true"
 USE_MOCK_EMBEDDINGS="true"
+PYTHON_BIN=""
+LOG_TAIL_LINES=200
+
+# Resolve Python interpreter for local/replit tests (keeps CI/pip in sync)
+resolve_python_bin() {
+    if [ -n "$PYTHON_BIN" ]; then
+        return
+    fi
+
+    if command -v python >/dev/null 2>&1; then
+        PYTHON_BIN="python"
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN="python3"
+    else
+        echo -e "${RED}Error: Python interpreter not found in PATH${NC}"
+        exit 1
+    fi
+}
 
 # Function to display usage information
 show_usage() {
@@ -42,6 +60,7 @@ show_usage() {
     echo "  --no-mock-embeddings    Use real embeddings instead of mock embeddings (local/Replit only)"
     echo "  --clean                 Clean test volumes before running tests (Docker only)"
     echo "  --no-logs               Don't show logs during test execution"
+    echo "  --log-tail-lines=<n>    Number of log lines to print on failure when using --no-logs (default: $LOG_TAIL_LINES)"
     echo "  --debug                 Enable debug mode with verbose output"
     echo "  --env=<environment>     Specify environment: local, docker, or replit"
     echo "  --help                  Show this help message"
@@ -103,6 +122,10 @@ parse_args() {
                 export SHOW_LOGS="false"
                 shift
                 ;;
+            --log-tail-lines=*)
+                LOG_TAIL_LINES="${1#*=}"
+                shift
+                ;;
             --debug)
                 export DEBUG_MODE="true"
                 shift
@@ -122,6 +145,19 @@ parse_args() {
                 ;;
         esac
     done
+}
+
+# Print tail of log file on failure when running silently
+print_log_tail_on_failure() {
+    local exit_code=$1
+    local log_file=$2
+    local lines=${3:-$LOG_TAIL_LINES}
+
+    if [ "$SHOW_LOGS" = "false" ] && [ "$exit_code" -ne 0 ] && [ -f "$log_file" ]; then
+        echo -e "${YELLOW}--- Last ${lines} lines of log (${log_file}) ---${NC}"
+        tail -n "$lines" "$log_file" || true
+        echo -e "${YELLOW}--- End log excerpt ---${NC}"
+    fi
 }
 
 # Auto-detect environment if not specified
@@ -242,9 +278,11 @@ run_docker_tests() {
         # For Chanscope approach tests, run validation script directly
         docker-compose -f deployment/docker-compose.test.yml run --rm \
             -e TEST_MODE=true \
+            -e USE_MOCK_DATA="$USE_MOCK_DATA" \
+            -e USE_MOCK_EMBEDDINGS="$USE_MOCK_EMBEDDINGS" \
             -e FORCE_DATA_REFRESH="$FORCE_REFRESH" \
             -e AUTO_CHECK_DATA="$AUTO_CHECK_DATA" \
-            chanscope-test python scripts/validate_chanscope_approach.py \
+            test-runner python scripts/validate_chanscope_approach.py \
             | tee "$LOG_FILE"
         EXIT_CODE=${PIPESTATUS[0]}
     else
@@ -253,20 +291,24 @@ run_docker_tests() {
             # Show logs in real-time
             docker-compose -f deployment/docker-compose.test.yml run --rm \
                 -e TEST_MODE=true \
+                -e USE_MOCK_DATA="$USE_MOCK_DATA" \
+                -e USE_MOCK_EMBEDDINGS="$USE_MOCK_EMBEDDINGS" \
                 -e TEST_TYPE="$TEST_TYPE" \
                 -e FORCE_DATA_REFRESH="$FORCE_REFRESH" \
                 -e AUTO_CHECK_DATA="$AUTO_CHECK_DATA" \
-                chanscope-test | tee "$LOG_FILE"
+                test-runner | tee "$LOG_FILE"
             EXIT_CODE=${PIPESTATUS[0]}
         else
             # Run silently and save logs to file
             echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
             docker-compose -f deployment/docker-compose.test.yml run --rm \
                 -e TEST_MODE=true \
+                -e USE_MOCK_DATA="$USE_MOCK_DATA" \
+                -e USE_MOCK_EMBEDDINGS="$USE_MOCK_EMBEDDINGS" \
                 -e TEST_TYPE="$TEST_TYPE" \
                 -e FORCE_DATA_REFRESH="$FORCE_REFRESH" \
                 -e AUTO_CHECK_DATA="$AUTO_CHECK_DATA" \
-                chanscope-test > "$LOG_FILE" 2>&1
+                test-runner > "$LOG_FILE" 2>&1
             EXIT_CODE=$?
         fi
     fi
@@ -277,6 +319,7 @@ run_docker_tests() {
     else
         echo -e "${RED}❌ Some tests failed with exit code: $EXIT_CODE${NC}"
         echo -e "${YELLOW}Check the logs for details: $LOG_FILE${NC}"
+        print_log_tail_on_failure "$EXIT_CODE" "$LOG_FILE"
     fi
 
     return $EXIT_CODE
@@ -292,8 +335,11 @@ run_local_tests() {
     
     # Set local-specific test environment
     export TEST_MODE=true
+    export USE_MOCK_DATA="${USE_MOCK_DATA:-true}"
+    export USE_MOCK_EMBEDDINGS="${USE_MOCK_EMBEDDINGS:-true}"
     export FORCE_DATA_REFRESH=${FORCE_REFRESH:-false}
     export AUTO_CHECK_DATA=${AUTO_CHECK_DATA:-true}
+    export FORCE_ENVIRONMENT="local"
     
     # Set critical path environment variables for tests
     export ROOT_DATA_PATH="${PROJECT_ROOT}/data"
@@ -301,17 +347,28 @@ run_local_tests() {
     export PATH_TEMP="${PROJECT_ROOT}/temp_files"
     export TEST_DATA_PATH="${PROJECT_ROOT}/data"
     export STRATIFIED_DATA_PATH="${PROJECT_ROOT}/data/stratified"
+    # Force POSIX temp dir to avoid Windows-mounted temp issues
+    export TMPDIR="/tmp"
+    export TEMP="/tmp"
+    export TMP="/tmp"
     
+    resolve_python_bin
+    echo -e "${YELLOW}Using Python interpreter: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))${NC}"
+
     # Run regular pytest tests
     if [ "$SHOW_LOGS" = "true" ]; then
         # Show logs in real-time
-        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
+        set +e
+        "$PYTHON_BIN" -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
         EXIT_CODE=${PIPESTATUS[0]}
+        set -e
     else
         # Run silently and save logs to file
         echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
-        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
+        set +e
+        "$PYTHON_BIN" -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
         EXIT_CODE=$?
+        set -e
     fi
 
     # Display test results summary
@@ -320,6 +377,7 @@ run_local_tests() {
     else
         echo -e "${RED}❌ Some tests failed with exit code: $EXIT_CODE${NC}"
         echo -e "${YELLOW}Check the logs for details: $LOG_FILE${NC}"
+        print_log_tail_on_failure "$EXIT_CODE" "$LOG_FILE"
     fi
 
     return $EXIT_CODE
@@ -337,8 +395,11 @@ run_replit_tests() {
     export REPLIT_ENV="replit"
     export REPL_ID="${REPL_ID:-replit_test_run}"
     export TEST_MODE=true
+    export USE_MOCK_DATA="${USE_MOCK_DATA:-true}"
+    export USE_MOCK_EMBEDDINGS="${USE_MOCK_EMBEDDINGS:-true}"
     export FORCE_DATA_REFRESH=${FORCE_REFRESH:-false}
     export AUTO_CHECK_DATA=${AUTO_CHECK_DATA:-true}
+    export FORCE_ENVIRONMENT="replit"
     
     # Set resource-optimized settings for Replit
     export EMBEDDING_BATCH_SIZE=5
@@ -352,6 +413,10 @@ run_replit_tests() {
     export PATH_TEMP="${PROJECT_ROOT}/temp_files"
     export TEST_DATA_PATH="${PROJECT_ROOT}/data"
     export STRATIFIED_DATA_PATH="${PROJECT_ROOT}/data/stratified"
+    # Force POSIX temp dir to avoid Windows-mounted temp issues
+    export TMPDIR="/tmp"
+    export TEMP="/tmp"
+    export TMP="/tmp"
     
     # Run Replit setup script if available
     if [ -f "${SCRIPT_DIR}/replit_setup.sh" ]; then
@@ -359,16 +424,23 @@ run_replit_tests() {
         bash "${SCRIPT_DIR}/replit_setup.sh"
     fi
     
+    resolve_python_bin
+    echo -e "${YELLOW}Using Python interpreter: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))${NC}"
+
     # Run regular pytest tests
     if [ "$SHOW_LOGS" = "true" ]; then
         # Show logs in real-time
-        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
+        set +e
+        "$PYTHON_BIN" -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
         EXIT_CODE=${PIPESTATUS[0]}
+        set -e
     else
         # Run silently and save logs to file
         echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
-        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
+        set +e
+        "$PYTHON_BIN" -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
         EXIT_CODE=$?
+        set -e
     fi
 
     # Display test results summary
@@ -377,6 +449,7 @@ run_replit_tests() {
     else
         echo -e "${RED}❌ Some tests failed with exit code: $EXIT_CODE${NC}"
         echo -e "${YELLOW}Check the logs for details: $LOG_FILE${NC}"
+        print_log_tail_on_failure "$EXIT_CODE" "$LOG_FILE"
     fi
 
     return $EXIT_CODE

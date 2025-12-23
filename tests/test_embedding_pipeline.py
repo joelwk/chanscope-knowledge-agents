@@ -9,10 +9,10 @@ from datetime import datetime, timedelta
 import pytz
 import json
 import os
-from dotenv import load_dotenv
+from config.base_settings import load_env_vars
 
-# Load environment variables
-load_dotenv()
+# Load base environment variables only
+load_env_vars()
 
 from knowledge_agents.data_ops import DataConfig, DataOperations
 from knowledge_agents.model_ops import ModelConfig, ModelProvider, ModelOperation
@@ -73,8 +73,9 @@ async def test_embedding_pipeline(test_data_config):
     try:
         logger.info("Starting embedding pipeline test")
         
-        # Verify OpenAI API key is set
-        assert os.getenv('OPENAI_API_KEY'), "OPENAI_API_KEY environment variable is not set"
+        # Verify embedding provider availability (API key or mock embeddings)
+        if not os.getenv('OPENAI_API_KEY') and not Config.use_mock_embeddings():
+            pytest.skip("OPENAI_API_KEY is not set and USE_MOCK_EMBEDDINGS is disabled")
         
         # Step 1: Create and save sample data
         sample_df = create_sample_data()
