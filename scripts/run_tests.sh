@@ -242,9 +242,11 @@ run_docker_tests() {
         # For Chanscope approach tests, run validation script directly
         docker-compose -f deployment/docker-compose.test.yml run --rm \
             -e TEST_MODE=true \
+            -e USE_MOCK_DATA="$USE_MOCK_DATA" \
+            -e USE_MOCK_EMBEDDINGS="$USE_MOCK_EMBEDDINGS" \
             -e FORCE_DATA_REFRESH="$FORCE_REFRESH" \
             -e AUTO_CHECK_DATA="$AUTO_CHECK_DATA" \
-            chanscope-test python scripts/validate_chanscope_approach.py \
+            test-runner python scripts/validate_chanscope_approach.py \
             | tee "$LOG_FILE"
         EXIT_CODE=${PIPESTATUS[0]}
     else
@@ -253,20 +255,24 @@ run_docker_tests() {
             # Show logs in real-time
             docker-compose -f deployment/docker-compose.test.yml run --rm \
                 -e TEST_MODE=true \
+                -e USE_MOCK_DATA="$USE_MOCK_DATA" \
+                -e USE_MOCK_EMBEDDINGS="$USE_MOCK_EMBEDDINGS" \
                 -e TEST_TYPE="$TEST_TYPE" \
                 -e FORCE_DATA_REFRESH="$FORCE_REFRESH" \
                 -e AUTO_CHECK_DATA="$AUTO_CHECK_DATA" \
-                chanscope-test | tee "$LOG_FILE"
+                test-runner | tee "$LOG_FILE"
             EXIT_CODE=${PIPESTATUS[0]}
         else
             # Run silently and save logs to file
             echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
             docker-compose -f deployment/docker-compose.test.yml run --rm \
                 -e TEST_MODE=true \
+                -e USE_MOCK_DATA="$USE_MOCK_DATA" \
+                -e USE_MOCK_EMBEDDINGS="$USE_MOCK_EMBEDDINGS" \
                 -e TEST_TYPE="$TEST_TYPE" \
                 -e FORCE_DATA_REFRESH="$FORCE_REFRESH" \
                 -e AUTO_CHECK_DATA="$AUTO_CHECK_DATA" \
-                chanscope-test > "$LOG_FILE" 2>&1
+                test-runner > "$LOG_FILE" 2>&1
             EXIT_CODE=$?
         fi
     fi
@@ -292,6 +298,8 @@ run_local_tests() {
     
     # Set local-specific test environment
     export TEST_MODE=true
+    export USE_MOCK_DATA="${USE_MOCK_DATA:-true}"
+    export USE_MOCK_EMBEDDINGS="${USE_MOCK_EMBEDDINGS:-true}"
     export FORCE_DATA_REFRESH=${FORCE_REFRESH:-false}
     export AUTO_CHECK_DATA=${AUTO_CHECK_DATA:-true}
     
@@ -337,6 +345,8 @@ run_replit_tests() {
     export REPLIT_ENV="replit"
     export REPL_ID="${REPL_ID:-replit_test_run}"
     export TEST_MODE=true
+    export USE_MOCK_DATA="${USE_MOCK_DATA:-true}"
+    export USE_MOCK_EMBEDDINGS="${USE_MOCK_EMBEDDINGS:-true}"
     export FORCE_DATA_REFRESH=${FORCE_REFRESH:-false}
     export AUTO_CHECK_DATA=${AUTO_CHECK_DATA:-true}
     
