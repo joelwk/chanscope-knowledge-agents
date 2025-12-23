@@ -61,8 +61,23 @@ def load_environment():
     logger.info(f"Attempting to load environment from: {env_path}")
     
     if not env_path.exists():
-        logger.error(f"Could not find .env file at {env_path}")
-        raise FileNotFoundError(f"Could not find .env file at {env_path}")
+        logger.warning(f"Could not find .env file at {env_path}; skipping .env load")
+        if is_replit_environment():
+            logger.info("Configuring Replit-specific settings without .env file")
+            try:
+                configure_replit_environment()
+            except Exception as e:
+                logger.warning(f"Replit environment configuration skipped due to error: {e}")
+        elif is_docker_environment():
+            logger.info("Configuring Docker-specific settings without .env file")
+            try:
+                configure_docker_environment()
+            except Exception as e:
+                logger.warning(f"Docker environment configuration skipped due to error: {e}")
+        else:
+            logger.info("Using local environment settings without .env file")
+        _validate_critical_vars()
+        return
     
     # Base environment variables are already loaded by base_settings.py
     # Don't load_dotenv here as it would load ALL sections including conflicting variables
