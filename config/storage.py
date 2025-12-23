@@ -51,6 +51,19 @@ class _InMemoryObjectClient:
         from types import SimpleNamespace
         return [SimpleNamespace(name=key) for key in self._store.keys()]
 
+
+class _InMemoryStateStore:
+    """Minimal in-memory state store for tests."""
+
+    def __init__(self):
+        self._state: Optional[Dict[str, Any]] = None
+
+    def update_processing_state(self, state: Dict[str, Any]) -> None:
+        self._state = dict(state) if state is not None else None
+
+    def get_processing_state(self) -> Optional[Dict[str, Any]]:
+        return self._state
+
 # Replit dependency placeholders (allow imports/mocking without hard failures)
 PostgresDB = None
 KeyValueStore = None
@@ -1259,9 +1272,23 @@ class ReplitStateManager(StateManager):
     
     def __init__(self, config):
         self.config = config
+        test_mode = os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes")
         if KeyValueStore is None:
-            raise ImportError("KeyValueStore unavailable; install replit dependencies")
-        self.kv_store = KeyValueStore()
+            if not test_mode:
+                raise ImportError("KeyValueStore unavailable; install replit dependencies")
+            logger.warning("KeyValueStore unavailable; using in-memory state store for tests")
+            self.kv_store = _InMemoryStateStore()
+        else:
+            try:
+                self.kv_store = KeyValueStore()
+            except Exception as e:
+                if not test_mode:
+                    raise
+                logger.warning(
+                    "Failed to initialize KeyValueStore (%s); using in-memory state store for tests",
+                    e,
+                )
+                self.kv_store = _InMemoryStateStore()
     
     async def update_state(self, state: Dict[str, Any]) -> None:
         """Update state in Key-Value store."""

@@ -567,6 +567,8 @@ class KnowledgeAgent:
         """Initialize model clients dynamically based on provided configuration."""
         clients = {}
         base_settings = get_base_settings()
+        test_mode = os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes")
+        allow_missing_providers = Config.use_mock_embeddings() or test_mode
 
         # Initialize OpenAI client
         openai_api_key = Config.get_openai_api_key()
@@ -611,10 +613,17 @@ class KnowledgeAgent:
                 logger.error(f"Failed to initialize Venice client: {str(e)}")
 
         if not clients:
-            raise ModelConfigurationError("No API providers configured. Please set at least one of the following in settings:\n"
-                           "- OPENAI_API_KEY (Required)\n"
-                           "- GROK_API_KEY (Optional)\n"
-                           "- VENICE_API_KEY (Optional)")
+            if allow_missing_providers:
+                logger.warning(
+                    "No API providers configured; running in mock/test mode with empty clients."
+                )
+                return {}
+            raise ModelConfigurationError(
+                "No API providers configured. Please set at least one of the following in settings:\n"
+                "- OPENAI_API_KEY (Required)\n"
+                "- GROK_API_KEY (Optional)\n"
+                "- VENICE_API_KEY (Optional)"
+            )
         return clients
 
     # Add helper method to safely get environment variables
