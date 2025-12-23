@@ -25,6 +25,23 @@ CLEAN_VOLUMES="false"
 SHOW_LOGS="true"
 USE_MOCK_DATA="true"
 USE_MOCK_EMBEDDINGS="true"
+PYTHON_BIN=""
+
+# Resolve Python interpreter for local/replit tests (keeps CI/pip in sync)
+resolve_python_bin() {
+    if [ -n "$PYTHON_BIN" ]; then
+        return
+    fi
+
+    if command -v python >/dev/null 2>&1; then
+        PYTHON_BIN="python"
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN="python3"
+    else
+        echo -e "${RED}Error: Python interpreter not found in PATH${NC}"
+        exit 1
+    fi
+}
 
 # Function to display usage information
 show_usage() {
@@ -315,16 +332,23 @@ run_local_tests() {
     export TEMP="/tmp"
     export TMP="/tmp"
     
+    resolve_python_bin
+    echo -e "${YELLOW}Using Python interpreter: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))${NC}"
+
     # Run regular pytest tests
     if [ "$SHOW_LOGS" = "true" ]; then
         # Show logs in real-time
-        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
+        set +e
+        "$PYTHON_BIN" -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
         EXIT_CODE=${PIPESTATUS[0]}
+        set -e
     else
         # Run silently and save logs to file
         echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
-        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
+        set +e
+        "$PYTHON_BIN" -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
         EXIT_CODE=$?
+        set -e
     fi
 
     # Display test results summary
@@ -379,16 +403,23 @@ run_replit_tests() {
         bash "${SCRIPT_DIR}/replit_setup.sh"
     fi
     
+    resolve_python_bin
+    echo -e "${YELLOW}Using Python interpreter: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))${NC}"
+
     # Run regular pytest tests
     if [ "$SHOW_LOGS" = "true" ]; then
         # Show logs in real-time
-        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
+        set +e
+        "$PYTHON_BIN" -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" | tee "$LOG_FILE"
         EXIT_CODE=${PIPESTATUS[0]}
+        set -e
     else
         # Run silently and save logs to file
         echo -e "${YELLOW}Running tests silently, logs will be saved to $LOG_FILE${NC}"
-        python3 -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
+        set +e
+        "$PYTHON_BIN" -m pytest tests/ -v --junitxml="${PROJECT_ROOT}/test_results/test-results.xml" > "$LOG_FILE" 2>&1
         EXIT_CODE=$?
+        set -e
     fi
 
     # Display test results summary
