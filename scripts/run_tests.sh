@@ -302,6 +302,7 @@ run_local_tests() {
     export USE_MOCK_EMBEDDINGS="${USE_MOCK_EMBEDDINGS:-true}"
     export FORCE_DATA_REFRESH=${FORCE_REFRESH:-false}
     export AUTO_CHECK_DATA=${AUTO_CHECK_DATA:-true}
+    export FORCE_ENVIRONMENT="local"
     
     # Set critical path environment variables for tests
     export ROOT_DATA_PATH="${PROJECT_ROOT}/data"
@@ -309,6 +310,10 @@ run_local_tests() {
     export PATH_TEMP="${PROJECT_ROOT}/temp_files"
     export TEST_DATA_PATH="${PROJECT_ROOT}/data"
     export STRATIFIED_DATA_PATH="${PROJECT_ROOT}/data/stratified"
+    # Force POSIX temp dir to avoid Windows-mounted temp issues
+    export TMPDIR="/tmp"
+    export TEMP="/tmp"
+    export TMP="/tmp"
     
     # Run regular pytest tests
     if [ "$SHOW_LOGS" = "true" ]; then
@@ -349,6 +354,7 @@ run_replit_tests() {
     export USE_MOCK_EMBEDDINGS="${USE_MOCK_EMBEDDINGS:-true}"
     export FORCE_DATA_REFRESH=${FORCE_REFRESH:-false}
     export AUTO_CHECK_DATA=${AUTO_CHECK_DATA:-true}
+    export FORCE_ENVIRONMENT="replit"
     
     # Set resource-optimized settings for Replit
     export EMBEDDING_BATCH_SIZE=5
@@ -362,6 +368,10 @@ run_replit_tests() {
     export PATH_TEMP="${PROJECT_ROOT}/temp_files"
     export TEST_DATA_PATH="${PROJECT_ROOT}/data"
     export STRATIFIED_DATA_PATH="${PROJECT_ROOT}/data/stratified"
+    # Force POSIX temp dir to avoid Windows-mounted temp issues
+    export TMPDIR="/tmp"
+    export TEMP="/tmp"
+    export TMP="/tmp"
     
     # Run Replit setup script if available
     if [ -f "${SCRIPT_DIR}/replit_setup.sh" ]; then

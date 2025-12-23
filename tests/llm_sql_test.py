@@ -12,6 +12,7 @@ Usage:
 import unittest
 import sys
 import os
+import asyncio
 from datetime import datetime, timedelta
 import pytz
 from typing import List, Dict, Any
@@ -71,7 +72,7 @@ class BasicLLMSQLTests(unittest.TestCase):
         
         try:
             # Create the agent and generator synchronously
-            cls.agent = get_agent(run_async=False)
+            cls.agent = asyncio.run(get_agent())
             cls.generator = LLMSQLGenerator(cls.agent)
             print("LLM SQL Generator initialized successfully")
         except Exception as e:

@@ -25,6 +25,32 @@ from config.settings import Config
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# In-memory Object Storage fallback for tests or missing replit deps
+class _InMemoryObjectClient:
+    _store: Dict[str, Union[str, bytes]] = {}
+
+    def upload_from_text(self, key: str, text: str) -> None:
+        self._store[key] = text
+
+    def upload_from_bytes(self, key: str, data: bytes) -> None:
+        self._store[key] = data
+
+    def download_as_text(self, key: str) -> str:
+        value = self._store[key]
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return value
+
+    def download_as_bytes(self, key: str) -> bytes:
+        value = self._store[key]
+        if isinstance(value, str):
+            return value.encode("utf-8")
+        return value
+
+    def list(self):
+        from types import SimpleNamespace
+        return [SimpleNamespace(name=key) for key in self._store.keys()]
+
 # Replit dependency placeholders (allow imports/mocking without hard failures)
 PostgresDB = None
 KeyValueStore = None
@@ -327,6 +353,14 @@ class FileEmbeddingStorage(EmbeddingStorage):
             # Save thread ID map
             with open(self.thread_id_map_path, 'w') as f:
                 json.dump(thread_id_map, f)
+
+            # Save embedding status for compatibility with downstream checks
+            status_path = Path(self.config.stratified_data_path) / "embedding_status.csv"
+            status_df = pd.DataFrame({
+                "thread_id": list(thread_id_map.keys()),
+                "has_embedding": [True] * len(thread_id_map)
+            })
+            status_df.to_csv(status_path, index=False)
             
             logger.info(f"Stored embeddings with shape {embeddings.shape} and {len(thread_id_map)} thread IDs")
             return True
@@ -505,7 +539,33 @@ class FileStateManager(StateManager):
 if PostgresDB is None:
     class PostgresDB:  # type: ignore[override]
         def __init__(self, *args, **kwargs):
-            raise ImportError("PostgresDB unavailable; install replit/psycopg2 dependencies")
+            if os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes"):
+                self._data = pd.DataFrame()
+            else:
+                raise ImportError("PostgresDB unavailable; install replit/psycopg2 dependencies")
+
+        def initialize_schema(self):
+            return None
+
+        def sync_data_from_dataframe(self, df: pd.DataFrame) -> int:
+            if df is None:
+                return 0
+            if self._data.empty:
+                self._data = df.copy()
+            else:
+                self._data = pd.concat([self._data, df.copy()], ignore_index=True)
+            return len(df)
+
+        def get_complete_data(self, filter_date: Optional[str] = None) -> pd.DataFrame:
+            if self._data is None:
+                return pd.DataFrame()
+            return self._data.copy()
+
+        def check_data_needs_update(self):
+            return False, None
+
+        def get_row_count(self) -> int:
+            return len(self._data) if hasattr(self, "_data") and self._data is not None else 0
 
 if KeyValueStore is None:
     class KeyValueStore:  # type: ignore[override]
@@ -725,6 +785,9 @@ class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
         Returns:
             Object Storage client instance or None if initialization fails
         """
+        test_mode = os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes")
+        if test_mode:
+            return _InMemoryObjectClient()
         try:
             # Apply credential patch if needed before client initialization
             patch_gcs_credentials()
@@ -747,6 +810,8 @@ class ReplitStratifiedSampleStorage(StratifiedSampleStorage):
         except Exception as e:
             logger.error(f"Failed to initialize Object Storage client: {e}")
             logger.error(traceback.format_exc())
+            if test_mode:
+                return _InMemoryObjectClient()
             return None
     
     async def store_sample(self, df: pd.DataFrame) -> bool:
@@ -922,6 +987,9 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
         Returns:
             Object Storage client instance or None if initialization fails
         """
+        test_mode = os.getenv("TEST_MODE", "false").lower() in ("true", "1", "yes")
+        if test_mode:
+            return _InMemoryObjectClient()
         try:
             # Apply credential patch if needed before client initialization
             patch_gcs_credentials()
@@ -944,6 +1012,8 @@ class ReplitObjectEmbeddingStorage(EmbeddingStorage):
         except Exception as e:
             logger.error(f"Failed to initialize Object Storage client: {e}")
             logger.error(traceback.format_exc())
+            if test_mode:
+                return _InMemoryObjectClient()
             return None
     
     async def store_embeddings(self, embeddings: np.ndarray, thread_id_map: Dict[str, int]) -> bool:
@@ -1256,6 +1326,10 @@ class ReplitStateManager(StateManager):
             logger.error(f"Error checking operation status: {e}")
             return False
 
+# Backwards-compatible alias for tests and external imports
+class ReplitEmbeddingStorage(ReplitObjectEmbeddingStorage):
+    pass
+
 class StorageFactory:
     """Factory for creating storage implementations based on environment."""
     
@@ -1287,7 +1361,7 @@ class StorageFactory:
             return {
                 'complete_data': ReplitCompleteDataStorage(config),
                 'stratified_sample': ReplitStratifiedSampleStorage(config),
-                'embeddings': ReplitObjectEmbeddingStorage(config),
+                'embeddings': ReplitEmbeddingStorage(config),
                 'state': ReplitStateManager(config)
             }
         else:

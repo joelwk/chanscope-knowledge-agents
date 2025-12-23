@@ -52,6 +52,7 @@ class DataConfig:
     board_id: Optional[str] = None
     force_refresh: bool = False
     env: Optional[str] = None
+    test_mode: bool = False
 
     def __post_init__(self):
         chunk_settings = Config.get_chunk_settings()
@@ -69,9 +70,25 @@ class DataConfig:
         if self.sample_size != sample_settings['default_sample_size']:
             logger.warning(f"Sample size adjusted to {self.sample_size}")
 
-        self.root_data_path = Path(paths['root_data_path'])
-        self.stratified_data_path = Path(paths['stratified'])
-        self.temp_path = Path(paths['temp'])
+        if self.root_data_path is None:
+            self.root_data_path = Path(paths['root_data_path'])
+        else:
+            self.root_data_path = Path(self.root_data_path)
+
+        if self.stratified_data_path is None:
+            self.stratified_data_path = Path(paths['stratified'])
+        else:
+            self.stratified_data_path = Path(self.stratified_data_path)
+
+        if self.temp_path is None:
+            self.temp_path = Path(paths['temp'])
+        else:
+            self.temp_path = Path(self.temp_path)
+
+        if self.test_mode is None:
+            self.test_mode = False
+        if not self.test_mode:
+            self.test_mode = os.getenv('TEST_MODE', 'false').lower() in ('true', '1', 'yes')
 
         if self.filter_date:
             try:
@@ -115,6 +132,7 @@ class DataConfig:
         
         # Get current environment
         env = detect_environment()
+        test_mode = os.getenv('TEST_MODE', 'false').lower() in ('true', '1', 'yes')
 
         return cls(
             root_data_path=root_data_path,
@@ -125,7 +143,8 @@ class DataConfig:
             time_column=time_column,
             strata_column=strata_column,
             force_refresh=force_refresh,
-            env=env
+            env=env,
+            test_mode=test_mode
         )
 
 
@@ -138,6 +157,7 @@ class DataStateManager:
         self._ensure_state_file()
 
     def _ensure_state_file(self) -> None:
+        self.config.temp_path.mkdir(parents=True, exist_ok=True)
         if not self._state_file.exists():
             self._save_state({'last_update': None, 'total_records': 0})
 
@@ -1055,7 +1075,7 @@ class DataOperations:
                 return False
             
             # Get text content to embed
-            text_content = stratified_data[text_column].values
+            text_content = stratified_data[text_column].tolist()
             thread_ids = stratified_data['thread_id'].astype(str).values
             
             # Generate embeddings
@@ -1067,7 +1087,7 @@ class DataOperations:
             thread_id_map = {}
             
             for i in range(0, len(text_content), batch_size):
-                batch_text = text_content[i:i+batch_size]
+                batch_text = list(text_content[i:i+batch_size])
                 batch_ids = thread_ids[i:i+batch_size]
                 
                 logger.info(f"Processing embedding batch {i//batch_size + 1}/{len(text_content)//batch_size + 1}")
@@ -1101,6 +1121,14 @@ class DataOperations:
             # Save thread ID map
             with open(thread_id_map_path, 'w') as f:
                 json.dump(thread_id_map, f)
+
+            # Save embedding status for test and downstream compatibility
+            status_path = self.config.stratified_data_path / 'embedding_status.csv'
+            status_df = pd.DataFrame({
+                "thread_id": list(thread_id_map.keys()),
+                "has_embedding": [True] * len(thread_id_map)
+            })
+            status_df.to_csv(status_path, index=False)
             
             logger.info(f"Successfully generated and saved {len(all_embeddings)} embeddings")
             return True
@@ -1109,6 +1137,25 @@ class DataOperations:
             logger.error(f"Error generating embeddings: {e}")
             logger.error(traceback.format_exc())
             return False
+
+    async def generate_embeddings(self, force_refresh: bool = False) -> bool:
+        """
+        Public wrapper for embedding generation to maintain test compatibility.
+
+        Args:
+            force_refresh: Whether to force regeneration (removes existing artifacts).
+        """
+        if force_refresh:
+            embeddings_path = self.config.stratified_data_path / 'embeddings.npz'
+            thread_map_path = self.config.stratified_data_path / 'thread_id_map.json'
+            status_path = self.config.stratified_data_path / 'embedding_status.csv'
+            for path in (embeddings_path, thread_map_path, status_path):
+                try:
+                    if path.exists():
+                        path.unlink()
+                except Exception as e:
+                    self._logger.warning(f"Failed to remove existing embedding artifact {path}: {e}")
+        return await self._generate_embeddings()
 
     async def _cleanup_worker_markers(self):
         """Clean up old worker markers in the data directory."""
@@ -1478,7 +1525,7 @@ class DataOperations:
         for i in range(num_records):
             mock_data.append({
                 'thread_id': str(10000000 + i),
-                'created_at': datetime.now(pytz.UTC).isoformat(),
+                'posted_date_time': datetime.now(pytz.UTC).isoformat(),
                 'text_clean': f'Mock text for testing article {i}',
                 'content': f'Mock content for article {i}',
                 'embedding': np.random.rand(1536).astype(np.float32).tolist()  # Mock embedding vector

@@ -11,7 +11,10 @@ import json
 from typing import Dict, List, Tuple, Any, Optional, Union, Pattern, Callable
 from datetime import datetime, timedelta
 import pytz
-import sqlparse
+try:
+    import sqlparse
+except Exception:  # pragma: no cover - optional dependency
+    sqlparse = None
 
 from knowledge_agents.model_ops import (
     KnowledgeAgent,
@@ -127,17 +130,17 @@ class LLMSQLGenerator:
                 }
             },
             "content_based": {
-                "pattern": r"(?:about|containing|with|mentioning) ([a-zA-Z0-9_\s]+)",
+                "pattern": r"(?:about|containing|with|mentioning) ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
                 "sql": "SELECT * FROM complete_data WHERE content ILIKE %s ORDER BY posted_date_time DESC",
                 "param_extractor": lambda match: f"%{match.group(1).strip()}%"
             },
             "that_contains": {
-                "pattern": r"that contains? ([a-zA-Z0-9_\s]+)",
+                "pattern": r"that contains? ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
                 "sql": "SELECT * FROM complete_data WHERE content ILIKE %s ORDER BY posted_date_time DESC",
                 "param_extractor": lambda match: f"%{match.group(1).strip()}%"
             },
             "author_based": {
-                "pattern": r"by (?:author )?([a-zA-Z0-9_\s]+)",
+                "pattern": r"by (?:author )?([a-zA-Z0-9_\s]+?)(?:\sabout|\scontaining|\swith|\smentioning|\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
                 "sql": "SELECT * FROM complete_data WHERE author ILIKE %s ORDER BY posted_date_time DESC",
                 "param_extractor": lambda match: f"%{match.group(1).strip()}%"
             },
@@ -726,9 +729,17 @@ Format your response as a JSON object with the following fields:
 
     def _extract_limit(self, nl_query: str, default: Optional[int] = None) -> Optional[int]:
         """Extract limit parameter from query text."""
-        limit_match = re.search(r"(\d+)\s+(?:rows|results|posts|limit)", nl_query.lower())
-        if limit_match:
-            return int(limit_match.group(1))
+        text = nl_query.lower()
+        patterns = [
+            r"\blimit\s+(\d+)\b",
+            r"\btop\s+(\d+)\b",
+            r"\bfirst\s+(\d+)\b",
+            r"\b(\d+)\s+(?:random\s+)?(?:recent\s+)?(?:latest\s+)?(?:newest\s+)?(?:rows|results|posts|threads|messages)\b",
+        ]
+        for pattern in patterns:
+            limit_match = re.search(pattern, text)
+            if limit_match:
+                return int(limit_match.group(1))
         return default
 
     async def _enhance_instructions(self, nl_query: str) -> str:
@@ -877,18 +888,18 @@ Format your response as a JSON object with the following fields:
         nl_lower = nl_query.lower()
         # Improved regex patterns with non-greedy matching and lookahead to avoid capturing time/other filters
         content_patterns = [
-            r"containing ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"about ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"with ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"mentions ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"mentioning ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"contains ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"that contains ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"that contain ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"has ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"having ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"including ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)",
-            r"related to ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|$)"
+            r"containing ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"about ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"with ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"mentions ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"mentioning ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"contains ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"that contains ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"that contain ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"has ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"having ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"including ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)",
+            r"related to ([a-zA-Z0-9_\s]+?)(?:\sfrom|\sin|\son|\sduring|\slast|\spast|\sby|$)"
         ]
         
         # First try pattern matching with improved non-greedy patterns
@@ -915,7 +926,7 @@ Format your response as a JSON object with the following fields:
                 text_after = nl_lower[pos:].strip()
                 if text_after:
                     # Extract the main term before any time/other filters
-                    main_term = re.split(r'\sfrom|\sin|\son|\sduring|\slast|\spast', text_after)[0].strip()
+                    main_term = re.split(r'\sfrom|\sin|\son|\sduring|\slast|\spast|\sby', text_after)[0].strip()
                     if main_term:
                         # Split into words and filter out stop words
                         words = main_term.split()
@@ -940,7 +951,7 @@ Format your response as a JSON object with the following fields:
             if len(parts) > 1:
                 text_after = parts[1]
                 # Split at time filters or other common delimiters
-                main_term = re.split(r'\sfrom|\sin|\son|\sduring|\slast|\spast', text_after)[0].strip()
+                main_term = re.split(r'\sfrom|\sin|\son|\sduring|\slast|\spast|\sby', text_after)[0].strip()
                 if main_term:
                     # Extract first meaningful word
                     words = main_term.split()
@@ -964,6 +975,29 @@ Format your response as a JSON object with the following fields:
             Dictionary with validation results
         """
         try:
+            if sqlparse is None:
+                sql_clean = sql_query.strip().rstrip(";")
+                sql_upper = sql_clean.upper()
+                if not sql_upper.startswith("SELECT"):
+                    return {"is_safe": False, "reason": "Only SELECT statements are allowed"}
+                if "FROM COMPLETE_DATA" not in sql_upper and "FROM PUBLIC.COMPLETE_DATA" not in sql_upper:
+                    return {"is_safe": False, "reason": "Query must use the complete_data table"}
+                if "%s" not in sql_query and not ("SELECT * FROM complete_data" in sql_query and "LIMIT" in sql_query):
+                    return {"is_safe": False, "reason": "No parameter placeholders found"}
+                param_count = sql_query.count("%s")
+                identified_parameters = [f"Parameter {i+1}" for i in range(param_count)]
+                result = {
+                    "is_safe": True,
+                    "reason": "Safe",
+                    "corrected_sql": sql_query,
+                    "identified_parameters": identified_parameters
+                }
+                if nl_query:
+                    content_term = self._extract_content_term(nl_query)
+                    if content_term and "content ILIKE" not in sql_query.lower():
+                        result["missing_filters"] = ["content_filter"]
+                return result
+
             # Parse the SQL query
             parsed = sqlparse.parse(sql_query)
             if not parsed:
@@ -1044,6 +1078,7 @@ Format your response as a JSON object with the following fields:
             Tuple of (parameter_values, parameter_generators)
         """
         nl_lower = nl_query.lower()
+        sql_lower = sql_query.lower()
         params = []
         param_generators = []
         now = datetime.now(pytz.UTC)
@@ -1057,7 +1092,7 @@ Format your response as a JSON object with the following fields:
         
         # Extract content filter parameters first if present
         content_filter_added = False
-        if "content ILIKE %s" in sql_query.lower():
+        if "content ilike %s" in sql_lower:
             content_term = self._extract_content_term(nl_query)
             if content_term:
                 params.append(f"%{content_term}%")
@@ -1136,7 +1171,7 @@ Format your response as a JSON object with the following fields:
             param_generators.append(lambda: datetime.now(pytz.UTC).replace(hour=0, minute=0, second=0, microsecond=0))
         
         # Content search (if not already added)
-        if "content ILIKE %s" in sql_query.lower() and not content_filter_added and len(params) < param_count:
+        if "content ilike %s" in sql_lower and not content_filter_added and len(params) < param_count:
             content_term = self._extract_content_term(nl_query)
             if content_term:
                 params.append(f"%{content_term}%")
@@ -1167,8 +1202,8 @@ Format your response as a JSON object with the following fields:
                     param_generators.append(lambda: "%%")
         
         # Author search
-        if "author ILIKE %s" in sql_query and len(params) < param_count:
-            author_match = re.search(r"by (?:author )?([a-zA-Z0-9_\s]+)", nl_lower)
+        if "author ilike %s" in sql_lower and len(params) < param_count:
+            author_match = re.search(r"by (?:author )?([a-zA-Z0-9_\s]+?)(?:\sabout|\scontaining|\swith|\smentioning|\sfrom|\sin|\son|\sduring|\slast|\spast|$)", nl_lower)
             if author_match:
                 author = author_match.group(1).strip()
                 params.append(f"%{author}%")
@@ -1176,7 +1211,7 @@ Format your response as a JSON object with the following fields:
                 param_generators.append(lambda a=author_copy: f"%{a}%")
         
         # Channel search
-        if "channel_name ILIKE %s" in sql_query and len(params) < param_count:
+        if "channel_name ilike %s" in sql_lower and len(params) < param_count:
             channel_match = re.search(r"(?:from|in|on) (?:board|channel) ([a-zA-Z0-9_\s]+)", nl_lower)
             if channel_match:
                 channel = channel_match.group(1).strip()
@@ -1299,9 +1334,8 @@ Format your response as a JSON object with the following fields:
             time_filter_found = True
         
         # Detect limit
-        limit_match = re.search(r"(\d+)\s+(?:rows|results|posts|limit)", nl_lower)
-        if limit_match:
-            limit = int(limit_match.group(1))
+        limit = self._extract_limit(nl_lower)
+        if limit:
             description["limit"] = limit
             description["filters"].append(f"Limit: {limit} rows")
         
@@ -1317,7 +1351,7 @@ Format your response as a JSON object with the following fields:
             description["filters"].append(f"Content: Contains '{content_term}'")
         
         # Detect author filter
-        author_match = re.search(r"by (?:author )?([a-zA-Z0-9_\s]+)", nl_lower)
+        author_match = re.search(r"by (?:author )?([a-zA-Z0-9_\s]+?)(?:\sabout|\scontaining|\swith|\smentioning|\sfrom|\sin|\son|\sduring|\slast|\spast|$)", nl_lower)
         if author_match:
             author = author_match.group(1).strip()
             if author:
@@ -1346,4 +1380,3 @@ Format your response as a JSON object with the following fields:
             description["filters"].append("Time: Last 24 hours (default)")
         
         return description
-

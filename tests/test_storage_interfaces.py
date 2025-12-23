@@ -246,11 +246,11 @@ async def test_replit_complete_data_storage(replit_config):
         mock_instance = MagicMock()
         mock_postgres.return_value = mock_instance
         
-        # Mock query results
-        mock_instance.execute_query.return_value = [
-            {'row_count': 3}
-        ]
-        mock_instance.query_to_dataframe.return_value = SAMPLE_DF
+        # Mock database methods expected by storage
+        mock_instance.sync_data_from_dataframe.return_value = len(SAMPLE_DF)
+        mock_instance.get_complete_data.return_value = SAMPLE_DF
+        mock_instance.check_data_needs_update.return_value = (False, None)
+        mock_instance.get_row_count.return_value = len(SAMPLE_DF)
         
         storage = ReplitCompleteDataStorage(replit_config)
         

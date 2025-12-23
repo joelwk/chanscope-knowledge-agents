@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+pytest.importorskip("replit")
+
 pytestmark = pytest.mark.asyncio
 
 from knowledge_agents.utils import save_query_output, _save_to_object_storage, _save_to_filesystem
@@ -43,7 +45,7 @@ def mock_client():
     return mock
 
 
-@patch('knowledge_agents.config.env_loader.is_replit_environment')
+@patch('config.env_loader.is_replit_environment')
 @patch('replit.object_storage.Client')
 async def test_save_to_object_storage(mock_client_class, mock_is_replit, mock_logger):
     """Test saving query results to object storage."""
@@ -74,7 +76,7 @@ async def test_save_to_object_storage(mock_client_class, mock_is_replit, mock_lo
     assert parsed_content["query"] == "test query"
 
 
-@patch('knowledge_agents.config.env_loader.is_replit_environment')
+@patch('config.env_loader.is_replit_environment')
 async def test_save_query_output_replit_env(mock_is_replit, mock_logger, tmp_path):
     """Test save_query_output in Replit environment."""
     # Setup
@@ -97,7 +99,7 @@ async def test_save_query_output_replit_env(mock_is_replit, mock_logger, tmp_pat
         mock_save_to_object_storage.assert_called_once()
 
 
-@patch('knowledge_agents.config.env_loader.is_replit_environment')
+@patch('config.env_loader.is_replit_environment')
 async def test_save_query_output_docker_env(mock_is_replit, mock_logger, tmp_path):
     """Test save_query_output in Docker environment."""
     # Setup
@@ -126,7 +128,7 @@ async def test_save_query_output_docker_env(mock_is_replit, mock_logger, tmp_pat
     assert saved_data["query"] == "test query"
 
 
-@patch('knowledge_agents.config.env_loader.is_replit_environment')
+@patch('config.env_loader.is_replit_environment')
 async def test_save_query_output_fallback(mock_is_replit, mock_logger, tmp_path):
     """Test fallback to filesystem when object storage fails."""
     # Setup

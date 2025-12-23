@@ -9,10 +9,10 @@ from datetime import datetime, timedelta
 import pytz
 import json
 import os
-from dotenv import load_dotenv
+from config.base_settings import load_env_vars
 
-# Load environment variables
-load_dotenv()
+# Load base environment variables only
+load_env_vars()
 
 from knowledge_agents.data_ops import DataConfig, DataOperations
 from knowledge_agents.model_ops import ModelConfig, ModelProvider, ModelOperation
