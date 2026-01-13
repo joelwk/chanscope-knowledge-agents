@@ -385,6 +385,39 @@ class PostgresDB:
                 logger.error(f"Error getting row count: {e}")
                 raise
 
+    def prune_rows_before(self, cutoff: datetime, time_column: str = "posted_date_time") -> int:
+        """
+        Delete rows older than a cutoff datetime.
+
+        Args:
+            cutoff: Datetime cutoff; rows older than this are removed.
+            time_column: Column used for time-based retention.
+
+        Returns:
+            Number of rows deleted.
+        """
+        if cutoff is None:
+            return 0
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                query = sql.SQL(
+                    "DELETE FROM complete_data "
+                    "WHERE COALESCE({time_col}, inserted_at) < %s"
+                ).format(time_col=sql.Identifier(time_column))
+                cursor.execute(query, (cutoff,))
+                deleted = cursor.rowcount or 0
+                conn.commit()
+                logger.info(
+                    f"Pruned {deleted} rows older than {cutoff.isoformat()} using {time_column}"
+                )
+                return deleted
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"Error pruning old rows: {e}")
+                return 0
+
     def perform_stratified_sampling(self, sample_size: int, time_column: str) -> pd.DataFrame:
         """
         Perform stratified sampling directly in the database.

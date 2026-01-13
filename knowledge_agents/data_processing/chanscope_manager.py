@@ -125,6 +125,14 @@ class ChanScopeDataManager:
             await self.state_manager.mark_operation_start("ensure_data_ready")
             logger.info(f"Ensuring data is ready (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})")
 
+            # Enforce retention policy before proceeding
+            try:
+                pruned = await self.complete_data_storage.apply_retention_policy()
+                if pruned:
+                    logger.info(f"Retention policy removed {pruned} rows outside the window")
+            except Exception as e:
+                logger.warning(f"Retention policy cleanup failed: {e}")
+
             # Check if complete data exists and is fresh
             row_count = await self.complete_data_storage.get_row_count()
             logger.info(f"Current complete data row count: {row_count}")
