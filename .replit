@@ -1,6 +1,6 @@
 modules = ["python-3.11", "postgresql-16"]
 hidden = [".pythonlibs"]
-run = "bash scripts/replit_init.sh && python -m uvicorn api.app:app --host 0.0.0.0 --port 8080 --log-level info"
+run = "bash scripts/deployment_startup.sh"
 entrypoint = "api/app.py"
 
 # =============================================
@@ -31,7 +31,7 @@ PIP_NO_CACHE_DIR = "1"
 # Legacy scheduler (disabled when using refresh manager; enable only if needed)
 ENABLE_DATA_SCHEDULER = "false"
 DATA_UPDATE_INTERVAL = "3600"
-DATA_RETENTION_DAYS = "5"     # Keep data for 14 days
+DATA_RETENTION_DAYS = "5"     # Keep data for 5 days
 
 # Testing Configuration
 TEST_MODE = "false"           # Default to false for deployment
@@ -153,30 +153,13 @@ task = "shell.exec"
 args = "python scripts/interactive_nl_query.py"
 
 [[workflows.workflow]]
-name = "Deploy"
-mode = "sequential"
-author = 38779469
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash scripts/replit_init.sh && python -m uvicorn api.app:app --host 0.0.0.0 --port 8080 --log-level info"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python scripts/refresh_control.py start"
-
-[[workflows.workflow]]
 name = "Project"
-mode = "parallel"
+mode = "sequential"
 author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
 args = "Main API"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Refresh Dashboard"
 
 [[workflows.workflow]]
 name = "Main API"
@@ -189,18 +172,6 @@ waitForPort = 8080
 
 [workflows.workflow.metadata]
 outputType = "webview"
-
-[[workflows.workflow]]
-name = "Refresh Dashboard"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd /home/runner/workspace && PORT=8080 python -m uvicorn api.refresh_dashboard:app --host 0.0.0.0 --port 8080"
-waitForPort = 8080
-
-[workflows.workflow.metadata]
-outputType = "console"
 
 [server]
 host = "0.0.0.0"
