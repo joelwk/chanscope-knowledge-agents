@@ -48,7 +48,7 @@ REPLIT_PIP_SKIP_UPM = "1"
 # =============================================
 [deployment]
 run = ["bash", "scripts/deployment_startup.sh"]
-deploymentTarget = "gce"
+deploymentTarget = "cloudrun"
 
 # =============================================
 # Health Check Configuration
