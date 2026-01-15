@@ -7,6 +7,20 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 echo "Starting Replit deployment startup from ${PROJECT_ROOT}..."
 
+# Fix for libstdc++.so.6 - set library path for C++ dependencies
+# Use nix-shell to find the gcc lib path efficiently
+GCC_LIB_PATH=$(nix-instantiate --eval -E 'with import <nixpkgs> {}; "${stdenv.cc.cc.lib}/lib"' 2>/dev/null | tr -d '"')
+if [ -z "$GCC_LIB_PATH" ] || [ ! -d "$GCC_LIB_PATH" ]; then
+    # Fallback: search for libstdc++ with timeout
+    GCC_LIB_PATH=$(timeout 5 find /nix/store -maxdepth 4 -name "libstdc++.so.6" -type f 2>/dev/null | grep gcc | head -1 | xargs dirname 2>/dev/null)
+fi
+if [ -n "$GCC_LIB_PATH" ] && [ -d "$GCC_LIB_PATH" ]; then
+    export LD_LIBRARY_PATH="${GCC_LIB_PATH}:${LD_LIBRARY_PATH}"
+    echo "Set LD_LIBRARY_PATH to include: ${GCC_LIB_PATH}"
+else
+    echo "Warning: Could not locate libstdc++ library path"
+fi
+
 # Create essential directories
 mkdir -p data temp_files data/stratified logs
 
