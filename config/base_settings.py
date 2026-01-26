@@ -104,6 +104,9 @@ def get_base_settings() -> Dict[str, Any]:
     except (ValueError, TypeError):
         logging.warning("Invalid DATA_RETENTION_DAYS value, using default of 30 days")
         retention_days = 30
+    if retention_days <= 0:
+        logging.warning("DATA_RETENTION_DAYS must be positive; using default of 30 days")
+        retention_days = 30
 
     filter_date = (
         datetime.now(pytz.UTC) - timedelta(days=retention_days)

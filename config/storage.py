@@ -148,6 +148,10 @@ class CompleteDataStorage(ABC):
         """Get the count of rows in the storage."""
         pass
 
+    async def apply_retention_policy(self) -> int:
+        """Apply retention policy if supported; default is no-op."""
+        return 0
+
 class StratifiedSampleStorage(ABC):
     """Abstract interface for stratified sample storage."""
     
@@ -291,6 +295,60 @@ class FileCompleteDataStorage(CompleteDataStorage):
         except Exception as e:
             logger.error(f"Error getting row count: {e}")
             return 0
+
+    async def apply_retention_policy(self) -> int:
+        """Prune rows outside the configured retention window from the CSV file."""
+        if not self.complete_data_path.exists():
+            return 0
+
+        retention_settings = Config.get_retention_settings()
+        retention_days = retention_settings.get('retention_days', 30)
+        filter_date = retention_settings.get('filter_date')
+        time_column = getattr(self.config, 'time_column', 'posted_date_time')
+
+        cutoff = None
+        if filter_date:
+            cutoff = pd.to_datetime(filter_date, utc=True, errors='coerce')
+            if pd.isna(cutoff):
+                logger.warning(f"Invalid FILTER_DATE '{filter_date}', falling back to retention_days")
+                cutoff = None
+
+        if cutoff is None:
+            if retention_days <= 0:
+                logger.warning("Retention days must be positive; skipping file retention cleanup")
+                return 0
+            cutoff = pd.Timestamp.now(tz='UTC') - pd.Timedelta(days=retention_days)
+
+        try:
+            df = pd.read_csv(self.complete_data_path)
+        except Exception as e:
+            logger.error(f"Error reading complete data for retention cleanup: {e}")
+            return 0
+
+        if time_column not in df.columns:
+            logger.warning(f"Time column '{time_column}' not found; skipping retention cleanup")
+            return 0
+
+        df[time_column] = pd.to_datetime(df[time_column], utc=True, errors='coerce')
+        valid_mask = df[time_column].notna()
+        if not valid_mask.any():
+            logger.warning("No valid timestamps found; skipping retention cleanup")
+            return 0
+
+        filtered_df = df[valid_mask & (df[time_column] >= cutoff)]
+        removed = len(df) - len(filtered_df)
+
+        if removed > 0:
+            try:
+                filtered_df.to_csv(self.complete_data_path, index=False)
+                logger.info(
+                    f"Pruned {removed} rows older than {cutoff.isoformat()} from {self.complete_data_path}"
+                )
+            except Exception as e:
+                logger.error(f"Error writing pruned data to {self.complete_data_path}: {e}")
+                return 0
+
+        return removed
 
 class FileStratifiedSampleStorage(StratifiedSampleStorage):
     """File-based implementation of stratified sample storage."""
@@ -781,6 +839,37 @@ class ReplitCompleteDataStorage(CompleteDataStorage):
             return count
         except Exception as e:
             logger.error(f"Error getting row count: {e}")
+            return 0
+
+    async def apply_retention_policy(self) -> int:
+        """Prune rows outside the configured retention window from PostgreSQL."""
+        retention_settings = Config.get_retention_settings()
+        retention_days = retention_settings.get('retention_days', 30)
+        filter_date = retention_settings.get('filter_date')
+
+        cutoff = None
+        if filter_date:
+            cutoff = pd.to_datetime(filter_date, utc=True, errors='coerce')
+            if pd.isna(cutoff):
+                logger.warning(f"Invalid FILTER_DATE '{filter_date}', falling back to retention_days")
+                cutoff = None
+
+        if cutoff is None:
+            if retention_days <= 0:
+                logger.warning("Retention days must be positive; skipping database retention cleanup")
+                return 0
+            cutoff = pd.Timestamp.now(tz='UTC') - pd.Timedelta(days=retention_days)
+
+        try:
+            # Ensure schema exists before pruning
+            self.db.initialize_schema()
+            if not hasattr(self.db, "prune_rows_before"):
+                logger.warning("PostgresDB does not support retention pruning; skipping")
+                return 0
+            deleted = self.db.prune_rows_before(cutoff.to_pydatetime(), time_column="posted_date_time")
+            return deleted
+        except Exception as e:
+            logger.error(f"Error applying retention policy to PostgreSQL: {e}")
             return 0
 
 class ReplitStratifiedSampleStorage(StratifiedSampleStorage):

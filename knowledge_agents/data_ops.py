@@ -762,7 +762,15 @@ class DataOperations:
             from knowledge_agents.inference_ops import _clear_caches
             
             logger.info(f"Ensuring data is ready (force_refresh={force_refresh}, skip_embeddings={skip_embeddings})")
-            
+
+            # Enforce retention policy before proceeding
+            try:
+                pruned = await self.complete_data_storage.apply_retention_policy()
+                if pruned:
+                    logger.info(f"Retention policy removed {pruned} rows outside the window")
+            except Exception as e:
+                logger.warning(f"Retention policy cleanup failed: {e}")
+
             # Check environment type to determine appropriate data preparation methods
             from config.env_loader import detect_environment
             env_type = detect_environment()
