@@ -1,5 +1,6 @@
  { pkgs }: {
    deps = [
+     pkgs.gcc-unwrapped
      pkgs.rustc
      pkgs.libiconv
      pkgs.cargo

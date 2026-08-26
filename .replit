@@ -48,7 +48,7 @@ REPLIT_PIP_SKIP_UPM = "1"
 # =============================================
 [deployment]
 run = ["bash", "scripts/deployment_startup.sh"]
-deploymentTarget = "autoscale"
+deploymentTarget = "cloudrun"
 
 # =============================================
 # Health Check Configuration
@@ -65,10 +65,6 @@ consecutiveFailures = 3  # Less tolerant now that startup is fast
 [[ports]]
 localPort = 8080
 externalPort = 80
-
-[[ports]]
-localPort = 8080
-externalPort = 8080
 
 # =============================================
 # Language Configuration
@@ -242,4 +238,4 @@ bucket = "rolling-data"
 expertMode = true
 
 [objectStorage]
-defaultBucketID = "replit-objstore-21e6f39c-a3d9-4156-b809-0c4a0efc2d66"
+defaultBucketID = "replit-objstore-9a4a626a-e9aa-4131-a447-4bbcfb416a7e"
