@@ -27,6 +27,25 @@ logger = logging.getLogger(__name__)
 _instance = None
 _instance_lock = threading.Lock()
 
+DEFAULT_SAMPLING_TEMPERATURE = 0.3
+DEFAULT_PRESENCE_PENALTY = 0.2
+DEFAULT_FREQUENCY_PENALTY = 0.2
+DEFAULT_CHUNK_MAX_CONCURRENT = 5
+NON_RETRYABLE_API_MARKERS = (
+    "error code: 400",
+    "unsupported_value",
+    "unsupported_parameter",
+    "unsupported value",
+    "invalid_request_error",
+)
+PARAMETER_ERROR_MARKERS = (
+    "not supported",
+    "does not support",
+    "invalid argument",
+    "unsupported parameter",
+    "unsupported value",
+)
+
 class ModelProviderError(Exception):
     """Base exception for model provider errors."""
     pass
@@ -409,7 +428,6 @@ class KnowledgeAgent:
             with _instance_lock:
                 if not getattr(self, '_initialized', False):
                     self._config = None
-                    self._chunk_lock = asyncio.Lock()
                     self._embedding_lock = asyncio.Lock()
                     self.prompts = load_prompts()
                     self._clients = self._initialize_clients()
@@ -417,6 +435,9 @@ class KnowledgeAgent:
                     self._models_without_temperature = set()
                     # Cache unsupported params per model to avoid repeated 400s
                     self._unsupported_params_by_model: Dict[str, set] = {}
+                    self._chunk_semaphore = asyncio.Semaphore(
+                        int(os.environ.get('CHUNK_MAX_CONCURRENT', str(DEFAULT_CHUNK_MAX_CONCURRENT)))
+                    )
                     self._initialized = True
                     logger.info("Initialized KnowledgeAgent singleton")
                     
@@ -501,6 +522,23 @@ class KnowledgeAgent:
         content_hash = hashlib.md5(chunk.encode()).hexdigest()[:8]
         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
         return f"chunk_{timestamp}_{index}_{content_hash}"
+
+    def _build_local_chunk_result(self, content: str, index: int = 0) -> Dict[str, Any]:
+        """Chunk text locally without an LLM call."""
+        chunks = self._deterministic_text_splitter(content)
+        first = chunks[0] if chunks else ""
+        summary = first[:200] + "..." if len(first) > 200 else first
+        return {
+            "thread_id": self._generate_thread_id_for_chunk(content, index),
+            "chunks": chunks,
+            "summary": summary,
+        }
+
+    def _chunk_semaphore_or_default(self) -> asyncio.Semaphore:
+        semaphore = getattr(self, "_chunk_semaphore", None)
+        if semaphore is None:
+            self._chunk_semaphore = asyncio.Semaphore(DEFAULT_CHUNK_MAX_CONCURRENT)
+        return self._chunk_semaphore
 
     async def _create_client(self, provider: ModelProvider) -> Any:
         """Create a new client for the specified provider."""
@@ -725,10 +763,10 @@ class KnowledgeAgent:
         if model in self._models_without_temperature:
             unsupported.update({"temperature", "presence_penalty", "frequency_penalty"})
 
-        # Heuristic: GPT-5 Chat Completions rejects presence/frequency penalties.
-        # (Still handled dynamically via error parsing if this changes.)
+        # GPT-5 Chat Completions only accepts the default temperature (1) and
+        # rejects presence/frequency penalties. Omit them rather than sending 0.3.
         if model.startswith("gpt-5"):
-            unsupported.update({"presence_penalty", "frequency_penalty"})
+            unsupported.update({"temperature", "presence_penalty", "frequency_penalty"})
 
         return unsupported
 
@@ -750,17 +788,37 @@ class KnowledgeAgent:
         if isinstance(body, dict):
             err = body.get("error", body)
             if isinstance(err, dict):
-                if err.get("code") == "unsupported_parameter" and err.get("param"):
-                    return err["param"]
+                code = err.get("code")
+                param = err.get("param")
+                if param and code in {"unsupported_parameter", "unsupported_value"}:
+                    return param
 
         error_str = str(error)
-        if "unsupported parameter" not in error_str.lower():
-            return None
+        error_lower = error_str.lower()
 
         match = re.search(r"Unsupported parameter:\s*['\"]([^'\"]+)['\"]", error_str)
         if match:
             return match.group(1)
+
+        match = re.search(r"Unsupported value:\s*['\"]([^'\"]+)['\"]", error_str)
+        if match:
+            return match.group(1)
+
+        if "unsupported" in error_lower:
+            param_match = re.search(r"['\"]param['\"]\s*:\s*['\"]([^'\"]+)['\"]", error_str)
+            if param_match:
+                return param_match.group(1)
+
         return None
+
+    @staticmethod
+    def _is_non_retryable_api_error(error: Exception) -> bool:
+        """Return True for client errors that will not succeed on retry."""
+        status = getattr(error, "status_code", None) or getattr(error, "status", None)
+        if status == 400:
+            return True
+        error_str = str(error).lower()
+        return any(marker in error_str for marker in NON_RETRYABLE_API_MARKERS)
 
     def _prepare_model_params(self, provider: ModelProvider, base_params: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare model parameters according to provider requirements.
@@ -786,22 +844,22 @@ class KnowledgeAgent:
             request_params.pop("presence_penalty", None)
             request_params.pop("frequency_penalty", None)
             if "temperature" not in unsupported:
-                request_params.setdefault("temperature", 0.3)
+                request_params.setdefault("temperature", DEFAULT_SAMPLING_TEMPERATURE)
         elif provider == ModelProvider.OPENAI:
             if "temperature" not in unsupported:
-                request_params.setdefault("temperature", 0.3)
+                request_params.setdefault("temperature", DEFAULT_SAMPLING_TEMPERATURE)
             if "presence_penalty" not in unsupported:
-                request_params.setdefault("presence_penalty", 0.2)
+                request_params.setdefault("presence_penalty", DEFAULT_PRESENCE_PENALTY)
             if "frequency_penalty" not in unsupported:
-                request_params.setdefault("frequency_penalty", 0.2)
+                request_params.setdefault("frequency_penalty", DEFAULT_FREQUENCY_PENALTY)
         elif provider == ModelProvider.VENICE:
             # Venice parameters
             if "temperature" not in unsupported:
-                request_params.setdefault("temperature", 0.3)
+                request_params.setdefault("temperature", DEFAULT_SAMPLING_TEMPERATURE)
             if "presence_penalty" not in unsupported:
-                request_params.setdefault("presence_penalty", 0.2)
+                request_params.setdefault("presence_penalty", DEFAULT_PRESENCE_PENALTY)
             if "frequency_penalty" not in unsupported:
-                request_params.setdefault("frequency_penalty", 0.2)
+                request_params.setdefault("frequency_penalty", DEFAULT_FREQUENCY_PENALTY)
 
         # Remove any cached-unsupported params that may have been set upstream.
         for param in unsupported:
@@ -857,12 +915,15 @@ class KnowledgeAgent:
                         continue
 
                 # Fallback for other parameter-related errors where we can't identify the param.
-                if any(x in error_str.lower() for x in ["not supported", "invalid argument", "unsupported parameter"]):
+                if any(x in error_str.lower() for x in PARAMETER_ERROR_MARKERS):
                     logger.warning(f"Parameter-related error for model {model}: {error_str}, retrying with basic parameters")
                     basic_params = {
                         "model": model,
                         "messages": request_params["messages"]
                     }
+                    self._mark_unsupported_params_for_model(
+                        model, ["temperature", "presence_penalty", "frequency_penalty"]
+                    )
                     return await client.chat.completions.create(**basic_params)
 
                 raise
@@ -1030,34 +1091,21 @@ class KnowledgeAgent:
         character_slug: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generate chunks using the specified provider or deterministic method."""
-        # Use deterministic chunking if configured
-        if self.use_deterministic_chunking:
-            logger.info("Using deterministic text splitter for chunking")
-            chunks = self._deterministic_text_splitter(content)
-            
-            # Generate summary from first chunk or full content if small
-            summary = chunks[0][:200] + "..." if len(chunks[0]) > 200 else chunks[0]
-            
-            return {
-                "thread_id": self._generate_thread_id_for_chunk(content, 0),
-                "chunks": chunks,
-                "summary": summary
-            }
-        
-        # Otherwise use LLM-based chunking with improved prompting and retry logic
+        source_text = content or ""
+        chunk_size = getattr(self, "chunk_size", 1000)
+
+        # Skip LLM when configured to, or when the text already fits in one chunk.
+        if getattr(self, "use_deterministic_chunking", False) or len(source_text) <= chunk_size:
+            return self._build_local_chunk_result(source_text)
+
         if provider is None:
             provider = self._get_default_provider(ModelOperation.CHUNK_GENERATION)
 
         client = await self._get_client(provider)
         model = self._get_model_name(provider, ModelOperation.CHUNK_GENERATION)
+        max_retries = getattr(self, "max_retries", 3)
 
-        async with self._chunk_lock:
-            # Implement retry logic
-            last_error = None
-            for attempt in range(self.max_retries):
-                try:
-                    # Create a JSON-focused system prompt
-                    json_system_prompt = """You are a JSON generator for text analysis. 
+        json_system_prompt = """You are a JSON generator for text analysis. 
 You must ALWAYS respond with valid JSON in exactly this format:
 {
     "thread_id": "unique_id_string",
@@ -1071,105 +1119,85 @@ Rules:
 3. The summary should be 1-2 sentences capturing the main idea
 4. ONLY output valid JSON, no other text or formatting"""
 
-                    # Prepare API request params
-                    request_params = {
-                        "model": model,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": json_system_prompt
-                            },
-                            {
-                                "role": "user",
-                                "content": f"Process this text and return JSON:\n\n{content}"
-                            }
-                        ]
-                    }
-                    
-                    # Add JSON mode for OpenAI if supported
-                    if provider == ModelProvider.OPENAI and "gpt-4" in model:
-                        request_params["response_format"] = {"type": "json_object"}
-                    
-                    # Prepare parameters based on provider
-                    request_params = self._prepare_model_params(provider, request_params)
-                    
-                    # Add venice_parameters if using Venice provider and character_slug is specified
-                    if provider == ModelProvider.VENICE:
-                        # Use provided character_slug or get default from config
-                        char_slug = character_slug
-                        if char_slug is None:
-                            char_slug = get_venice_character_slug()
-                        
-                        if char_slug:
-                            # Pass character_slug in the messages parameter structure
-                            for message in request_params["messages"]:
-                                if "parameters" not in message:
-                                    message["parameters"] = {}
-                                message["parameters"]["character_slug"] = char_slug
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                request_params = {
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": json_system_prompt
+                        },
+                        {
+                            "role": "user",
+                            "content": f"Process this text and return JSON:\n\n{source_text}"
+                        }
+                    ]
+                }
 
-                    # Make the API call with safe error handling
+                if provider == ModelProvider.OPENAI and "gpt-4" in model:
+                    request_params["response_format"] = {"type": "json_object"}
+
+                request_params = self._prepare_model_params(provider, request_params)
+
+                if provider == ModelProvider.VENICE:
+                    char_slug = character_slug
+                    if char_slug is None:
+                        char_slug = get_venice_character_slug()
+
+                    if char_slug:
+                        for message in request_params["messages"]:
+                            if "parameters" not in message:
+                                message["parameters"] = {}
+                            message["parameters"]["character_slug"] = char_slug
+
+                async with self._chunk_semaphore_or_default():
                     response = await self._safe_model_call(client, request_params)
-                    
-                    # Process the response
-                    content = response.choices[0].message.content
-                    
-                    # Try to parse the response as JSON
-                    try:
-                        result = json.loads(content)
-                        
-                        # Ensure all keys are present
-                        if not all(key in result for key in ["thread_id", "chunks", "summary"]):
-                            logger.warning(f"Incomplete JSON structure in chunks response, adding missing fields")
-                            # Add missing fields with defaults
-                            if "thread_id" not in result:
-                                result["thread_id"] = self._generate_thread_id(content)
-                            if "chunks" not in result:
-                                result["chunks"] = [content]
-                            if "summary" not in result:
-                                result["summary"] = content[:100] + "..." if len(content) > 100 else content
-                        
-                        return result
-                        
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"JSON parse error on attempt {attempt + 1}/{self.max_retries}: {str(e)}")
-                        logger.debug(f"Response content: {content[:200]}...")
-                        last_error = e
-                        
-                        # If this is the last attempt, fall back to deterministic chunking
-                        if attempt == self.max_retries - 1:
-                            logger.warning("All LLM attempts failed, falling back to deterministic chunking")
-                            chunks = self._deterministic_text_splitter(content)
-                            return {
-                                "thread_id": self._generate_thread_id_for_chunk(content, 0),
-                                "chunks": chunks,
-                                "summary": chunks[0][:100] + "..." if chunks and len(chunks[0]) > 100 else (chunks[0] if chunks else "")
-                            }
-                        
-                        # Wait before retry with exponential backoff
-                        await asyncio.sleep(2 ** attempt)
-                
-                except Exception as e:
-                    logger.error(f"Error generating chunks with {provider.value} on attempt {attempt + 1}: {str(e)}")
+
+                response_content = response.choices[0].message.content
+
+                try:
+                    result = json.loads(response_content)
+
+                    if not all(key in result for key in ["thread_id", "chunks", "summary"]):
+                        logger.warning("Incomplete JSON structure in chunks response, adding missing fields")
+                        if "thread_id" not in result:
+                            result["thread_id"] = self._generate_thread_id_for_chunk(source_text, 0)
+                        if "chunks" not in result:
+                            result["chunks"] = [source_text]
+                        if "summary" not in result:
+                            result["summary"] = source_text[:100] + "..." if len(source_text) > 100 else source_text
+
+                    return result
+
+                except json.JSONDecodeError as e:
+                    logger.warning(f"JSON parse error on attempt {attempt + 1}/{max_retries}: {str(e)}")
+                    logger.debug(f"Response content: {response_content[:200]}...")
                     last_error = e
-                    
-                    # If not the last attempt, wait and retry
-                    if attempt < self.max_retries - 1:
-                        await asyncio.sleep(2 ** attempt)
-                        continue
-                    
-                    # If the first provider fails on all attempts, try fallback to OpenAI
-                    if provider != ModelProvider.OPENAI:
-                        logger.warning(f"All attempts failed with {provider.value}, falling back to OpenAI")
-                        return await self.generate_chunks(content, provider=ModelProvider.OPENAI)
-                    
-                    # If we're already using OpenAI or all fallbacks fail, use deterministic chunking
-                    logger.error("All LLM providers failed, using deterministic chunking as final fallback")
-                    chunks = self._deterministic_text_splitter(content)
-                    return {
-                        "thread_id": self._generate_thread_id_for_chunk(content, 0),
-                        "chunks": chunks,
-                        "summary": chunks[0][:100] + "..." if chunks and len(chunks[0]) > 100 else (chunks[0] if chunks else "")
-                    }
+                    if attempt == max_retries - 1:
+                        break
+                    await asyncio.sleep(2 ** attempt)
+
+            except Exception as e:
+                logger.error(f"Error generating chunks with {provider.value} on attempt {attempt + 1}: {str(e)}")
+                last_error = e
+                if self._is_non_retryable_api_error(e):
+                    logger.warning(
+                        f"Non-retryable API error from {provider.value}; skipping remaining chunk retries"
+                    )
+                    break
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                break
+
+        if provider != ModelProvider.OPENAI and last_error and not self._is_non_retryable_api_error(last_error):
+            logger.warning(f"All attempts failed with {provider.value}, falling back to OpenAI")
+            return await self.generate_chunks(source_text, provider=ModelProvider.OPENAI)
+
+        logger.error("All LLM providers failed, using deterministic chunking as final fallback")
+        return self._build_local_chunk_result(source_text)
 
     def _optimize_batch_size(self, contents: List[str], default_batch_size: int) -> int:
         """Dynamically optimize batch size based on content length and token count.
@@ -1253,20 +1281,17 @@ Rules:
         """
         if not contents:
             return []
-        
-        # Use deterministic chunking for all if configured
-        if self.use_deterministic_chunking:
+
+        chunk_size = getattr(self, "chunk_size", 1000)
+        use_local = getattr(self, "use_deterministic_chunking", False) or all(
+            len(content or "") <= chunk_size for content in contents
+        )
+        if use_local:
             logger.info(f"Using deterministic chunking for {len(contents)} items")
-            results = []
-            for i, content in enumerate(contents):
-                chunks = self._deterministic_text_splitter(content)
-                summary = chunks[0][:200] + "..." if chunks and len(chunks[0]) > 200 else (chunks[0] if chunks else "")
-                results.append({
-                    "thread_id": self._generate_thread_id_for_chunk(content, i),
-                    "chunks": chunks,
-                    "summary": summary
-                })
-            return results
+            return [
+                self._build_local_chunk_result(content, i)
+                for i, content in enumerate(contents)
+            ]
         
         # Get provider (use default if not specified)
         if provider is None:
@@ -1334,12 +1359,9 @@ Rules:
                         # Try deterministic chunking as fallback
                         try:
                             fallback_content = contents[result_idx]
-                            chunks = self._deterministic_text_splitter(fallback_content)
-                            results[result_idx] = {
-                                "thread_id": self._generate_thread_id_for_chunk(fallback_content, result_idx),
-                                "chunks": chunks,
-                                "summary": chunks[0][:100] + "..." if chunks and len(chunks[0]) > 100 else ""
-                            }
+                            results[result_idx] = self._build_local_chunk_result(
+                                fallback_content, result_idx
+                            )
                         except Exception as e:
                             logger.error(f"Fallback chunking also failed: {e}")
                             results[result_idx] = None

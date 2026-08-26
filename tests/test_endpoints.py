@@ -86,6 +86,17 @@ async def test_health_check():
     assert "status" in data
     assert data["status"] in ("healthy", "ok")
 
+def test_query_ui_route():
+    """Smoke test for the lightweight query UI route."""
+    response = client.get("/query-ui")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    body = response.text
+    assert "Semantic (/query)" in body
+    assert "NL->SQL (/nl_query)" in body
+    assert "/api/v1/query" in body
+    assert "/api/v1/nl_query" in body
+
 @pytest.mark.asyncio
 async def test_query_endpoint(data_ops):
     """Test the query endpoint."""

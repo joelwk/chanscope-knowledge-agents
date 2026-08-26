@@ -1,6 +1,6 @@
 #!/bin/bash
 # Deployment startup script for production
-# This script starts the main API server and refresh dashboard for deployments.
+# This script starts the main API server and mounted frontends for deployments.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -33,6 +33,9 @@ echo "Scheduling background initialization after ${INIT_DELAY}s delay..."
 # Start the main API server (health checks hit this port)
 # Enable automatic refresh manager with configurable interval (default 3600 seconds = 1 hour)
 echo "Starting main API server on port ${TARGET_PORT} with automatic database refresh..."
+echo "Frontend URLs:"
+echo "  - Refresh dashboard: /refresh"
+echo "  - Query console:     /query-ui"
 cd "${PROJECT_ROOT}" && \
   AUTO_CHECK_DATA=true \
   AUTO_REFRESH_MANAGER=true \

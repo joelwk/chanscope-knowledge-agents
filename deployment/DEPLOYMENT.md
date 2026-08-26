@@ -12,7 +12,7 @@ This is the **single source of truth** for deploying the Knowledge Agent applica
 - [Data Management](#data-management)
 - [API Reference](#api-reference)
 - [Monitoring and Troubleshooting](#monitoring-and-troubleshooting)
-- [Refresh Dashboard](#refresh-dashboard)
+- [Web Frontends](#web-frontends)
 
 ## Prerequisites
 
@@ -124,6 +124,10 @@ docker-compose -f deployment/docker-compose.yml logs -f
 
 # Test health endpoint
 curl http://localhost/api/v1/health
+
+# Verify frontend routes are served by the same API app
+curl -I http://localhost/refresh
+curl -I http://localhost/query-ui
 ```
 
 ### Testing Before Deployment
@@ -246,6 +250,13 @@ Replit deployments respond immediately to these endpoints:
 - **`/`** - Ultra-fast health check (middleware-intercepted)
 - **`/healthz`** - Standard health check with timestamp
 - **`/api/v1/health`** - Extended health check with environment details
+
+Verify frontend routes after deployment:
+
+```bash
+curl -I https://your-app.replit.app/refresh
+curl -I https://your-app.replit.app/query-ui
+```
 
 ### Replit-Specific Troubleshooting
 
@@ -822,25 +833,47 @@ If the application performs poorly:
 3. Verify data volume performance
 4. Adjust worker count and resource limits
 
-## Refresh Dashboard
+## Web Frontends
 
-The Knowledge Agent includes a web-based refresh dashboard for monitoring and controlling automated data refreshes.
+The Knowledge Agent serves both frontend UIs from the same FastAPI app in Docker and Replit deployments.
 
-### Accessing the Dashboard
+### Frontend URLs
 
-- **Docker**: `http://localhost/refresh`
-- **Replit**: `https://your-app.replit.app/refresh`
+- **Docker**
+  - Refresh dashboard: `http://localhost/refresh`
+  - Query console: `http://localhost/query-ui`
+- **Replit**
+  - Refresh dashboard: `https://your-app.replit.app/refresh`
+  - Query console: `https://your-app.replit.app/query-ui`
 
 ### Quick Deployment Script
 
-Use the unified helper to launch the dashboard with production defaults:
+Use the unified helper to launch the frontend-enabled API service with production defaults:
 
 ```bash
 bash deployment/deploy_frontend.sh --env=docker            # mirrors docker-compose production stack
 bash deployment/deploy_frontend.sh --env=local --port=8080 # run locally on port 8080
+bash deployment/deploy_frontend.sh --env=replit            # prints Replit frontend URLs and setup guidance
 ```
 
-The script verifies `libstdc++.so.6`, prepares dependencies (local mode), and reuses the same FastAPI app served in production.
+The script verifies `libstdc++.so.6`, prepares dependencies (local mode), and reuses `api.app:app`, which mounts both `/refresh` and `/query-ui`.
+
+### Query Console Features
+
+- Toggle between semantic retrieval (`/api/v1/query`) and NL→SQL (`/api/v1/nl_query`)
+- Built-in background task polling for long-running `/query` requests
+- Structured result presentation with collapsible technical details
+- Friendly environment messaging when NL→SQL is unavailable
+
+### Query Console Validation
+
+```bash
+# Docker/local
+curl -I "http://localhost/query-ui"
+
+# Replit
+curl -I "https://your-app.replit.app/query-ui"
+```
 
 ### Dashboard Features
 

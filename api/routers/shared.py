@@ -207,7 +207,12 @@ async def _store_batch_result(
             logger.debug("Redis client not available, skipping result storage")
 
         # Update batch history
-        await _update_batch_history({batch_id: {'timestamp': time.time(), 'query': config.query if hasattr(config, 'query') else ''}})
+        query_text = ""
+        if isinstance(config, dict):
+            query_text = config.get("query") or ""
+        else:
+            query_text = getattr(config, "query", "") or ""
+        await _update_batch_history({batch_id: {'timestamp': time.time(), 'query': query_text}})
 
         logger.info(f"Stored result for task {batch_id} (expires in {batch_result_ttl}s)")
 
@@ -310,7 +315,11 @@ async def _update_batch_history(updates: Dict[str, Dict[str, Any]]) -> None:
                 if history_path.exists():
                     try:
                         with open(history_path, 'r') as f:
-                            history = json.load(f)
+                            raw = f.read().strip()
+                        history = json.loads(raw) if raw else {}
+                        if not isinstance(history, dict):
+                            logger.warning("Batch history was not a JSON object; starting fresh")
+                            history = {}
                     except Exception as e:
                         logger.warning(f"Error loading batch history: {e}")
                         # If file is corrupted, start fresh

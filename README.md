@@ -143,6 +143,16 @@ The Knowledge Agent includes a web-based refresh dashboard for monitoring and co
 
 For detailed dashboard usage and configuration, see [`deployment/DEPLOYMENT.md#refresh-dashboard`](deployment/DEPLOYMENT.md#refresh-dashboard).
 
+## Query UI
+
+The API now includes a lightweight browser UI for running semantic and NL-to-SQL queries:
+
+- Open `http://localhost/query-ui`
+- Toggle between:
+  - `POST /api/v1/query` (semantic summary + chunks)
+  - `POST /api/v1/nl_query` (natural language to SQL records)
+- `/api/v1/nl_query` requires Replit/PostgreSQL support; outside that environment, the UI displays a guidance message.
+
 ## S3 Ingestion Behavior
 - Paginates via `ListObjectsV2` and parses filename date ranges like `*_YYYY-MM-DD_YYYY-MM-DD_*.csv`.
 - Prefers the latest snapshot whose end date overlaps the requested window.

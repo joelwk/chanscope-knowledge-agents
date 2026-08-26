@@ -33,6 +33,7 @@ from config.chanscope_config import ChanScopeConfig
 
 # Import API routers from routers module
 from api.routers import health_router, data_router, embeddings_router, admin_router, query_router
+from .query_ui import app as query_ui_app
 # Keep old routes import temporarily for compatibility during migration
 # routes.py router removed - all endpoints migrated to domain-specific routers
 try:
@@ -313,6 +314,9 @@ async def general_exception_handler(request: Request, exc: Exception):
 # Mount the refresh dashboard (if available) under /refresh
 if refresh_app is not None:
     app.mount("/refresh", refresh_app)
+
+# Mount the lightweight query UI under /query-ui
+app.mount("/query-ui", query_ui_app)
 
 # Define request models
 class QueryRequest(BaseModel):

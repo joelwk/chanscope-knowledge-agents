@@ -62,14 +62,18 @@ API_DOCS = {
         "embedding_status": "/embedding_status",
         "debug_routes": "/debug/routes",
         "debug_request": "/debug/request",
-        "nl_query": "/nl_query"
+        "nl_query": "/nl_query",
+        "query_ui": "/query-ui"
     }
 }
 
 def get_api_docs(with_prefix: str = ""):
     docs = API_DOCS.copy()
     if with_prefix:
-        docs["documentation"] = {key: f"{with_prefix}{path}" for key, path in docs["documentation"].items()}
+        docs["documentation"] = {
+            key: (path if key == "query_ui" else f"{with_prefix}{path}")
+            for key, path in docs["documentation"].items()
+        }
     return docs
 
 @router.get("/", response_model=dict)

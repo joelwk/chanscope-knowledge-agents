@@ -107,7 +107,7 @@ echo "Run: python scripts/process_data.py --check"
 
 # Verify port configuration
 echo "Checking port configuration..."
-if grep -q "localPort = 80" .replit && grep -q "externalPort = 80" .replit; then
+if grep -Eq "localPort = (80|8080)" .replit && grep -Eq "externalPort = (80|8080)" .replit; then
   echo "[OK] Port configuration is correct for deployment"
 else
   echo "[WARN] Port configuration may be incorrect"
@@ -116,7 +116,7 @@ fi
 
 # Check run command
 echo "Checking deployment run command..."
-if grep -q "python -m uvicorn api.app:app --host 0.0.0.0 --port 80" .replit; then
+if grep -Eq "python(3)? -m uvicorn api.app:app --host 0.0.0.0 --port (80|8080)" .replit || grep -q "bash scripts/deployment_startup.sh" .replit; then
   echo "[OK] Run command starts server properly"
 else
   echo "[WARN] Run command may need verification"
@@ -131,12 +131,18 @@ sys.path.insert(0, '.')
 try:
     from api.app import app
 
-    # Check if the root endpoint is defined
+    # Check if the root endpoint and mounted frontend routes are defined
     routes = [route.path for route in app.routes]
-    if '/' in routes:
+    missing = []
+    for expected_route in ['/', '/refresh', '/query-ui']:
+        if expected_route not in routes:
+            missing.append(expected_route)
+
+    if not missing:
         print('[OK] Health check endpoint (/) is available')
+        print('[OK] Frontend routes (/refresh, /query-ui) are mounted')
     else:
-        print('[ERROR] Root health check endpoint not found')
+        print(f'[ERROR] Missing expected route(s): {missing}')
         sys.exit(1)
 
 except Exception as e:
@@ -153,6 +159,7 @@ echo "   [OK] Directory structure created"
 echo "   [OK] Requirements format validated"  
 echo "   [OK] FastAPI app structure verified"
 echo "   [OK] Health check endpoint confirmed"
+echo "   [OK] Frontend routes (/refresh, /query-ui) confirmed"
 echo "   [OK] Port configuration checked"
 echo ""
 

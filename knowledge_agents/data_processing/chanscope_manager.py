@@ -82,6 +82,18 @@ class ChanScopeDataManager:
 
         logger.info("ChanScopeDataManager initialization complete")
 
+    def _stratified_sample_needs_rebuild(self, sample, row_count: int) -> bool:
+        """Rebuild when the sample is missing or far smaller than the target."""
+        if sample is None or bool(getattr(sample, "empty", False)):
+            return True
+        if row_count <= 0:
+            return False
+        target = min(self.sample_size, row_count)
+        if target < 20:
+            return len(sample) < target
+        min_acceptable = max(5, target // 4)
+        return len(sample) < min_acceptable
+
     @classmethod
     def create_for_environment(cls, config):
         """
@@ -210,21 +222,24 @@ class ChanScopeDataManager:
                 else:
                     logger.info("Complete data exists and is fresh, no update needed")
 
-                # Check if stratified sample exists
+                # Check if stratified sample exists and is large enough for current data
                 stratified_sample = await self.stratified_storage.get_sample()
+                rebuild_embeddings = False
 
-                if stratified_sample is None:
-                    logger.info("No stratified sample found, creating one (force_refresh=False)")
-                    # Get complete data
+                if self._stratified_sample_needs_rebuild(stratified_sample, row_count):
+                    sample_rows = 0 if stratified_sample is None else len(stratified_sample)
+                    logger.info(
+                        f"Stratified sample needs rebuild "
+                        f"(sample_rows={sample_rows}, complete_rows={row_count}, "
+                        f"target={min(self.sample_size, row_count) if row_count else 0})"
+                    )
                     df = await self.complete_data_storage.get_data(self.config.filter_date)
 
                     if df is not None and not df.empty:
-                        # Perform stratification
                         stratified_df = self.sampler.stratified_sample(df)
-
-                        # Store the stratified sample
                         await self.stratified_storage.store_sample(stratified_df)
                         logger.info(f"Successfully created and stored stratified sample with {len(stratified_df)} rows")
+                        rebuild_embeddings = True
                     else:
                         logger.warning("Complete data is empty, cannot create stratified sample")
                         return False
@@ -235,9 +250,12 @@ class ChanScopeDataManager:
                 if not skip_embeddings:
                     embeddings_exist = await self.embedding_storage.embeddings_exist()
 
-                    if not embeddings_exist:
-                        logger.info("No embeddings found, generating new ones (force_refresh=False)")
-                        embedding_success = await self.generate_embeddings(force_refresh=False)
+                    if rebuild_embeddings or not embeddings_exist:
+                        logger.info(
+                            "Generating embeddings "
+                            f"(rebuild={rebuild_embeddings}, exist={embeddings_exist})"
+                        )
+                        embedding_success = await self.generate_embeddings(force_refresh=rebuild_embeddings)
                         if embedding_success:
                             logger.info("Embedding generation completed successfully")
                         else:
@@ -312,6 +330,7 @@ class ChanScopeDataManager:
 
             # Create a single generator for all files at once instead of per-file generators
             file_data_generator = s3_handler.stream_csv_data(start_time.isoformat())
+            loaded_chunks = []
 
             async for chunk in file_data_generator:
                 chunks_processed += 1
@@ -330,8 +349,7 @@ class ChanScopeDataManager:
                 filtered_chunk = chunk[date_mask]
 
                 if not filtered_chunk.empty:
-                    # Store chunk in database
-                    await self.complete_data_storage.store_data(filtered_chunk)
+                    loaded_chunks.append(filtered_chunk)
                     record_count += len(filtered_chunk)
                     logger.info(f"Processed chunk {chunks_processed} with {len(filtered_chunk)} rows (Total: {record_count})")
                 else:
@@ -339,6 +357,11 @@ class ChanScopeDataManager:
 
                 # Yield to other tasks
                 await asyncio.sleep(0)
+
+            if loaded_chunks:
+                combined = pd.concat(loaded_chunks, ignore_index=True)
+                await self.complete_data_storage.store_data(combined)
+                logger.info(f"Stored {len(combined)} combined rows from {len(loaded_chunks)} chunks")
 
             # Log final stats
             logger.info(f"Data loading summary:")

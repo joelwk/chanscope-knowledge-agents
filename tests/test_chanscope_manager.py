@@ -58,11 +58,12 @@ SAMPLE_THREAD_MAP = {
 class MockCompleteDataStorage:
     """Mock implementation of CompleteDataStorage for testing."""
 
-    def __init__(self):
+    def __init__(self, row_count=None):
         self.store_data = AsyncMock(return_value=True)
         self.get_data = AsyncMock(return_value=SAMPLE_DF)
         self.is_data_fresh = AsyncMock(return_value=True)
-        self.get_row_count = AsyncMock(return_value=len(SAMPLE_DF))
+        self.get_row_count = AsyncMock(return_value=row_count if row_count is not None else len(SAMPLE_DF))
+        self.apply_retention_policy = AsyncMock(return_value=0)
 
 class MockStratifiedSampleStorage:
     """Mock implementation of StratifiedSampleStorage for testing."""
@@ -337,4 +338,43 @@ async def test_factory_method():
         assert manager.complete_data_storage == mock_storage['complete_data']
         assert manager.stratified_storage == mock_storage['stratified_sample']
         assert manager.embedding_storage == mock_storage['embeddings']
-        assert manager.state_manager == mock_storage['state'] 
+        assert manager.state_manager == mock_storage['state']
+
+
+@pytest.mark.asyncio
+async def test_ensure_data_ready_rebuilds_tiny_stale_sample(config, mock_storage_with_data):
+    complete_data_storage = mock_storage_with_data['complete_data']
+    stratified_storage = mock_storage_with_data['stratified_sample']
+    embedding_storage = mock_storage_with_data['embeddings']
+    state_manager = mock_storage_with_data['state']
+    complete_data_storage.get_row_count = AsyncMock(return_value=3375)
+
+    manager = ChanScopeDataManager(
+        config=config,
+        complete_data_storage=complete_data_storage,
+        stratified_storage=stratified_storage,
+        embedding_storage=embedding_storage,
+        state_manager=state_manager
+    )
+    manager.generate_embeddings = AsyncMock(return_value=True)
+
+    result = await manager.ensure_data_ready(force_refresh=False)
+
+    assert result is True
+    stratified_storage.store_sample.assert_called()
+    manager.generate_embeddings.assert_called_with(force_refresh=True)
+
+
+def test_stratified_sample_needs_rebuild_matches_log_case(config, mock_storage_with_data):
+    manager = ChanScopeDataManager(
+        config=config,
+        complete_data_storage=mock_storage_with_data['complete_data'],
+        stratified_storage=mock_storage_with_data['stratified_sample'],
+        embedding_storage=mock_storage_with_data['embeddings'],
+        state_manager=mock_storage_with_data['state']
+    )
+    tiny_sample = SAMPLE_DF.copy()
+    assert manager._stratified_sample_needs_rebuild(tiny_sample, 3375) is True
+    assert manager._stratified_sample_needs_rebuild(tiny_sample, 3) is False
+    assert manager._stratified_sample_needs_rebuild(None, 3375) is True
+ 
